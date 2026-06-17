@@ -48,12 +48,7 @@
 // Matches gl_video.h / vo_gpu_next.c's private OSD overlay slot count.
 #define MAX_GPU_NEXT_OSD_PARTS 64
 
-// libplacebo's GL backend never touches this (confirmed by reading its source --
-// no GL_FRAMEBUFFER_SRGB/GL_SRGB references anywhere in src/opengl/). If the
-// embedder's GL context shares state with something that left this enabled
-// (GTK's GLArea, in fluxa-desktop's case), an sRGB-format render target would
-// get gamma-encoded a second time on top of what libplacebo already wrote,
-// producing a washed-out/desaturated image despite correct tone-mapping math.
+// libplacebo never touches this state itself, so we must.
 #define GL_FRAMEBUFFER_SRGB 0x8DB9
 
 struct osd_entry {

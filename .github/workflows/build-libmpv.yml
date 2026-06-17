@@ -8,9 +8,7 @@ on:
 
 jobs:
   linux:
-    # mpv master needs FFmpeg >=60.31 (libavcodec); ubuntu-22.04 ships 58.x, so
-    # this needs 24.04 regardless of our patch. Keep in sync with whatever
-    # Ubuntu version fluxa-desktop's own Linux CI bundles the AppImage on.
+    # mpv master needs FFmpeg >=60.31; ubuntu-22.04 only has 58.x.
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
@@ -27,9 +25,7 @@ jobs:
             libpipewire-0.3-dev libwayland-dev wayland-protocols \
             libxkbcommon-dev libx11-dev libxext-dev \
             libvulkan-dev
-          # apt's meson on ubuntu-22.04 is 0.61.2; mpv/libplacebo need >=0.63.
-          # System-wide (not --user): `ninja install` re-invokes meson under
-          # sudo, which can't see a regular user's --user site-packages.
+          # System-wide: `ninja install` re-invokes meson under sudo.
           sudo pip install meson
 
       - name: Build libplacebo
@@ -76,8 +72,7 @@ jobs:
         run: |
           mkdir -p out
           cp -L build/libmpv.2.dylib out/libmpv.dylib
-          # Homebrew's ffmpeg/libass/libplacebo are dynamic; bundle them and
-          # rewrite paths to @rpath so the dylib works outside this machine.
+          # Bundle Homebrew's dynamic deps so this works outside this machine.
           dylibbundler --bundle-deps --fix-file out/libmpv.dylib \
             --dest-dir out/ --install-path @rpath/ --overwrite-files
 
@@ -116,9 +111,7 @@ jobs:
         run: |
           mkdir -p out
           cp build/mpv-2.dll out/ 2>/dev/null || cp build/libmpv-2.dll out/mpv-2.dll
-          # Unlike shinchiro's static build, MSYS2's ffmpeg/libass packages are
-          # shared libs -- mpv-2.dll alone won't run outside an MSYS2 environment.
-          # ldd only lists direct deps, so loop until no new DLLs turn up.
+          # Bundle MSYS2's dynamic deps; loop since ldd only lists direct ones.
           added=1
           while [ "$added" -ne 0 ]; do
             added=0
