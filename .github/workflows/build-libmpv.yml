@@ -8,7 +8,8 @@ on:
 
 jobs:
   linux:
-    runs-on: ubuntu-latest
+    # Pinned to match fluxa-desktop's own Linux CI, so apt's FFmpeg sonames agree.
+    runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
 
@@ -59,7 +60,7 @@ jobs:
 
       - name: Install build dependencies
         run: |
-          brew install meson ninja pkg-config ffmpeg libass libplacebo
+          brew install meson ninja pkg-config ffmpeg libass libplacebo dylibbundler
 
       - name: Build mpv
         run: |
@@ -70,6 +71,10 @@ jobs:
         run: |
           mkdir -p out
           cp -L build/libmpv.2.dylib out/libmpv.dylib
+          # Homebrew's ffmpeg/libass/libplacebo are dynamic; bundle them and
+          # rewrite paths to @rpath so the dylib works outside this machine.
+          dylibbundler --bundle-deps --fix-file out/libmpv.dylib \
+            --dest-dir out/ --install-path @rpath/ --overwrite-files
 
       - uses: actions/upload-artifact@v4
         with:
@@ -106,6 +111,22 @@ jobs:
         run: |
           mkdir -p out
           cp build/mpv-2.dll out/ 2>/dev/null || cp build/libmpv-2.dll out/mpv-2.dll
+          # Unlike shinchiro's static build, MSYS2's ffmpeg/libass packages are
+          # shared libs -- mpv-2.dll alone won't run outside an MSYS2 environment.
+          # ldd only lists direct deps, so loop until no new DLLs turn up.
+          added=1
+          while [ "$added" -ne 0 ]; do
+            added=0
+            for f in out/*.dll; do
+              for dep in $(ldd "$f" | grep -i '/mingw64/bin/' | awk '{print $3}'); do
+                base="$(basename "$dep")"
+                if [ ! -f "out/$base" ]; then
+                  cp "$dep" "out/$base"
+                  added=$((added + 1))
+                fi
+              done
+            done
+          done
 
       - uses: actions/upload-artifact@v4
         with:
