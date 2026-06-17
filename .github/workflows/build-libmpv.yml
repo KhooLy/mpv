@@ -16,7 +16,7 @@ jobs:
       - name: Install build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y \
+          sudo apt-get install --no-install-recommends -y \
             ninja-build pkg-config python3-pip patchelf \
             libavcodec-dev libavformat-dev libavutil-dev libavfilter-dev \
             libswscale-dev libswresample-dev \
@@ -50,10 +50,7 @@ jobs:
           ln -sf libmpv.so.2.5.0 out/libmpv.so.2
           ln -sf libmpv.so.2 out/libmpv.so
 
-          # No Ubuntu release ships a libplacebo new enough to satisfy this
-          # build (we just built v7.360.1 from source above), so bundle it
-          # -- and any of its own deps the base image doesn't already have --
-          # next to libmpv, the same way the macOS/Windows jobs bundle theirs.
+          # Ubuntu's libplacebo is too old, so bundle the one we built from source.
           added=1
           while [ "$added" -ne 0 ]; do
             added=0
@@ -69,8 +66,7 @@ jobs:
             done
           done
 
-          # Let libmpv find the bundled libplacebo in its own directory
-          # regardless of the caller's LD_LIBRARY_PATH/rpath setup.
+          # rpath so libmpv finds the bundled libplacebo regardless of caller's env.
           patchelf --set-rpath '$ORIGIN' out/libmpv.so.2.5.0
 
       - uses: actions/upload-artifact@v4
