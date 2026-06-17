@@ -112,6 +112,9 @@ struct mpv_render_context {
 };
 
 const struct render_backend_fns *render_backends[] = {
+#if HAVE_GL
+    &render_backend_gpu_next,
+#endif
     &render_backend_gpu,
     &render_backend_sw,
     NULL

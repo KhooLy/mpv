@@ -1308,7 +1308,8 @@ if features['gl']
                      'video/out/opengl/formats.c',
                      'video/out/opengl/libmpv_gl.c',
                      'video/out/opengl/ra_gl.c',
-                     'video/out/opengl/utils.c')
+                     'video/out/opengl/utils.c',
+                     'video/out/gpu_next/libmpv_gpu_next.c')
 elif not features['gl'] and get_option('gl').enabled()
     error('gl enabled but no OpenGL video output could be found!')
 endif

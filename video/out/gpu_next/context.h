@@ -18,11 +18,40 @@
 #pragma once
 
 #include <libplacebo/renderer.h>
+#include <libplacebo/shaders/lut.h>
+
+#include "options/m_option.h"
 
 struct mp_log;
 struct ra_ctx;
 struct ra_ctx_opts;
 struct vo;
+
+struct user_lut {
+    char *opt;
+    char *path;
+    int type;
+    struct pl_custom_lut *lut;
+};
+
+struct gl_next_opts {
+    bool delayed_peak;
+    int sub_hdr_peak;
+    int image_subs_hdr_peak;
+    int border_background;
+    float background_blur_radius;
+    float corner_rounding;
+    bool inter_preserve;
+    struct user_lut lut;
+    struct user_lut image_lut;
+    struct user_lut target_lut;
+    int target_hint;
+    int target_hint_mode;
+    bool target_hint_strict;
+    char **raw_opts;
+};
+
+extern const struct m_sub_options gl_next_conf;
 
 struct gpu_ctx {
     struct mp_log *log;
