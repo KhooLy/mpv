@@ -28,15 +28,33 @@ jobs:
           # System-wide: `ninja install` re-invokes meson under sudo.
           sudo pip install meson
 
+      - name: Cache libplacebo build
+        id: cache-libplacebo
+        uses: actions/cache@v4
+        with:
+          path: /tmp/libplacebo-install
+          key: libplacebo-v7.360.1-${{ runner.os }}
+
       - name: Build libplacebo
+        if: steps.cache-libplacebo.outputs.cache-hit != 'true'
         run: |
           git clone --depth 1 --branch v7.360.1 https://code.videolan.org/videolan/libplacebo.git /tmp/libplacebo
           cd /tmp/libplacebo
           git submodule update --init --depth 1
-          meson setup build -Dvulkan=disabled -Ddemos=false --prefix=/usr
+          meson setup build -Dvulkan=disabled -Ddemos=false --prefix=/tmp/libplacebo-install
           ninja -C build
-          sudo ninja -C build install
+          ninja -C build install
+
+      - name: Install libplacebo
+        run: |
+          sudo cp -a /tmp/libplacebo-install/. /usr/
           sudo ldconfig
+
+      - name: Setup ccache
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: mpv-linux
+          create-symlink: true
 
       - name: Build mpv
         run: |
