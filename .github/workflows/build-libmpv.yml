@@ -17,24 +17,26 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            meson ninja-build pkg-config python3-pip \
+            ninja-build pkg-config python3-pip \
             libavcodec-dev libavformat-dev libavutil-dev libavfilter-dev \
             libswscale-dev libswresample-dev \
             libass-dev libegl1-mesa-dev libgl1-mesa-dev libgles2-mesa-dev \
             libdrm-dev libgbm-dev libpulse-dev libasound2-dev \
             libpipewire-0.3-dev libwayland-dev wayland-protocols \
             libxkbcommon-dev libx11-dev libxext-dev \
-            libvulkan-dev libplacebo-dev
+            libvulkan-dev
+          # apt's meson on ubuntu-22.04 is 0.61.2; mpv/libplacebo need >=0.63.
+          pip install --user meson
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
-      - name: Check libplacebo version, build from source if too old
+      - name: Build libplacebo
         run: |
-          if ! pkg-config --atleast-version=7.349.0 libplacebo; then
-            git clone --depth 1 --branch v7.360.1 https://code.videolan.org/videolan/libplacebo.git /tmp/libplacebo
-            cd /tmp/libplacebo
-            git submodule update --init --depth 1
-            meson setup build -Dvulkan=disabled -Ddemos=false --prefix=/usr
-            sudo ninja -C build install
-          fi
+          git clone --depth 1 --branch v7.360.1 https://code.videolan.org/videolan/libplacebo.git /tmp/libplacebo
+          cd /tmp/libplacebo
+          git submodule update --init --depth 1
+          meson setup build -Dvulkan=disabled -Ddemos=false --prefix=/usr
+          ninja -C build
+          sudo ninja -C build install
 
       - name: Build mpv
         run: |
