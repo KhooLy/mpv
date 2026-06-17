@@ -48,6 +48,14 @@
 // Matches gl_video.h / vo_gpu_next.c's private OSD overlay slot count.
 #define MAX_GPU_NEXT_OSD_PARTS 64
 
+// libplacebo's GL backend never touches this (confirmed by reading its source --
+// no GL_FRAMEBUFFER_SRGB/GL_SRGB references anywhere in src/opengl/). If the
+// embedder's GL context shares state with something that left this enabled
+// (GTK's GLArea, in fluxa-desktop's case), an sRGB-format render target would
+// get gamma-encoded a second time on top of what libplacebo already wrote,
+// producing a washed-out/desaturated image despite correct tone-mapping math.
+#define GL_FRAMEBUFFER_SRGB 0x8DB9
+
 struct osd_entry {
     pl_tex tex;
     struct pl_overlay_part *parts;
@@ -73,6 +81,7 @@ struct priv {
     struct mp_log *log;
 
     struct libmpv_gpu_context *context; // owns the embeddable GL ra_ctx
+    struct GL *gl;
     pl_log pllog;
     pl_opengl opengl;
     pl_gpu gpu;
@@ -860,12 +869,12 @@ static int init(struct render_backend *ctx, mpv_render_param *params)
     if (!p->pllog)
         return MPV_ERROR_UNSUPPORTED;
 
-    struct GL *gl = ra_gl_get(p->context->ra_ctx->ra);
+    p->gl = ra_gl_get(p->context->ra_ctx->ra);
     struct pl_opengl_params gl_params = {
         .debug = false,
         .allow_software = true,
-        .get_proc_addr_ex = (void *)gl->get_fn,
-        .proc_ctx = gl->fn_ctx,
+        .get_proc_addr_ex = (void *)p->gl->get_fn,
+        .proc_ctx = p->gl->fn_ctx,
     };
 #if HAVE_EGL
     gl_params.egl_display = eglGetCurrentDisplay();
@@ -1095,6 +1104,7 @@ static int render(struct render_backend *ctx, mpv_render_param *params,
 
     if (ok) {
         update_overlays(p, p->osd_res, frame->current, 0, &target);
+        p->gl->Disable(GL_FRAMEBUFFER_SRGB);
         ok = pl_render_image_mix(p->rr, &mix, &target, &render_params);
     }
 
@@ -1233,6 +1243,7 @@ static void screenshot(struct render_backend *ctx, struct vo_frame *frame,
     update_overlays(p, osd, mpi, osd_flags, &target);
     image.num_overlays = 0;
 
+    p->gl->Disable(GL_FRAMEBUFFER_SRGB);
     if (!pl_render_image(p->rr, &image, &target, &params)) {
         MP_ERR(p, "Failed rendering screenshot!\n");
         pl_tex_destroy(gpu, &fbo);
