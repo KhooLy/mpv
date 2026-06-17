@@ -26,8 +26,9 @@ jobs:
             libxkbcommon-dev libx11-dev libxext-dev \
             libvulkan-dev
           # apt's meson on ubuntu-22.04 is 0.61.2; mpv/libplacebo need >=0.63.
-          pip install --user meson
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          # System-wide (not --user): `ninja install` re-invokes meson under
+          # sudo, which can't see a regular user's --user site-packages.
+          sudo pip install meson
 
       - name: Build libplacebo
         run: |
