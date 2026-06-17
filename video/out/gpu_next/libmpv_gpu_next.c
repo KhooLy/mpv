@@ -766,7 +766,7 @@ static void update_render_options(struct render_backend *ctx)
     pars->peak_detect_params.percentile = opts->tone_map.peak_percentile;
     pars->peak_detect_params.allow_delayed = false; // no display-synced redraw to delay into
 
-    static const struct pl_tone_map_function * const tone_map_funs[] = {
+    const struct pl_tone_map_function * const tone_map_funs[] = {
         [TONE_MAPPING_AUTO]      = &pl_tone_map_auto,
         [TONE_MAPPING_CLIP]      = &pl_tone_map_clip,
         [TONE_MAPPING_MOBIUS]    = &pl_tone_map_mobius,
@@ -780,7 +780,7 @@ static void update_render_options(struct render_backend *ctx)
         [TONE_MAPPING_ST2094_40] = &pl_tone_map_st2094_40,
         [TONE_MAPPING_ST2094_10] = &pl_tone_map_st2094_10,
     };
-    static const struct pl_gamut_map_function * const gamut_modes[] = {
+    const struct pl_gamut_map_function * const gamut_modes[] = {
         [GAMUT_AUTO]       = NULL, // filled in below (depends on pl_color_map_default_params)
         [GAMUT_CLIP]       = &pl_gamut_map_clip,
         [GAMUT_PERCEPTUAL] = &pl_gamut_map_perceptual,

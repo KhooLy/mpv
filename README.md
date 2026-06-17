@@ -2,6 +2,18 @@
 
 # mpv
 
+> **This is a fork.** The `gpu-next-render-backend` branch adds one thing:
+> a libplacebo-based render backend for libmpv's render API
+> (`mpv_render_context`), so apps embedding mpv via that API (rather than
+> giving it a window directly) get the same renderer `--vo=gpu-next` uses
+> instead of the older `gl_video` path. Opt-in via
+> `MPV_LIBMPV_RENDER_BACKEND=gpu-next`; every other embedder is unaffected.
+> Everything else here is unmodified upstream mpv -- see
+> [FORK.md](FORK.md) for what changed and why, or
+> [mpv-player/mpv](https://github.com/mpv-player/mpv) for the actual
+> project. Prebuilt libraries are attached to
+> [releases](https://github.com/KhooLy/mpv/releases).
+
 
 * [External links](#external-links)
 * [Overview](#overview)
