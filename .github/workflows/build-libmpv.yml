@@ -8,8 +8,10 @@ on:
 
 jobs:
   linux:
-    # Pinned to match fluxa-desktop's own Linux CI, so apt's FFmpeg sonames agree.
-    runs-on: ubuntu-22.04
+    # mpv master needs FFmpeg >=60.31 (libavcodec); ubuntu-22.04 ships 58.x, so
+    # this needs 24.04 regardless of our patch. Keep in sync with whatever
+    # Ubuntu version fluxa-desktop's own Linux CI bundles the AppImage on.
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
 
