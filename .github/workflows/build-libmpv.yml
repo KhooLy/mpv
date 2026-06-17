@@ -17,7 +17,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            ninja-build pkg-config python3-pip \
+            ninja-build pkg-config python3-pip patchelf \
             libavcodec-dev libavformat-dev libavutil-dev libavfilter-dev \
             libswscale-dev libswresample-dev \
             libass-dev libegl1-mesa-dev libgl1-mesa-dev libgles2-mesa-dev \
@@ -36,6 +36,7 @@ jobs:
           meson setup build -Dvulkan=disabled -Ddemos=false --prefix=/usr
           ninja -C build
           sudo ninja -C build install
+          sudo ldconfig
 
       - name: Build mpv
         run: |
@@ -48,6 +49,29 @@ jobs:
           cp -L build/libmpv.so.2.5.0 out/
           ln -sf libmpv.so.2.5.0 out/libmpv.so.2
           ln -sf libmpv.so.2 out/libmpv.so
+
+          # No Ubuntu release ships a libplacebo new enough to satisfy this
+          # build (we just built v7.360.1 from source above), so bundle it
+          # -- and any of its own deps the base image doesn't already have --
+          # next to libmpv, the same way the macOS/Windows jobs bundle theirs.
+          added=1
+          while [ "$added" -ne 0 ]; do
+            added=0
+            for f in out/*.so*; do
+              [ -L "$f" ] && continue
+              for dep in $(ldd "$f" 2>/dev/null | awk '/=> \// {print $3}'); do
+                base="$(basename "$dep")"
+                if [[ "$base" == libplacebo* ]] && [ ! -e "out/$base" ]; then
+                  cp -L "$dep" "out/$base"
+                  added=$((added + 1))
+                fi
+              done
+            done
+          done
+
+          # Let libmpv find the bundled libplacebo in its own directory
+          # regardless of the caller's LD_LIBRARY_PATH/rpath setup.
+          patchelf --set-rpath '$ORIGIN' out/libmpv.so.2.5.0
 
       - uses: actions/upload-artifact@v4
         with:
