@@ -139,6 +139,7 @@ jobs:
             mingw-w64-x86_64-ffmpeg
             mingw-w64-x86_64-libass
             mingw-w64-x86_64-libplacebo
+            mingw-w64-x86_64-lua51
 
       - name: Build mpv
         run: |
