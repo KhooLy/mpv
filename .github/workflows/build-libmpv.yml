@@ -13,10 +13,25 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Cache apt packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.apt-cache
+          key: apt-noble-v1-${{ hashFiles('.github/workflows/build-libmpv.yml') }}
+          restore-keys: apt-noble-v1-
+
+      - name: Cache pip downloads
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: pip-meson-${{ runner.os }}
+
       - name: Install build dependencies
         run: |
+          sudo sed -i 's|mirror://mirrors.ubuntu.com/mirrors.txt|http://archive.ubuntu.com/ubuntu/|; s|mirror+file:/etc/apt/apt-mirrors.txt|http://archive.ubuntu.com/ubuntu/|' /etc/apt/sources.list.d/ubuntu.sources
+          mkdir -p ~/.apt-cache
           sudo apt-get update
-          sudo apt-get install --no-install-recommends -y \
+          sudo apt-get -o Dir::Cache::Archives="$HOME/.apt-cache" install --no-install-recommends -y \
             ninja-build pkg-config python3-pip patchelf \
             libavcodec-dev libavformat-dev libavutil-dev libavfilter-dev \
             libswscale-dev libswresample-dev \
@@ -25,8 +40,9 @@ jobs:
             libpipewire-0.3-dev libwayland-dev wayland-protocols \
             libxkbcommon-dev libx11-dev libxext-dev \
             libvulkan-dev
-          # System-wide: `ninja install` re-invokes meson under sudo.
-          sudo pip install meson
+          sudo chown -R "$(id -u):$(id -g)" ~/.apt-cache
+          # --preserve-env=HOME so pip's cache hits the runner's home, not root's.
+          sudo --preserve-env=HOME pip install meson
 
       - name: Cache libplacebo build
         id: cache-libplacebo
@@ -99,7 +115,13 @@ jobs:
 
       - name: Install build dependencies
         run: |
-          brew install meson ninja pkg-config ffmpeg libass libplacebo dylibbundler
+          brew install meson ninja pkg-config ffmpeg libass libplacebo dylibbundler ccache
+
+      - name: Setup ccache
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: mpv-macos
+          create-symlink: true
 
       - name: Build mpv
         run: |
