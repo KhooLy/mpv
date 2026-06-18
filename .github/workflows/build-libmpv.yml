@@ -177,6 +177,10 @@ jobs:
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
       - uses: actions/download-artifact@v4
         with:
           path: artifacts
@@ -189,7 +193,13 @@ jobs:
             (cd "$name" && zip -r "../${name}.zip" .)
           done
 
+      - name: Build release notes from commits
+        run: |
+          PREV_TAG="$(git describe --tags --abbrev=0 "${{ github.ref_name }}^" 2>/dev/null || true)"
+          RANGE="${PREV_TAG:+$PREV_TAG..}${{ github.ref_name }}"
+          git log "$RANGE" --pretty=format:"- %s ([%h](https://github.com/${{ github.repository }}/commit/%H))" > notes.md
+
       - uses: softprops/action-gh-release@v2
         with:
           files: artifacts/*.zip
-          generate_release_notes: true
+          body_path: notes.md
