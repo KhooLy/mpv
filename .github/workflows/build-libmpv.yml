@@ -68,7 +68,7 @@ jobs:
           ln -sf libmpv.so.2.5.0 out/libmpv.so.2
           ln -sf libmpv.so.2 out/libmpv.so
 
-          # Ubuntu's libplacebo is too old, so bundle the one we built from source.
+          # Bundle libplacebo (too old on Ubuntu) and ffmpeg's libs (ABI varies a lot across distros) so end users don't need a matching system version.
           added=1
           while [ "$added" -ne 0 ]; do
             added=0
@@ -76,7 +76,7 @@ jobs:
               [ -L "$f" ] && continue
               for dep in $(ldd "$f" 2>/dev/null | awk '/=> \// {print $3}'); do
                 base="$(basename "$dep")"
-                if [[ "$base" == libplacebo* ]] && [ ! -e "out/$base" ]; then
+                if [[ "$base" == libplacebo* || "$base" == libav* || "$base" == libsw* ]] && [ ! -e "out/$base" ]; then
                   cp -L "$dep" "out/$base"
                   added=$((added + 1))
                 fi
