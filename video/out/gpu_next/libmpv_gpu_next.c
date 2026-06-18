@@ -1282,9 +1282,11 @@ static void destroy(struct render_backend *ctx)
     ra_hwdec_ctx_uninit(&p->hwdec_ctx);
     hwdec_devices_destroy(ctx->hwdec_devs);
 
-    pl_lut_free(&p->next_opts->image_lut.lut);
-    pl_lut_free(&p->next_opts->lut.lut);
-    pl_lut_free(&p->next_opts->target_lut.lut);
+    if (p->next_opts) {
+        pl_lut_free(&p->next_opts->image_lut.lut);
+        pl_lut_free(&p->next_opts->lut.lut);
+        pl_lut_free(&p->next_opts->target_lut.lut);
+    }
     for (int i = 0; i < p->num_user_hooks; i++)
         pl_mpv_user_shader_destroy(&p->user_hooks[i].hook);
 
