@@ -115,6 +115,9 @@ const struct render_backend_fns *render_backends[] = {
 #if HAVE_GL
     &render_backend_gpu_next,
 #endif
+#if HAVE_VULKAN
+    &render_backend_gpu_next_vk,
+#endif
     &render_backend_gpu,
     &render_backend_sw,
     NULL

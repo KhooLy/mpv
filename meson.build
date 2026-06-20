@@ -1331,7 +1331,8 @@ if features['vulkan']
     sources += files('video/out/hwdec/hwdec_vulkan.c',
                      'video/out/vulkan/context.c',
                      'video/out/vulkan/utils.c',
-                     'video/filter/vf_gpu_vulkan.c')
+                     'video/filter/vf_gpu_vulkan.c',
+                     'video/out/gpu_next/libmpv_gpu_next_vk.c')
 endif
 
 if features['vulkan'] and features['android']

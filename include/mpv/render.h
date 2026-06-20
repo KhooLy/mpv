@@ -422,6 +422,17 @@ typedef enum mpv_render_param_type {
      * See MPV_RENDER_PARAM_SW_STRIDE for alignment requirements.
      */
     MPV_RENDER_PARAM_SW_POINTER = 20,
+    /*
+     * MPV_RENDER_API_TYPE_VULKAN only: required for initialization.
+     * Type: mpv_vulkan_init_params*
+     */
+    MPV_RENDER_PARAM_VULKAN_INIT_PARAMS = 21,
+    /*
+     * MPV_RENDER_API_TYPE_VULKAN only: rendering target image, required for
+     * mpv_render_context_render().
+     * Type: mpv_vulkan_image*
+     */
+    MPV_RENDER_PARAM_VULKAN_IMAGE = 22,
 } mpv_render_param_type;
 
 /**
@@ -468,6 +479,8 @@ typedef struct mpv_render_param {
 #define MPV_RENDER_API_TYPE_OPENGL "opengl"
 // See section "Software renderer"
 #define MPV_RENDER_API_TYPE_SW "sw"
+// See render_vk.h
+#define MPV_RENDER_API_TYPE_VULKAN "vulkan"
 
 /**
  * Flags used in mpv_render_frame_info.flags. Each value represents a bit in it.
