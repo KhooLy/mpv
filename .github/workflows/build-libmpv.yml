@@ -77,31 +77,30 @@ jobs:
           meson setup build -Dlibmpv=true -Dgpl=false
           ninja -C build
 
+      - name: Download linuxdeploy
+        run: |
+          curl -fL -o linuxdeploy.AppImage \
+            https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage
+          chmod +x linuxdeploy.AppImage
+
       - name: Package
         run: |
+          mkdir -p AppDir/usr/lib
+          cp -L build/libmpv.so.2.5.0 AppDir/usr/lib/
+
+          ./linuxdeploy.AppImage --appimage-extract-and-run \
+            --appdir=AppDir \
+            --library=AppDir/usr/lib/libmpv.so.2.5.0
+
           mkdir -p out
-          cp -L build/libmpv.so.2.5.0 out/
+          cp -aL AppDir/usr/lib/. out/
           ln -sf libmpv.so.2.5.0 out/libmpv.so.2
           ln -sf libmpv.so.2 out/libmpv.so
 
-          # Bundle libplacebo (too old on Ubuntu) and ffmpeg's libs (ABI varies a lot across distros) so end users don't need a matching system version.
-          added=1
-          while [ "$added" -ne 0 ]; do
-            added=0
-            for f in out/*.so*; do
-              [ -L "$f" ] && continue
-              for dep in $(ldd "$f" 2>/dev/null | awk '/=> \// {print $3}'); do
-                base="$(basename "$dep")"
-                if [[ "$base" == libplacebo* || "$base" == libav* || "$base" == libsw* ]] && [ ! -e "out/$base" ]; then
-                  cp -L "$dep" "out/$base"
-                  added=$((added + 1))
-                fi
-              done
-            done
+          for f in out/*.so*; do
+            [ -L "$f" ] && continue
+            patchelf --set-rpath '$ORIGIN' "$f"
           done
-
-          # rpath so libmpv finds the bundled libplacebo regardless of caller's env.
-          patchelf --set-rpath '$ORIGIN' out/libmpv.so.2.5.0
 
       - uses: actions/upload-artifact@v4
         with:
