@@ -40,7 +40,7 @@ jobs:
             libdrm-dev libgbm-dev libpulse-dev libasound2-dev \
             libpipewire-0.3-dev libwayland-dev wayland-protocols \
             libxkbcommon-dev libx11-dev libxext-dev \
-            libvulkan-dev
+            libvulkan-dev glslang-tools libshaderc-dev
           sudo chown -R "$(id -u):$(id -g)" ~/.apt-cache
           # --preserve-env=HOME so pip's cache hits the runner's home, not root's.
           sudo --preserve-env=HOME pip install meson
@@ -50,7 +50,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: /tmp/libplacebo-install
-          key: libplacebo-v7.360.1-${{ runner.os }}
+          key: libplacebo-v7.360.1-vulkan-${{ runner.os }}
 
       - name: Build libplacebo
         if: steps.cache-libplacebo.outputs.cache-hit != 'true'
@@ -58,7 +58,7 @@ jobs:
           git clone --depth 1 --branch v7.360.1 https://code.videolan.org/videolan/libplacebo.git /tmp/libplacebo
           cd /tmp/libplacebo
           git submodule update --init --depth 1
-          meson setup build -Dvulkan=disabled -Ddemos=false --prefix=/tmp/libplacebo-install
+          meson setup build -Dvulkan=enabled -Ddemos=false --prefix=/tmp/libplacebo-install
           ninja -C build
           ninja -C build install
 
