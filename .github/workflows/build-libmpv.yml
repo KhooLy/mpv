@@ -35,6 +35,7 @@ jobs:
             ninja-build pkg-config python3-pip patchelf \
             libavcodec-dev libavformat-dev libavutil-dev libavfilter-dev \
             libswscale-dev libswresample-dev \
+            libluajit-5.1-dev \
             libass-dev libegl1-mesa-dev libgl1-mesa-dev libgles2-mesa-dev \
             libdrm-dev libgbm-dev libpulse-dev libasound2-dev \
             libpipewire-0.3-dev libwayland-dev wayland-protocols \
