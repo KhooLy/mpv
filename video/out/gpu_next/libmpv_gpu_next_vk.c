@@ -31,14 +31,15 @@
 #include "sub/draw_bmp.h"
 #include "sub/osd.h"
 #include "video/mp_image.h"
+#include "video/out/gpu/hwdec.h"
 #include "video/out/gpu/video.h"
 #include "video/out/gpu/video_shaders.h"
 #include "video/out/gpu_next/context.h"
 #include "video/out/libmpv.h"
+#include "video/out/placebo/ra_pl.h"
 #include "video/out/placebo/utils.h"
 #include "mpv/render_vk.h"
 
-// Matches gl_video.h / vo_gpu_next.c's private OSD overlay slot count.
 #define MAX_GPU_NEXT_OSD_PARTS 64
 
 struct osd_entry {
@@ -72,6 +73,11 @@ struct priv {
     pl_queue queue;
     pl_options pars;
     struct scaler_params scalers[SCALER_COUNT];
+
+    struct ra_ctx *ra_ctx; // minimal, headless: only .ra/.global/.log are set
+    struct ra_hwdec_ctx hwdec_ctx;
+    struct ra_hwdec_mapper *hwdec_mapper;
+    struct ra_hwdec *hwdec;
 
     pl_tex *sub_tex;
     int num_sub_tex;
@@ -137,6 +143,8 @@ static bool format_supported(struct priv *p, int imgfmt, bool use_uint)
 static bool check_format(struct render_backend *ctx, int imgfmt)
 {
     struct priv *p = ctx->priv;
+    if (ra_hwdec_get(&p->hwdec_ctx, imgfmt))
+        return true;
     return format_supported(p, imgfmt, false) || format_supported(p, imgfmt, true);
 }
 
@@ -206,8 +214,43 @@ static int plane_data_from_imgfmt(struct pl_plane_data out_data[4],
     return desc.num_planes;
 }
 
-// Hardware-decode zero-copy interop is not wired up for this backend yet --
-// frames always go through the software upload path below.
+static pl_tex wrap_hwdec_tex(struct ra_tex *ratex)
+{
+    return (pl_tex)ratex->priv;
+}
+
+static bool hwdec_acquire(pl_gpu gpu, struct pl_frame *frame)
+{
+    struct mp_image *mpi = frame->user_data;
+    struct priv *p = mpi->priv;
+    if (!p->hwdec_mapper || !mp_image_params_static_equal(&mpi->params, &p->hwdec_mapper->src_params)) {
+        ra_hwdec_mapper_free(&p->hwdec_mapper);
+        p->hwdec_mapper = ra_hwdec_mapper_create(p->hwdec, &mpi->params);
+        if (!p->hwdec_mapper) {
+            MP_ERR(p, "Initializing texture for hardware decoding failed.\n");
+            return false;
+        }
+    }
+
+    if (ra_hwdec_mapper_map(p->hwdec_mapper, mpi) < 0) {
+        MP_ERR(p, "Mapping hardware decoded surface failed.\n");
+        return false;
+    }
+
+    for (int n = 0; n < frame->num_planes; n++) {
+        if (!(frame->planes[n].texture = wrap_hwdec_tex(p->hwdec_mapper->tex[n])))
+            return false;
+    }
+    return true;
+}
+
+static void hwdec_release(pl_gpu gpu, struct pl_frame *frame)
+{
+    struct mp_image *mpi = frame->user_data;
+    struct priv *p = mpi->priv;
+    ra_hwdec_mapper_unmap(p->hwdec_mapper);
+}
+
 static bool map_frame(pl_gpu gpu, pl_tex *tex, const struct pl_source_frame *src,
                       struct pl_frame *frame)
 {
@@ -226,6 +269,35 @@ static bool map_frame(pl_gpu gpu, pl_tex *tex, const struct pl_source_frame *src
         .rotation = par.rotate / 90,
         .user_data = mpi,
     };
+
+    p->hwdec = ra_hwdec_get(&p->hwdec_ctx, mpi->imgfmt);
+    if (p->hwdec) {
+        struct mp_image_params dst_par = par;
+        if (p->hwdec_mapper && mp_image_params_static_equal(&par, &p->hwdec_mapper->src_params)) {
+            dst_par = p->hwdec_mapper->dst_params;
+        } else {
+            struct ra_hwdec_mapper *probe = ra_hwdec_mapper_create(p->hwdec, &par);
+            if (!probe) {
+                MP_ERR(p, "Failed probing hwdec frame format!\n");
+                return false;
+            }
+            dst_par = probe->dst_params;
+            ra_hwdec_mapper_free(&probe);
+        }
+        struct mp_imgfmt_desc desc = mp_imgfmt_get_desc(dst_par.imgfmt);
+        frame->acquire = hwdec_acquire;
+        frame->release = hwdec_release;
+        frame->num_planes = desc.num_planes;
+        for (int n = 0; n < frame->num_planes; n++) {
+            struct pl_plane *plane = &frame->planes[n];
+            for (int c = 0; c < mp_imgfmt_desc_get_num_comps(&desc); c++) {
+                if (desc.comps[c].plane != n)
+                    continue;
+                plane->component_mapping[plane->components++] = c;
+            }
+        }
+        return true;
+    }
 
     struct pl_plane_data data[4] = {0};
     bool use_uint = !format_supported(p, mpi->imgfmt, false);
@@ -784,6 +856,13 @@ static int init(struct render_backend *ctx, mpv_render_param *params)
         return MPV_ERROR_UNSUPPORTED;
     p->gpu = p->vk->gpu;
 
+    p->ra_ctx = talloc_zero(p, struct ra_ctx);
+    p->ra_ctx->ra = ra_create_pl(p->gpu, ctx->log);
+    p->ra_ctx->global = ctx->global;
+    p->ra_ctx->log = ctx->log;
+    if (!p->ra_ctx->ra)
+        return MPV_ERROR_UNSUPPORTED;
+
     p->rr = pl_renderer_create(p->pllog, p->gpu);
     p->queue = pl_queue_create(p->gpu);
     p->pars = pl_options_alloc(p->pllog);
@@ -794,6 +873,14 @@ static int init(struct render_backend *ctx, mpv_render_param *params)
     p->next_opts_cache = m_config_cache_alloc(p, ctx->global, &gl_next_conf);
     p->next_opts = p->next_opts_cache->opts;
     update_render_options(ctx);
+
+    ctx->hwdec_devs = hwdec_devices_create();
+    p->hwdec_ctx = (struct ra_hwdec_ctx){
+        .log = ctx->log,
+        .global = ctx->global,
+        .ra_ctx = p->ra_ctx,
+    };
+    ra_hwdec_ctx_init(&p->hwdec_ctx, ctx->hwdec_devs, NULL, true);
 
     ctx->driver_caps = VO_CAP_ROTATE90 | VO_CAP_VFLIP;
     return 0;
@@ -1065,6 +1152,10 @@ static void destroy(struct render_backend *ctx)
     for (int i = 0; i < p->num_sub_tex; i++)
         pl_tex_destroy(p->gpu, &p->sub_tex[i]);
 
+    ra_hwdec_mapper_free(&p->hwdec_mapper);
+    ra_hwdec_ctx_uninit(&p->hwdec_ctx);
+    hwdec_devices_destroy(ctx->hwdec_devs);
+
     if (p->next_opts) {
         pl_lut_free(&p->next_opts->image_lut.lut);
         pl_lut_free(&p->next_opts->lut.lut);
@@ -1076,6 +1167,10 @@ static void destroy(struct render_backend *ctx)
     pl_icc_close(&p->icc_profile);
     pl_options_free(&p->pars);
     pl_renderer_destroy(&p->rr);
+    if (p->ra_ctx && p->ra_ctx->ra) {
+        p->ra_ctx->ra->fns->destroy(p->ra_ctx->ra);
+        p->ra_ctx->ra = NULL;
+    }
     pl_vulkan_destroy(&p->vk);
     if (p->pllog)
         pl_log_destroy(&p->pllog);

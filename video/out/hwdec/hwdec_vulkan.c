@@ -57,17 +57,20 @@ static int vulkan_init(struct ra_hwdec *hw)
     struct vulkan_hw_priv *p = hw->priv;
     int level = hw->probing ? MSGL_V : MSGL_ERR;
 
-    struct mpvk_ctx *vk = ra_vk_ctx_get(hw->ra_ctx);
-    if (!vk) {
-        MP_MSG(hw, level, "This is not a libplacebo vulkan gpu api context.\n");
-        return 0;
-    }
-
     p->gpu = ra_pl_get(hw->ra_ctx->ra);
     if (!p->gpu) {
         MP_MSG(hw, level, "Failed to obtain pl_gpu.\n");
         return 0;
     }
+
+    pl_vulkan vulkan = pl_vulkan_get(p->gpu);
+    if (!vulkan) {
+        MP_MSG(hw, level, "This is not a libplacebo vulkan gpu api context.\n");
+        return 0;
+    }
+
+    struct mpvk_ctx *vk = ra_vk_ctx_get(hw->ra_ctx);
+    pl_vk_inst vkinst = vk ? vk->vkinst : NULL;
 
     /*
      * libplacebo initialises all queues, but we still need to discover which
@@ -76,7 +79,7 @@ static int vulkan_init(struct ra_hwdec *hw)
     uint32_t num_qf = 0;
     VkQueueFamilyProperties2 *qf = NULL;
     VkQueueFamilyVideoPropertiesKHR *qf_vid = NULL;
-    vkGetPhysicalDeviceQueueFamilyProperties2(vk->vulkan->phys_device, &num_qf, NULL);
+    vkGetPhysicalDeviceQueueFamilyProperties2(vulkan->phys_device, &num_qf, NULL);
     if (!num_qf)
         goto error;
 
@@ -92,7 +95,7 @@ static int vulkan_init(struct ra_hwdec *hw)
         };
     }
 
-    vkGetPhysicalDeviceQueueFamilyProperties2(vk->vulkan->phys_device, &num_qf, qf);
+    vkGetPhysicalDeviceQueueFamilyProperties2(vulkan->phys_device, &num_qf, qf);
 
     hw_device_ctx = av_hwdevice_ctx_alloc(AV_HWDEVICE_TYPE_VULKAN);
     if (!hw_device_ctx)
@@ -101,7 +104,7 @@ static int vulkan_init(struct ra_hwdec *hw)
     AVHWDeviceContext *device_ctx = (void *)hw_device_ctx->data;
     AVVulkanDeviceContext *device_hwctx = device_ctx->hwctx;
 
-    device_ctx->user_opaque = (void *)vk->vulkan;
+    device_ctx->user_opaque = (void *)vulkan;
     // libavutil deprecated AVVulkanDeviceContext.lock/unlock_queue without
     // replacement. This prevents us from using queue locking, as those callback
     // will be removed in lavu. Set those callbacks as long as they are still
@@ -114,31 +117,31 @@ static int vulkan_init(struct ra_hwdec *hw)
     AV_NOWARN_DEPRECATED(device_hwctx->lock_queue = lock_queue;)
     AV_NOWARN_DEPRECATED(device_hwctx->unlock_queue = unlock_queue;)
 #endif
-    device_hwctx->get_proc_addr = vk->vkinst->get_proc_addr;
-    device_hwctx->inst = vk->vkinst->instance;
-    device_hwctx->phys_dev = vk->vulkan->phys_device;
-    device_hwctx->act_dev = vk->vulkan->device;
-    device_hwctx->device_features = *vk->vulkan->features;
-    device_hwctx->enabled_inst_extensions = vk->vkinst->extensions;
-    device_hwctx->nb_enabled_inst_extensions = vk->vkinst->num_extensions;
-    device_hwctx->enabled_dev_extensions = vk->vulkan->extensions;
-    device_hwctx->nb_enabled_dev_extensions = vk->vulkan->num_extensions;
+    device_hwctx->get_proc_addr = vkinst ? vkinst->get_proc_addr : vulkan->get_proc_addr;
+    device_hwctx->inst = vkinst ? vkinst->instance : vulkan->instance;
+    device_hwctx->phys_dev = vulkan->phys_device;
+    device_hwctx->act_dev = vulkan->device;
+    device_hwctx->device_features = *vulkan->features;
+    device_hwctx->enabled_inst_extensions = vkinst ? vkinst->extensions : NULL;
+    device_hwctx->nb_enabled_inst_extensions = vkinst ? vkinst->num_extensions : 0;
+    device_hwctx->enabled_dev_extensions = vulkan->extensions;
+    device_hwctx->nb_enabled_dev_extensions = vulkan->num_extensions;
 
 #if LIBAVUTIL_VERSION_INT >= AV_VERSION_INT(59, 34, 100)
     device_hwctx->nb_qf = 0;
     device_hwctx->qf[device_hwctx->nb_qf++] = (AVVulkanDeviceQueueFamily) {
-        .idx = vk->vulkan->queue_graphics.index,
-        .num = vk->vulkan->queue_graphics.count,
+        .idx = vulkan->queue_graphics.index,
+        .num = vulkan->queue_graphics.count,
         .flags = VK_QUEUE_GRAPHICS_BIT,
     };
     device_hwctx->qf[device_hwctx->nb_qf++] = (AVVulkanDeviceQueueFamily) {
-        .idx = vk->vulkan->queue_transfer.index,
-        .num = vk->vulkan->queue_transfer.count,
+        .idx = vulkan->queue_transfer.index,
+        .num = vulkan->queue_transfer.count,
         .flags = VK_QUEUE_TRANSFER_BIT,
     };
     device_hwctx->qf[device_hwctx->nb_qf++] = (AVVulkanDeviceQueueFamily) {
-        .idx = vk->vulkan->queue_compute.index,
-        .num = vk->vulkan->queue_compute.count,
+        .idx = vulkan->queue_compute.index,
+        .num = vulkan->queue_compute.count,
         .flags = VK_QUEUE_COMPUTE_BIT,
     };
     for (int i = 0; i < num_qf; i++) {
@@ -157,12 +160,12 @@ static int vulkan_init(struct ra_hwdec *hw)
         if ((qf[i].queueFamilyProperties.queueFlags) & VK_QUEUE_VIDEO_DECODE_BIT_KHR)
             decode_index = i;
     }
-    device_hwctx->queue_family_index = vk->vulkan->queue_graphics.index;
-    device_hwctx->nb_graphics_queues = vk->vulkan->queue_graphics.count;
-    device_hwctx->queue_family_tx_index = vk->vulkan->queue_transfer.index;
-    device_hwctx->nb_tx_queues = vk->vulkan->queue_transfer.count;
-    device_hwctx->queue_family_comp_index = vk->vulkan->queue_compute.index;
-    device_hwctx->nb_comp_queues = vk->vulkan->queue_compute.count;
+    device_hwctx->queue_family_index = vulkan->queue_graphics.index;
+    device_hwctx->nb_graphics_queues = vulkan->queue_graphics.count;
+    device_hwctx->queue_family_tx_index = vulkan->queue_transfer.index;
+    device_hwctx->nb_tx_queues = vulkan->queue_transfer.count;
+    device_hwctx->queue_family_comp_index = vulkan->queue_compute.index;
+    device_hwctx->nb_comp_queues = vulkan->queue_compute.count;
     device_hwctx->queue_family_decode_index = decode_index;
     device_hwctx->nb_decode_queues = qf[decode_index].queueFamilyProperties.queueCount;
 #endif
