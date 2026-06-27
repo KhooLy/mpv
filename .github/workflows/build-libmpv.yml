@@ -162,10 +162,14 @@ jobs:
             mingw-w64-x86_64-libass
             mingw-w64-x86_64-libplacebo
             mingw-w64-x86_64-lua51
+            mingw-w64-x86_64-angleproject
 
       - name: Build mpv
         run: |
-          meson setup build -Dlibmpv=true -Dgpl=false
+          # angleproject only supplies headers here; egl-angle-lib stays
+          # disabled so libmpv-2.dll keeps loading libEGL.dll dynamically
+          # at runtime instead of hard-requiring it just to load.
+          meson setup build -Dlibmpv=true -Dgpl=false -Degl-angle-lib=disabled
           ninja -C build
 
       - name: Package

@@ -860,6 +860,31 @@ static int init(struct render_backend *ctx, mpv_render_param *params)
     if (err < 0)
         return err;
 
+    static const struct {
+        const char *name;
+        size_t size;
+    } native_resource_map[] = {
+        [MPV_RENDER_PARAM_X11_DISPLAY] = {"x11", 0},
+        [MPV_RENDER_PARAM_WL_DISPLAY] = {"wl", 0},
+        [MPV_RENDER_PARAM_DRM_DRAW_SURFACE_SIZE] =
+            {"drm_draw_surface_size", sizeof (mpv_opengl_drm_draw_surface_size)},
+        [MPV_RENDER_PARAM_DRM_DISPLAY_V2] =
+            {"drm_params_v2", sizeof (mpv_opengl_drm_params_v2)},
+    };
+    for (int n = 0; params && params[n].type; n++) {
+        if (params[n].type > 0 &&
+            params[n].type < MP_ARRAY_SIZE(native_resource_map) &&
+            native_resource_map[params[n].type].name)
+        {
+            void *data = params[n].data;
+            size_t size = native_resource_map[params[n].type].size;
+            if (size)
+                data = talloc_memdup(p, data, size);
+            ra_add_native_resource(p->context->ra_ctx->ra,
+                                    native_resource_map[params[n].type].name, data);
+        }
+    }
+
     p->pllog = mppl_log_create(p, ctx->log);
     if (!p->pllog)
         return MPV_ERROR_UNSUPPORTED;
