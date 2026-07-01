@@ -601,6 +601,7 @@ static void apply_target_color(struct priv *p, struct pl_frame *target)
     update_lut(p, &p->next_opts->target_lut);
     target->lut = p->next_opts->target_lut.lut;
     target->lut_type = p->next_opts->target_lut.type;
+    target->icc = p->icc_profile; // MPV_RENDER_PARAM_ICC_PROFILE, if the embedder set one
 
     target->color = pl_color_space_srgb; // sane default absent any --target-* opts
     if (opts->target_prim)

@@ -620,6 +620,7 @@ static void apply_target_color(struct priv *p, struct pl_frame *target)
     update_lut(p, &p->next_opts->target_lut);
     target->lut = p->next_opts->target_lut.lut;
     target->lut_type = p->next_opts->target_lut.type;
+    target->icc = p->icc_profile; // MPV_RENDER_PARAM_ICC_PROFILE, if the embedder set one
 
     target->color = pl_color_space_srgb; // sane default absent any --target-* opts
     if (opts->target_prim)
@@ -885,9 +886,13 @@ static int init(struct render_backend *ctx, mpv_render_param *params)
         }
     }
 
+    // Failures past this point return NOT_IMPLEMENTED, not UNSUPPORTED:
+    // mpv_render_context_create() only advances to the next backend on
+    // NOT_IMPLEMENTED, and an opt-in backend failing to bring up libplacebo
+    // must not block the stock GL backend that would otherwise work.
     p->pllog = mppl_log_create(p, ctx->log);
     if (!p->pllog)
-        return MPV_ERROR_UNSUPPORTED;
+        return MPV_ERROR_NOT_IMPLEMENTED;
 
     p->gl = ra_gl_get(p->context->ra_ctx->ra);
     struct pl_opengl_params gl_params = {
@@ -901,8 +906,11 @@ static int init(struct render_backend *ctx, mpv_render_param *params)
     gl_params.egl_context = eglGetCurrentContext();
 #endif
     p->opengl = pl_opengl_create(p->pllog, &gl_params);
-    if (!p->opengl)
-        return MPV_ERROR_UNSUPPORTED;
+    if (!p->opengl) {
+        MP_WARN(p, "gpu-next backend requested but libplacebo could not use "
+                "this GL context; falling back to the standard backend.\n");
+        return MPV_ERROR_NOT_IMPLEMENTED;
+    }
     p->gpu = p->opengl->gpu;
 
     p->rr = pl_renderer_create(p->pllog, p->gpu);
@@ -1124,7 +1132,8 @@ static int render(struct render_backend *ctx, mpv_render_param *params,
 
     if (ok) {
         update_overlays(p, p->osd_res, frame->current, 0, &target);
-        p->gl->Disable(GL_FRAMEBUFFER_SRGB);
+        if (!p->gl->es) // not a valid enable state on GLES
+            p->gl->Disable(GL_FRAMEBUFFER_SRGB);
         ok = pl_render_image_mix(p->rr, &mix, &target, &render_params);
     }
 
@@ -1263,7 +1272,8 @@ static void screenshot(struct render_backend *ctx, struct vo_frame *frame,
     update_overlays(p, osd, mpi, osd_flags, &target);
     image.num_overlays = 0;
 
-    p->gl->Disable(GL_FRAMEBUFFER_SRGB);
+    if (!p->gl->es)
+        p->gl->Disable(GL_FRAMEBUFFER_SRGB);
     if (!pl_render_image(p->rr, &image, &target, &params)) {
         MP_ERR(p, "Failed rendering screenshot!\n");
         pl_tex_destroy(gpu, &fbo);
