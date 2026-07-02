@@ -67,6 +67,11 @@ jobs:
           sudo cp -a /tmp/libplacebo-install/. /usr/
           sudo ldconfig
 
+      - name: Install nv-codec-headers
+        run: |
+          git clone --depth 1 --branch n12.2.72.0 https://github.com/FFmpeg/nv-codec-headers.git /tmp/nv-codec-headers
+          sudo make -C /tmp/nv-codec-headers install
+
       - name: Setup ccache
         uses: hendrikmuhs/ccache-action@v1.2
         with:
@@ -75,7 +80,7 @@ jobs:
 
       - name: Build mpv
         run: |
-          meson setup build -Dlibmpv=true -Dgpl=false
+          meson setup build -Dlibmpv=true -Dgpl=false -Dcuda-hwaccel=enabled -Dcuda-interop=enabled
           ninja -C build
 
       - name: Download linuxdeploy
@@ -125,7 +130,7 @@ jobs:
 
       - name: Build mpv
         run: |
-          meson setup build -Dlibmpv=true -Dgpl=false
+          meson setup build -Dlibmpv=true -Dgpl=false -Dvideotoolbox-gl=enabled
           ninja -C build
 
       - name: Package
