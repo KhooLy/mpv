@@ -141,6 +141,12 @@ jobs:
           dylibbundler --bundle-deps --fix-file out/libmpv.dylib \
             --dest-dir out/ --install-path @rpath/ --overwrite-files
 
+          while true; do
+            dup="$(otool -l out/libmpv.dylib | grep -A2 LC_RPATH | grep 'path ' | awk '{print $2}' | sort | uniq -d | head -n1)"
+            [ -z "$dup" ] && break
+            install_name_tool -delete_rpath "$dup" out/libmpv.dylib
+          done
+
       - uses: actions/upload-artifact@v4
         with:
           name: libmpv-macos-universal
