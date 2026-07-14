@@ -1051,6 +1051,12 @@ if features['d3d11']
                      'video/out/d3d11/ra_d3d11.c')
 endif
 
+features += {'d3d11-gpu-next': features['d3d11'] and
+             libplacebo.get_variable('pl_has_d3d11', default_value: '0') == '1'}
+if features['d3d11-gpu-next']
+    sources += files('video/out/gpu_next/libmpv_gpu_next_d3d11.c')
+endif
+
 wayland = {
     'deps': [dependency('wayland-client', version: '>= 1.23.0', required: get_option('wayland')),
              dependency('wayland-cursor', version: '>= 1.23.0', required: get_option('wayland')),

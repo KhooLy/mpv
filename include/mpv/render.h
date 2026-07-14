@@ -433,6 +433,17 @@ typedef enum mpv_render_param_type {
      * Type: mpv_vulkan_image*
      */
     MPV_RENDER_PARAM_VULKAN_IMAGE = 22,
+    /*
+     * MPV_RENDER_API_TYPE_D3D11 only: required for initialization.
+     * Type: mpv_d3d11_init_params*
+     */
+    MPV_RENDER_PARAM_D3D11_INIT_PARAMS = 23,
+    /*
+     * MPV_RENDER_API_TYPE_D3D11 only: rendering target texture, required for
+     * mpv_render_context_render().
+     * Type: mpv_d3d11_target*
+     */
+    MPV_RENDER_PARAM_D3D11_TARGET = 24,
 } mpv_render_param_type;
 
 /**
@@ -481,6 +492,8 @@ typedef struct mpv_render_param {
 #define MPV_RENDER_API_TYPE_SW "sw"
 // See render_vk.h
 #define MPV_RENDER_API_TYPE_VULKAN "vulkan"
+// See render_d3d11.h
+#define MPV_RENDER_API_TYPE_D3D11 "d3d11"
 
 /**
  * Flags used in mpv_render_frame_info.flags. Each value represents a bit in it.
