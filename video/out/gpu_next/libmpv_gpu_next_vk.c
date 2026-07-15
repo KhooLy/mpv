@@ -847,6 +847,8 @@ static int init(struct render_backend *ctx, mpv_render_param *params)
         .get_proc_addr = init_params->get_proc_address,
         .phys_device = init_params->phys_device,
         .device = init_params->device,
+        .extensions = init_params->enabled_extensions,
+        .num_extensions = init_params->num_enabled_extensions,
         .queue_graphics = {
             .index = init_params->queue_graphics_index,
             .count = MPMAX(init_params->queue_graphics_count, 1),

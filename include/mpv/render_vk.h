@@ -82,6 +82,16 @@ typedef struct mpv_vulkan_init_params {
      */
     uint32_t queue_graphics_index;
     uint32_t queue_graphics_count;
+    /**
+     * Names of the device-level extensions the caller enabled on `device`.
+     * mpv cannot otherwise discover this, since it did not create the
+     * device itself, and some hwdec interop paths (e.g. CUDA<->Vulkan
+     * external memory/semaphore import) are silently unusable without it.
+     * Optional -- if NULL/0, hwdec paths that depend on external memory
+     * interop will not work.
+     */
+    const char *const *enabled_extensions;
+    int num_enabled_extensions;
 } mpv_vulkan_init_params;
 
 /**
