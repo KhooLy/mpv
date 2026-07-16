@@ -43,6 +43,19 @@ extern "C" {
  * image, and signal signal_semaphore once rendering commands have been
  * submitted, but does not implicitly serialize anything else.
  *
+ * mpv submits its rendering commands to queues from the graphics queue
+ * family named in mpv_vulkan_init_params, with no locking around
+ * vkQueueSubmit. Those queues must be for mpv's exclusive use; if the caller
+ * submits to the same VkQueue objects from another thread, the behavior is
+ * undefined.
+ *
+ * If mpv_render_context_render() returns an error, the state of
+ * wait_semaphore/signal_semaphore is undefined: mpv may have waited on the
+ * former without signaling the latter, or touched neither. Do not submit
+ * work that waits on signal_semaphore before checking the return value, and
+ * recreate both semaphores (and re-transition the image) before reusing
+ * them after a failure.
+ *
  * This backend additionally requires that
  * MPV_LIBMPV_RENDER_BACKEND=gpu-next is set in the environment before
  * mpv_render_context_create() is called, same as the OpenGL gpu-next

@@ -37,9 +37,15 @@ uses for normal windowed playback.
   There isn't one -- the target is whatever FBO the embedder hands over
   each frame. Target colorspace is controlled via the normal
   `--target-trc`/`--target-peak`/etc. options instead.
-- Vulkan/D3D11. libmpv's render API has no Vulkan API type to attach to
-  (`MPV_RENDER_PARAM_API_TYPE` only defines `"opengl"` and `"sw"`), so
-  there's nothing to implement against.
+
+## Vulkan and D3D11
+
+Upstream's render API only defines `"opengl"` and `"sw"` API types, so
+this fork also extends the client API: `mpv/render_vk.h` and
+`mpv/render_d3d11.h` add `MPV_RENDER_API_TYPE_VULKAN`/`_D3D11`, where the
+embedder imports its own device and hands mpv a target
+image/texture per frame. Both run through the same shared gpu-next
+render core as the GL backend (`libmpv_gpu_next_common.c`).
 
 ## Using it
 
@@ -55,13 +61,20 @@ Then create the render context the normal way, with
 
 ## What changed
 
-- New file: `video/out/gpu_next/libmpv_gpu_next.c`
-- `video/out/vo_libmpv.c`: registers the new backend
-- `video/out/libmpv.h`: declares it
+- New files: `video/out/gpu_next/libmpv_gpu_next_common.{c,h}` (shared
+  render core) plus the thin `libmpv_gpu_next.c` (GL),
+  `libmpv_gpu_next_vk.c`, and `libmpv_gpu_next_d3d11.c` backends
+- New public headers: `include/mpv/render_vk.h`,
+  `include/mpv/render_d3d11.h` (and new param types in
+  `include/mpv/render.h`)
+- `video/out/vo_libmpv.c`: registers the new backends
+- `video/out/libmpv.h`: declares them
 - `video/out/gpu_next/context.h`: moved `struct gl_next_opts` and
-  `struct user_lut` here (out of `vo_gpu_next.c`) so the new backend can
+  `struct user_lut` here (out of `vo_gpu_next.c`) so the new backends can
   share the same `--lut`/`--image-lut`/`--target-lut` options
-- `meson.build`: builds the new file
+- `video/out/hwdec/hwdec_vulkan.c`: works with imported (`pl_vulkan_get`)
+  devices, not just mpv-created ones
+- `meson.build`: builds the new files
 
 Diffable against upstream: everything except those is unmodified mpv.
 
