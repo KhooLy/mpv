@@ -128,7 +128,7 @@ jobs:
 
       - name: Install build dependencies
         run: |
-          brew install meson ninja pkg-config ffmpeg libass libplacebo dylibbundler ccache
+          brew install meson ninja pkg-config ffmpeg libass libplacebo dylibbundler ccache molten-vk
 
       - name: Setup ccache
         uses: hendrikmuhs/ccache-action@v1.2
