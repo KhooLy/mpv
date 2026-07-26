@@ -44,13 +44,7 @@ static int init(struct render_backend *ctx, mpv_render_param *params)
     p->api_priv = a;
     p->wrap_hwdec_tex = wrap_hwdec_tex;
 
-    const char *backend = getenv("MPV_LIBMPV_RENDER_BACKEND");
     char *api = get_mpv_render_param(params, MPV_RENDER_PARAM_API_TYPE, NULL);
-    MP_WARN(ctx, "gpu-next D3D11 init: MPV_LIBMPV_RENDER_BACKEND='%s', api='%s'\n",
-            backend ? backend : "<unset>", api ? api : "<null>");
-    if (!backend || strcmp(backend, "gpu-next") != 0)
-        return MPV_ERROR_NOT_IMPLEMENTED;
-
     if (!api || strcmp(api, MPV_RENDER_API_TYPE_D3D11) != 0)
         return MPV_ERROR_NOT_IMPLEMENTED;
 
