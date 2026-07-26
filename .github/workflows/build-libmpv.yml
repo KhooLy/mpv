@@ -114,7 +114,15 @@ jobs:
           path: out/
 
   macos:
-    runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            architecture: arm64
+          - runner: macos-15-intel
+            architecture: x86_64
+    runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
 
@@ -137,14 +145,58 @@ jobs:
         run: |
           mkdir -p out
           cp -L build/libmpv.2.dylib out/libmpv.dylib
-          # Bundle Homebrew's dynamic deps so this works outside this machine.
           dylibbundler --bundle-deps --fix-file out/libmpv.dylib \
-            --dest-dir out/ --install-path @rpath/ --overwrite-files
+            --dest-dir out/ --install-path @loader_path/ --overwrite-files
+          cp -L "$(brew --prefix molten-vk)/lib/libMoltenVK.dylib" out/
 
-          while true; do
-            dup="$(otool -l out/libmpv.dylib | grep -A2 LC_RPATH | grep 'path ' | awk '{print $2}' | sort | uniq -d | head -n1)"
-            [ -z "$dup" ] && break
-            install_name_tool -delete_rpath "$dup" out/libmpv.dylib
+      - name: Verify portable libraries
+        run: |
+          test -f out/libmpv.dylib
+          test -f out/libMoltenVK.dylib
+          for dylib in out/*.dylib; do
+            architectures="$(lipo -archs "$dylib")"
+            echo "$dylib: $architectures"
+            echo "$architectures" | grep -qw "${{ matrix.architecture }}"
+            if otool -arch "${{ matrix.architecture }}" -L "$dylib" | grep -Eq '^[[:space:]]+(@rpath/|/opt/homebrew/|/usr/local/)'; then
+              echo "non-portable dependency found in $dylib" >&2
+              exit 1
+            fi
+          done
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: libmpv-macos-${{ matrix.architecture }}
+          path: out/
+
+  macos-universal:
+    needs: macos
+    runs-on: macos-15
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Merge and verify universal libraries
+        run: |
+          ARM_DIR="artifacts/libmpv-macos-arm64"
+          INTEL_DIR="artifacts/libmpv-macos-x86_64"
+          mkdir -p out
+          diff <(cd "$ARM_DIR" && find . -maxdepth 1 -type f -name '*.dylib' -exec basename {} \; | sort) <(cd "$INTEL_DIR" && find . -maxdepth 1 -type f -name '*.dylib' -exec basename {} \; | sort)
+          for arm_dylib in "$ARM_DIR"/*.dylib; do
+            name="$(basename "$arm_dylib")"
+            lipo -create "$arm_dylib" "$INTEL_DIR/$name" -output "out/$name"
+          done
+          for dylib in out/*.dylib; do
+            architectures="$(lipo -archs "$dylib")"
+            echo "$dylib: $architectures"
+            echo "$architectures" | grep -qw arm64
+            echo "$architectures" | grep -qw x86_64
+            for architecture in arm64 x86_64; do
+              if otool -arch "$architecture" -L "$dylib" | grep -Eq '^[[:space:]]+(@rpath/|/opt/homebrew/|/usr/local/)'; then
+                echo "non-portable dependency found in $dylib ($architecture)" >&2
+                exit 1
+              fi
+            done
           done
 
       - uses: actions/upload-artifact@v4
@@ -216,7 +268,7 @@ jobs:
 
   release:
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [linux, macos, windows]
+    needs: [linux, macos-universal, windows]
     runs-on: ubuntu-latest
     permissions:
       contents: write
