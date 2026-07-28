@@ -11,17 +11,17 @@ jobs:
     # mpv master needs FFmpeg >=60.31; ubuntu-22.04 only has 58.x.
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Cache apt packages
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/.apt-cache
           key: apt-noble-v1-${{ hashFiles('.github/workflows/build-libmpv.yml') }}
           restore-keys: apt-noble-v1-
 
       - name: Cache pip downloads
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/.cache/pip
           key: pip-meson-${{ runner.os }}
@@ -47,7 +47,7 @@ jobs:
 
       - name: Cache libplacebo build
         id: cache-libplacebo
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: /tmp/libplacebo-install
           key: libplacebo-v7.360.1-vulkan-${{ runner.os }}
@@ -108,7 +108,7 @@ jobs:
             patchelf --set-rpath '$ORIGIN' "$f"
           done
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: libmpv-linux-x86_64
           path: out/
@@ -124,7 +124,7 @@ jobs:
             architecture: x86_64
     runs-on: ${{ matrix.runner }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install build dependencies
         run: |
@@ -163,7 +163,7 @@ jobs:
             fi
           done
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: libmpv-macos-${{ matrix.architecture }}
           path: out/
@@ -172,7 +172,7 @@ jobs:
     needs: macos
     runs-on: macos-15
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           path: artifacts
 
@@ -199,7 +199,7 @@ jobs:
             done
           done
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: libmpv-macos-universal
           path: out/
@@ -210,10 +210,10 @@ jobs:
       run:
         shell: msys2 {0}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Cache MSYS2 package downloads
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: C:\msys64\var\cache\pacman\pkg
           key: msys2-pacman-${{ runner.os }}-${{ hashFiles('.github/workflows/build-libmpv.yml') }}
@@ -261,7 +261,7 @@ jobs:
             done
           done
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: libmpv-windows-x86_64
           path: out/
@@ -273,12 +273,12 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
           fetch-tags: true
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           path: artifacts
 
