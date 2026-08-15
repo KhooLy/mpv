@@ -131,9 +131,11 @@ jobs:
       - name: Build patched libplacebo
         run: |
           export XXHASH_PREFIX="$(brew --prefix xxhash)"
-          export CPPFLAGS="-I${XXHASH_PREFIX}/include ${CPPFLAGS:-}"
-          export LDFLAGS="-L${XXHASH_PREFIX}/lib ${LDFLAGS:-}"
+          export DAV1D_PREFIX="$(brew --prefix dav1d)"
+          export CPPFLAGS="-I${XXHASH_PREFIX}/include -I${DAV1D_PREFIX}/include ${CPPFLAGS:-}"
+          export LDFLAGS="-L${XXHASH_PREFIX}/lib -L${DAV1D_PREFIX}/lib ${LDFLAGS:-}"
           echo "Using xxhash from ${XXHASH_PREFIX}"
+          echo "Using dav1d from ${DAV1D_PREFIX}"
           git clone --filter=blob:none https://github.com/haasn/libplacebo.git /tmp/libplacebo
           cd /tmp/libplacebo
           git checkout "$LIBPLACEBO_REV"
