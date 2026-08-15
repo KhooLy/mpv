@@ -126,7 +126,7 @@ jobs:
 
       - name: Install build dependencies
         run: |
-          brew install meson ninja pkg-config ffmpeg libass dylibbundler ccache molten-vk vulkan-loader vulkan-headers
+          brew install meson ninja pkg-config ffmpeg libass xxhash dylibbundler ccache molten-vk vulkan-loader vulkan-headers
 
       - name: Build patched libplacebo
         run: |
