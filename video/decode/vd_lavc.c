@@ -286,6 +286,7 @@ typedef struct lavc_ctx {
 
     bool intra_only;
     int framedrop_flags;
+    int extra_hw_frames_hint; // VDCTRL_SET_EXTRA_HW_FRAMES
 
     bool hw_probing;
     struct demux_packet **sent_packets;
@@ -1233,7 +1234,7 @@ static int init_generic_hwaccel(struct AVCodecContext *avctx, enum AVPixelFormat
     // 1 surface is already included by libavcodec. The field is 0 if the
     // hwaccel supports dynamic surface allocation.
     if (new_fctx->initial_pool_size)
-        new_fctx->initial_pool_size += ctx->hwdec_opts->hwdec_extra_frames - 1;
+        new_fctx->initial_pool_size += ctx->hwdec_opts->hwdec_extra_frames - 1 + ctx->extra_hw_frames_hint;
 
     const struct hwcontext_fns *fns =
         hwdec_get_hwcontext_fns(new_fctx->device_ctx->type);
@@ -1664,6 +1665,9 @@ static int control(struct mp_filter *vd, enum dec_ctrl cmd, void *arg)
     switch (cmd) {
     case VDCTRL_SET_FRAMEDROP:
         ctx->framedrop_flags = *(int *)arg;
+        return CONTROL_TRUE;
+    case VDCTRL_SET_EXTRA_HW_FRAMES:
+        ctx->extra_hw_frames_hint = *(int *)arg;
         return CONTROL_TRUE;
     case VDCTRL_CHECK_FORCED_EOF: {
         *(bool *)arg = ctx->force_eof;
