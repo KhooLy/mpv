@@ -1,0 +1,459 @@
+diff --git a/src/dispatch.c b/src/dispatch.c
+index 7f853db..0b0c933 100644
+--- a/src/dispatch.c
++++ b/src/dispatch.c
+@@ -494,6 +494,15 @@ static void generate_shaders(pl_dispatch dp,
+             } else {
+                 ADD(pre, "uniform %c%s "$";\n", prefix, type, id);
+             }
++            if (tex->sampler_type == PL_SAMPLER_NORMAL) {
++                ADD(pre, "#define "$"_textureSize(lod) textureSize("$", lod) \n"
++                         "#define "$"_textureLod(pos, lod) textureLod("$", pos, lod) \n",
++                    id, id, id, id);
++            } else {
++                ADD(pre, "#define "$"_textureSize(lod) textureSize("$") \n"
++                         "#define "$"_textureLod(pos, lod) texture("$", pos) \n",
++                    id, id, id, id);
++            }
+             break;
+         }
+ 
+diff --git a/src/gpu/utils.c b/src/gpu/utils.c
+index b81f70e..e58c313 100644
+--- a/src/gpu/utils.c
++++ b/src/gpu/utils.c
+@@ -979,7 +979,7 @@ bool pl_tex_blit_compute(pl_gpu gpu, const struct pl_tex_blit_params *params)
+                  (float) src_rc.z1 / params->src->params.d);
+         }
+ 
+-        GLSL("imageStore("$", dst_pos, textureLod("$", src_pos, 0.0)); \n",
++        GLSL("imageStore("$", dst_pos, "$"_textureLod( src_pos, 0.0)); \n",
+              dst, src);
+ 
+     } else {
+@@ -1053,7 +1053,7 @@ void pl_tex_blit_raster(pl_gpu gpu, const struct pl_tex_blit_params *params)
+     ident_t pos, src = sh_bind(sh, params->src, PL_TEX_ADDRESS_CLAMP,
+         params->sample_mode, "src_tex", &src_rc, &pos, NULL);
+ 
+-    GLSL("vec4 color = textureLod("$", "$", 0.0); \n", src, pos);
++    GLSL("vec4 color = "$"_textureLod( "$", 0.0); \n", src, pos);
+ 
+     pl_dispatch_finish(dp, pl_dispatch_params(
+         .shader = &sh,
+diff --git a/src/renderer.c b/src/renderer.c
+index df206b2..1fa248f 100644
+--- a/src/renderer.c
++++ b/src/renderer.c
+@@ -954,7 +954,7 @@ static void draw_overlays(struct pass_state *pass, pl_tex fbo,
+ 
+         switch (ol.mode) {
+         case PL_OVERLAY_NORMAL:
+-            GLSL("vec4 color = textureLod("$", coord, 0.0); \n", tex);
++            GLSL("vec4 color = "$"_textureLod( coord, 0.0); \n", tex);
+             break;
+         case PL_OVERLAY_MONOCHROME:
+             GLSL("vec4 color = osd_color; \n");
+@@ -993,7 +993,7 @@ static void draw_overlays(struct pass_state *pass, pl_tex fbo,
+         bool premul = repr.alpha == PL_ALPHA_PREMULTIPLIED;
+         pl_shader_encode_color(sh, &repr);
+         if (ol.mode == PL_OVERLAY_MONOCHROME) {
+-            GLSL("color.%s *= textureLod("$", coord, 0.0).r; \n",
++            GLSL("color.%s *= "$"_textureLod( coord, 0.0).r; \n",
+                  premul ? "rgba" : "a", tex);
+         }
+ 
+@@ -2535,11 +2535,11 @@ static pl_tex pass_blur(struct pass_state *pass, pl_tex src_tex, int comps,
+         vec4 color;                                                             \
+         {                                                                       \
+             vec2 step = vec2(${float: offset / w}, ${float: offset / h});       \
+-            color  = textureLod($tex, $pos, 0.0) * 4.0;                         \
+-            color += textureLod($tex, $pos - step, 0.0);                        \
+-            color += textureLod($tex, $pos + step, 0.0);                        \
+-            color += textureLod($tex, $pos - vec2(step.x, -step.y), 0.0);       \
+-            color += textureLod($tex, $pos + vec2(step.x, -step.y), 0.0);       \
++            color  = ${tex}_textureLod( $pos, 0.0) * 4.0;                         \
++            color += ${tex}_textureLod( $pos - step, 0.0);                        \
++            color += ${tex}_textureLod( $pos + step, 0.0);                        \
++            color += ${tex}_textureLod( $pos - vec2(step.x, -step.y), 0.0);       \
++            color += ${tex}_textureLod( $pos + vec2(step.x, -step.y), 0.0);       \
+             color /= 8.0;                                                       \
+         }
+ 
+@@ -2573,14 +2573,14 @@ static pl_tex pass_blur(struct pass_state *pass, pl_tex src_tex, int comps,
+         {                                                                       \
+             vec2 step = vec2(${float: offset / w}, ${float: offset / h});       \
+             vec2 step2 = step + step;                                           \
+-            color  = textureLod($tex, $pos - vec2(step2.x, 0.0), 0.0);          \
+-            color += textureLod($tex, $pos + vec2(step2.x, 0.0), 0.0);          \
+-            color += textureLod($tex, $pos - vec2(0.0, step2.y), 0.0);          \
+-            color += textureLod($tex, $pos + vec2(0.0, step2.y), 0.0);          \
+-            color += textureLod($tex, $pos + vec2(-step.x, -step.y), 0.0) * 2.0;\
+-            color += textureLod($tex, $pos + vec2( step.x, -step.y), 0.0) * 2.0;\
+-            color += textureLod($tex, $pos + vec2(-step.x,  step.y), 0.0) * 2.0;\
+-            color += textureLod($tex, $pos + vec2( step.x,  step.y), 0.0) * 2.0;\
++            color  = ${tex}_textureLod( $pos - vec2(step2.x, 0.0), 0.0);          \
++            color += ${tex}_textureLod( $pos + vec2(step2.x, 0.0), 0.0);          \
++            color += ${tex}_textureLod( $pos - vec2(0.0, step2.y), 0.0);          \
++            color += ${tex}_textureLod( $pos + vec2(0.0, step2.y), 0.0);          \
++            color += ${tex}_textureLod( $pos + vec2(-step.x, -step.y), 0.0) * 2.0;\
++            color += ${tex}_textureLod( $pos + vec2( step.x, -step.y), 0.0) * 2.0;\
++            color += ${tex}_textureLod( $pos + vec2(-step.x,  step.y), 0.0) * 2.0;\
++            color += ${tex}_textureLod( $pos + vec2( step.x,  step.y), 0.0) * 2.0;\
+             color /= 12.0;                                                      \
+         }
+ 
+@@ -4141,7 +4141,7 @@ inter_pass_error:
+         ident_t pos, tex = sh_bind(sh, frames[i].tex, PL_TEX_ADDRESS_CLAMP,
+                                    sample_mode, "frame", NULL, &pos, NULL);
+ 
+-        GLSL("color = textureLod("$", "$", 0.0); \n", tex, pos);
++        GLSL("color = "$"_textureLod( "$", 0.0); \n", tex, pos);
+ 
+         // Usually a no-op. Handles mixed-colorspace frames when
+         // preserve_mixing_cache spans target changes. ICC diffs ignored
+diff --git a/src/shaders/colorspace.c b/src/shaders/colorspace.c
+index b91e971..3bbd91b 100644
+--- a/src/shaders/colorspace.c
++++ b/src/shaders/colorspace.c
+@@ -1973,7 +1973,7 @@ void pl_shader_color_map_ex(pl_shader sh, const struct pl_color_map_params *para
+             // Obtain HF detail map from bicubic interpolation of LF features
+             GLSL("vec2 lpos  = "$";                                 \n"
+                  "vec2 lpt   = "$";                                 \n"
+-                 "vec2 lsize = vec2(textureSize("$", 0));           \n"
++                 "vec2 lsize = vec2("$"_textureSize(0));           \n"
+                  "vec2 frac  = fract(lpos * lsize + vec2(0.5));     \n"
+                  "vec2 frac2 = frac * frac;                         \n"
+                  "vec2 inv   = vec2(1.0) - frac;                    \n"
+@@ -1986,11 +1986,11 @@ void pl_shader_color_map_ex(pl_shader sh, const struct pl_color_map_params *para
+                  "vec4 h = vec4(w1, w3) / g + inv.xyxy;             \n"
+                  "h.xy -= vec2(2.0);                                \n"
+                  "vec4 p = lpos.xyxy + lpt.xyxy * h;                \n"
+-                 "float l00 = textureLod("$", p.xy, 0.0).r;         \n"
+-                 "float l01 = textureLod("$", p.xw, 0.0).r;         \n"
++                 "float l00 = "$"_textureLod( p.xy, 0.0).r;         \n"
++                 "float l01 = "$"_textureLod( p.xw, 0.0).r;         \n"
+                  "float l0 = mix(l01, l00, g.y);                    \n"
+-                 "float l10 = textureLod("$", p.zy, 0.0).r;         \n"
+-                 "float l11 = textureLod("$", p.zw, 0.0).r;         \n"
++                 "float l10 = "$"_textureLod( p.zy, 0.0).r;         \n"
++                 "float l11 = "$"_textureLod( p.zw, 0.0).r;         \n"
+                  "float l1 = mix(l11, l10, g.y);                    \n"
+                  "float luma = mix(l1, l0, g.x);                    \n"
+                  // Mix low-resolution tone mapped image with high-resolution
+diff --git a/src/shaders/custom_mpv.c b/src/shaders/custom_mpv.c
+index 1c93da5..08eedf6 100644
+--- a/src/shaders/custom_mpv.c
++++ b/src/shaders/custom_mpv.c
+@@ -1153,7 +1153,7 @@ static bool bind_pass_tex(pl_shader sh, pl_str name,
+     GLSLH("#define %.*s_raw "$" \n", PL_STR_FMT(name), id);
+     GLSLH("#define %.*s_pos "$" \n", PL_STR_FMT(name), pos);
+     GLSLH("#define %.*s_map "$"_map \n", PL_STR_FMT(name), pos);
+-    GLSLH("#define %.*s_size vec2(textureSize("$", 0)) \n", PL_STR_FMT(name), id);
++    GLSLH("#define %.*s_size vec2("$"_textureSize(0)) \n", PL_STR_FMT(name), id);
+     GLSLH("#define %.*s_pt "$" \n", PL_STR_FMT(name), pt);
+ 
+     float off[2] = { ptex->rect.x0, ptex->rect.y0 };
+@@ -1171,12 +1171,13 @@ static bool bind_pass_tex(pl_shader sh, pl_str name,
+     GLSLH("#define %.*s_rot mat2(1.0, 0.0, 0.0, 1.0) \n", PL_STR_FMT(name));
+ 
+     // Sampling function boilerplate
+-    GLSLH("#define %.*s_tex(pos) ("$" * vec4(textureLod("$", pos, 0.0))) \n",
++    GLSLH("#define %.*s_tex(pos) ("$" * vec4("$"_textureLod( pos, 0.0))) \n",
+           PL_STR_FMT(name), scale, id);
+     GLSLH("#define %.*s_texOff(off) (%.*s_tex("$" + "$" * vec2(off))) \n",
+           PL_STR_FMT(name), PL_STR_FMT(name), pos, pt);
+ 
+-    bool can_gather = ptex->tex->params.format->gatherable;
++    bool can_gather = ptex->tex->params.format->gatherable &&
++                      ptex->tex->sampler_type != PL_SAMPLER_EXTERNAL;
+     if (can_gather) {
+         GLSLH("#define %.*s_gather(pos, c) ("$" * vec4(textureGather("$", pos, c))) \n",
+               PL_STR_FMT(name), scale, id);
+@@ -1313,7 +1314,7 @@ static struct pl_hook_res hook_hook(void *priv, const struct pl_hook_params *par
+                     GLSLH("#define %.*s "$" \n", PL_STR_FMT(texname), id);
+ 
+                     if (p->descriptors.elem[j].desc.type == PL_DESC_SAMPLED_TEX) {
+-                        GLSLH("#define %.*s_tex(pos) (textureLod("$", pos, 0.0)) \n",
++                        GLSLH("#define %.*s_tex(pos) ("$"_textureLod( pos, 0.0)) \n",
+                               PL_STR_FMT(texname), id);
+                     }
+                     goto next_bind;
+diff --git a/src/shaders/deinterlacing.c b/src/shaders/deinterlacing.c
+index 4316acc..631d3d6 100644
+--- a/src/shaders/deinterlacing.c
++++ b/src/shaders/deinterlacing.c
+@@ -66,7 +66,7 @@ void pl_shader_deinterlace(pl_shader sh, const struct pl_deinterlace_source *src
+     }
+ 
+     // Don't modify the primary field
+-    GLSL("int yh = textureSize("$", 0).y;   \n"
++    GLSL("int yh = "$"_textureSize(0).y;   \n"
+          "int yo = int("$".y * float(yh));  \n"
+          "if (yo %% 2 == %d) {              \n"
+          "    res = GET("$", 0, 0);         \n"
+diff --git a/src/shaders/lut.c b/src/shaders/lut.c
+index f6bbfd2..c624a0d 100644
+--- a/src/shaders/lut.c
++++ b/src/shaders/lut.c
+@@ -631,7 +631,7 @@ next_dim: ; // `continue` out of the inner loop
+             for (int i = 0; i < dims; i++)
+                 pos_macros[i] = texel_scale(sh, sizes[i], true);
+ 
+-            GLSLH("#define "$"(pos) (textureLod("$", %s(\\\n",
++            GLSLH("#define "$"(pos) ("$"_textureLod( %s(\\\n",
+                   name, tex, vartypes[PL_VAR_FLOAT][texdim - 1]);
+ 
+             for (int i = 0; i < texdim; i++) {
+diff --git a/src/shaders/sampling.c b/src/shaders/sampling.c
+index 49577c1..7e20fed 100644
+--- a/src/shaders/sampling.c
++++ b/src/shaders/sampling.c
+@@ -195,7 +195,7 @@ void pl_shader_deband(pl_shader sh, const struct pl_sample_src *src,
+          "// pl_shader_deband               \n"
+          "{                                 \n"
+          "vec2 pos = "$", pt = "$";         \n"
+-         "color = textureLod("$", pos, 0.0);\n",
++         "color = "$"_textureLod( pos, 0.0);\n",
+          pos, pt, tex);
+ 
+     mask &= ~0x8u; // ignore alpha channel
+@@ -210,7 +210,7 @@ void pl_shader_deband(pl_shader sh, const struct pl_sample_src *src,
+     }
+ 
+     GLSL("#define GET(X, Y)                                   \\\n"
+-         "    (textureLod("$", pos + pt * vec2(X, Y), 0.0).%s)  \n"
++         "    ("$"_textureLod( pos + pt * vec2(X, Y), 0.0).%s)  \n"
+          "#define T %s                                          \n",
+          tex, swiz, sh_float_type(mask));
+ 
+@@ -282,7 +282,7 @@ bool pl_shader_sample_direct(pl_shader sh, const struct pl_sample_src *src)
+         return false;
+ 
+     GLSL("// pl_shader_sample_direct                                  \n"
+-         "vec4 color = vec4("$") * vec4(textureLod("$", "$", 0.0));   \n",
++         "vec4 color = vec4("$") * vec4("$"_textureLod( "$", 0.0));   \n",
+          SH_FLOAT(scale), tex, pos);
+     return true;
+ }
+@@ -296,7 +296,7 @@ bool pl_shader_sample_nearest(pl_shader sh, const struct pl_sample_src *src)
+ 
+     sh_describe(sh, "nearest");
+     GLSL("// pl_shader_sample_nearest                           \n"
+-         "vec4 color = vec4("$") * textureLod("$", "$", 0.0);   \n",
++         "vec4 color = vec4("$") * "$"_textureLod( "$", 0.0);   \n",
+          SH_FLOAT(scale), tex, pos);
+     return true;
+ }
+@@ -310,7 +310,7 @@ bool pl_shader_sample_bilinear(pl_shader sh, const struct pl_sample_src *src)
+ 
+     sh_describe(sh, "bilinear");
+     GLSL("// pl_shader_sample_bilinear                          \n"
+-         "vec4 color = vec4("$") * textureLod("$", "$", 0.0);   \n",
++         "vec4 color = vec4("$") * "$"_textureLod( "$", 0.0);   \n",
+          SH_FLOAT(scale), tex, pos);
+     return true;
+ }
+@@ -336,7 +336,7 @@ bool pl_shader_sample_bicubic(pl_shader sh, const struct pl_sample_src *src)
+     vec4 color;                                     \
+     {                                               \
+     vec2 pos = $pos;                                \
+-    vec2 size = vec2(textureSize($tex, 0));         \
++    vec2 size = vec2(${tex}_textureSize(0));         \
+     vec2 frac  = fract(pos * size + vec2(0.5));     \
+     vec2 frac2 = frac * frac;                       \
+     vec2 inv   = vec2(1.0) - frac;                  \
+@@ -351,11 +351,11 @@ bool pl_shader_sample_bicubic(pl_shader sh, const struct pl_sample_src *src)
+     h.xy -= vec2(2.0);                              \
+     /* sample four corners, then interpolate */     \
+     vec4 p = pos.xyxy + $pt.xyxy * h;               \
+-    vec4 c00 = textureLod($tex, p.xy, 0.0);         \
+-    vec4 c01 = textureLod($tex, p.xw, 0.0);         \
++    vec4 c00 = ${tex}_textureLod( p.xy, 0.0);         \
++    vec4 c01 = ${tex}_textureLod( p.xw, 0.0);         \
+     vec4 c0 = mix(c01, c00, g.y);                   \
+-    vec4 c10 = textureLod($tex, p.zy, 0.0);         \
+-    vec4 c11 = textureLod($tex, p.zw, 0.0);         \
++    vec4 c10 = ${tex}_textureLod( p.zy, 0.0);         \
++    vec4 c11 = ${tex}_textureLod( p.zw, 0.0);         \
+     vec4 c1 = mix(c11, c10, g.y);                   \
+     color = ${float:scale} * mix(c1, c0, g.x);      \
+     }
+@@ -380,10 +380,10 @@ bool pl_shader_sample_hermite(pl_shader sh, const struct pl_sample_src *src)
+     vec4 color;                                          \
+     {                                                    \
+     vec2 pos  = $pos;                                    \
+-    vec2 size = vec2(textureSize($tex, 0));              \
++    vec2 size = vec2(${tex}_textureSize(0));              \
+     vec2 frac = fract(pos * size + vec2(0.5));           \
+     pos += $pt * (smoothstep(0.0, 1.0, frac) - frac);    \
+-    color = ${float:scale} * textureLod($tex, pos, 0.0); \
++    color = ${float:scale} * ${tex}_textureLod( pos, 0.0); \
+     }
+ 
+     return true;
+@@ -406,7 +406,7 @@ bool pl_shader_sample_gaussian(pl_shader sh, const struct pl_sample_src *src)
+     vec4 color;                                     \
+     {                                               \
+     vec2 pos  = $pos;                               \
+-    vec2 size = vec2(textureSize($tex, 0));         \
++    vec2 size = vec2(${tex}_textureSize(0));         \
+     vec2 off  = -fract(pos * size + vec2(0.5));     \
+     vec2 off2 = -2.0 * off * off;                   \
+     /* compute gaussian weights */                  \
+@@ -421,11 +421,11 @@ bool pl_shader_sample_gaussian(pl_shader sh, const struct pl_sample_src *src)
+     g.xy /= g.xy + g.zw; /* explicitly normalize */ \
+     /* sample four corners, then interpolate */     \
+     vec4 p = pos.xyxy + $pt.xyxy * (h + off.xyxy);  \
+-    vec4 c00 = textureLod($tex, p.xy, 0.0);         \
+-    vec4 c01 = textureLod($tex, p.xw, 0.0);         \
++    vec4 c00 = ${tex}_textureLod( p.xy, 0.0);         \
++    vec4 c01 = ${tex}_textureLod( p.xw, 0.0);         \
+     vec4 c0 = mix(c01, c00, g.y);                   \
+-    vec4 c10 = textureLod($tex, p.zy, 0.0);         \
+-    vec4 c11 = textureLod($tex, p.zw, 0.0);         \
++    vec4 c10 = ${tex}_textureLod( p.zy, 0.0);         \
++    vec4 c11 = ${tex}_textureLod( p.zw, 0.0);         \
+     vec4 c1 = mix(c11, c10, g.y);                   \
+     color = ${float:scale} * mix(c1, c0, g.x);      \
+     }
+@@ -447,7 +447,7 @@ bool pl_shader_sample_oversample(pl_shader sh, const struct pl_sample_src *src,
+     vec4 color;                                          \
+     {                                                    \
+     vec2 pos = $pos;                                     \
+-    vec2 size = vec2(textureSize($tex, 0));              \
++    vec2 size = vec2(${tex}_textureSize(0));              \
+     /* Round the position to the nearest pixel */        \
+     vec2 fcoord = fract(pos * size - vec2(0.5));         \
+     float rx = ${dynamic float:rx};                      \
+@@ -464,7 +464,7 @@ bool pl_shader_sample_oversample(pl_shader sh, const struct pl_sample_src *src,
+                                                          \
+     /* Compute the right output blend of colors */       \
+     pos += (coeff - fcoord) * $pt;                       \
+-    color = ${float:scale} * textureLod($tex, pos, 0.0); \
++    color = ${float:scale} * ${tex}_textureLod( pos, 0.0); \
+     }
+ 
+     return true;
+@@ -532,7 +532,7 @@ static void polar_sample(pl_shader sh, pl_filter filter,
+         @for (c : comp_mask)                                    \
+             c[@c] = ${in}_@c[idx];                              \
+     @} else {                                                   \
+-        c = textureLod($tex, base + pt * vec2(offset), 0.0);    \
++        c = ${tex}_textureLod( base + pt * vec2(offset), 0.0);    \
+     @}                                                          \
+     @for (c : comp_mask)                                        \
+         color[@c] += w * c[@c];                                 \
+@@ -635,7 +635,7 @@ bool pl_shader_sample_polar(pl_shader sh, const struct pl_sample_src *src,
+          "vec4 color = vec4(0.0);                       \n"
+          "{                                             \n"
+          "vec2 pos = "$", pt = "$";                     \n"
+-         "vec2 size = vec2(textureSize("$", 0));        \n"
++         "vec2 size = vec2("$"_textureSize(0));        \n"
+          "vec2 fcoord = fract(pos * size - vec2(0.5));  \n"
+          "vec2 base = pos - pt * fcoord;                \n"
+          "vec2 center = base + pt * vec2(0.5);          \n"
+@@ -759,7 +759,7 @@ bool pl_shader_sample_polar(pl_shader sh, const struct pl_sample_src *src,
+         // Load all relevant texels into shmem
+         GLSL("for (int y = int(gl_LocalInvocationID.y); y < "$"; y += %d) {     \n"
+              "for (int x = int(gl_LocalInvocationID.x); x < "$"; x += %d) {     \n"
+-             "c = textureLod("$", "$"_base + pt * vec2(x - %d, y - %d), 0.0);   \n",
++             "c = "$"_textureLod( "$"_base + pt * vec2(x - %d, y - %d), 0.0);   \n",
+              ih_c, bh, iw_c, bw, src_tex, in, offset, offset);
+ 
+         for (uint8_t comps = cmask; comps;) {
+@@ -823,6 +823,9 @@ bool pl_shader_sample_polar(pl_shader sh, const struct pl_sample_src *src,
+                 use_gather &= PL_MAX(x, y) <= sh_glsl(sh).max_gather_offset;
+                 use_gather &= PL_MIN(x, y) >= sh_glsl(sh).min_gather_offset;
+                 use_gather &= !src->tex || src->tex->params.format->gatherable;
++                use_gather &= !src->tex
++                           ? src->sampler != PL_SAMPLER_EXTERNAL
++                           : src->tex->sampler_type != PL_SAMPLER_EXTERNAL;
+ 
+                 // Gathering from components other than the R channel requires
+                 // support for GLSL 400, which introduces the overload of
+@@ -1066,7 +1069,7 @@ bool pl_shader_sample_ortho2(pl_shader sh, const struct pl_sample_src *src,
+     vec4 color = vec4(0.0, 0.0, 0.0, 1.0);                                      \
+     {                                                                           \
+     vec2 pos = $pos, pt = $pt;                                                  \
+-    vec2 size = vec2(textureSize($src_tex, 0));                                 \
++    vec2 size = vec2(${src_tex}_textureSize(0));                                 \
+     vec2 dir = vec2(${const float:dir[pass][0]}, ${const float: dir[pass][1]}); \
+     pt *= dir;                                                                  \
+     vec2 fcoord2 = fract(pos * size - vec2(0.5));                               \
+@@ -1089,7 +1092,7 @@ bool pl_shader_sample_ortho2(pl_shader sh, const struct pl_sample_src *src,
+         off = float(n);                                                         \
+         @if (use_linear)                                                        \
+             off += ws[n % 4u + 1u];                                             \
+-        c = textureLod($src_tex, base + pt * off, 0.0).${swizzle: comps};       \
++        c = ${src_tex}_textureLod( base + pt * off, 0.0).${swizzle: comps};       \
+         @if (use_ar) {                                                          \
+             if (n == ${uint: N} / 2u - 1u || n == ${uint: N} / 2u) {            \
+                 lo = min(lo, c);                                                \
+@@ -1188,7 +1191,7 @@ void pl_shader_distort(pl_shader sh, pl_tex src_tex, int out_w, int out_h,
+     vec2 pos = $tf * $pos + $tf_c;                          \
+     vec2 pt = $pt;                                          \
+     @if (params->bicubic) {                                 \
+-        vec2 size = vec2(textureSize($tex, 0));             \
++        vec2 size = vec2(${tex}_textureSize(0));             \
+         vec2 frac  = fract(pos * size + vec2(0.5));         \
+         vec2 frac2 = frac * frac;                           \
+         vec2 inv   = vec2(1.0) - frac;                      \
+@@ -1201,11 +1204,11 @@ void pl_shader_distort(pl_shader sh, pl_tex src_tex, int out_w, int out_h,
+         vec4 h = vec4(w1, w3) / g + inv.xyxy;               \
+         h.xy -= vec2(2.0);                                  \
+         vec4 p = pos.xyxy + pt.xyxy * h;                    \
+-        vec4 c00 = textureLod($tex, p.xy, 0.0);             \
+-        vec4 c01 = textureLod($tex, p.xw, 0.0);             \
++        vec4 c00 = ${tex}_textureLod( p.xy, 0.0);             \
++        vec4 c01 = ${tex}_textureLod( p.xw, 0.0);             \
+         vec4 c0 = mix(c01, c00, g.y);                       \
+-        vec4 c10 = textureLod($tex, p.zy, 0.0);             \
+-        vec4 c11 = textureLod($tex, p.zw, 0.0);             \
++        vec4 c10 = ${tex}_textureLod( p.zy, 0.0);             \
++        vec4 c11 = ${tex}_textureLod( p.zw, 0.0);             \
+         vec4 c1 = mix(c11, c10, g.y);                       \
+         color = mix(c1, c0, g.x);                           \
+     @} else {                                               \
+diff --git a/src/tests/meson.build b/src/tests/meson.build
+index 1a41403..44075c7 100644
+--- a/src/tests/meson.build
++++ b/src/tests/meson.build
+@@ -4,6 +4,9 @@ gpu_tests = [
+ 
+ ts = []
+ 
++python = import('python').find_installation()
++test('rect_sampler_shader', python, args: files('rect_sampler_shader.py'))
++
+ foreach t : tests
+   deps = [tdep_static]
+   if t == 'opengl_surfaceless.c'
+diff --git a/src/tests/rect_sampler_shader.py b/src/tests/rect_sampler_shader.py
+new file mode 100644
+index 0000000..6abdda4
+--- /dev/null
++++ b/src/tests/rect_sampler_shader.py
+@@ -0,0 +1,22 @@
++from pathlib import Path
++import sys
++
++
++root = Path(__file__).resolve().parents[2]
++dispatch = (root / "src" / "dispatch.c").read_text()
++shader_sources = "\n".join(
++    path.read_text()
++    for path in (root / "src" / "shaders").glob("*.c")
++)
++
++assert '#define "$"_textureSize(lod) textureSize("$", lod)' in dispatch
++assert '#define "$"_textureSize(lod) textureSize("$")' in dispatch
++assert '#define "$"_textureLod(pos, lod) texture("$", pos)' in dispatch
++assert 'textureSize("$", 0)' not in shader_sources
++assert 'textureLod("$",' not in shader_sources
++sampling = (root / "src" / "shaders" / "sampling.c").read_text()
++custom = (root / "src" / "shaders" / "custom_mpv.c").read_text()
++assert "sampler_type != PL_SAMPLER_EXTERNAL" in sampling
++assert "sampler_type != PL_SAMPLER_EXTERNAL" in custom
++assert "sampler_type == PL_SAMPLER_NORMAL" not in sampling
++assert "sampler_type == PL_SAMPLER_NORMAL" not in custom
+

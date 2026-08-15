@@ -6,22 +6,25 @@ on:
     tags: ["v*"]
   workflow_dispatch:
 
+env:
+  LIBPLACEBO_REV: "22ee762e8e0890fc54068beb670310f0edce7263"
+
 jobs:
   linux:
     # mpv master needs FFmpeg >=60.31; ubuntu-22.04 only has 58.x.
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v4
 
       - name: Cache apt packages
-        uses: actions/cache@v6
+        uses: actions/cache@v4
         with:
           path: ~/.apt-cache
           key: apt-noble-v1-${{ hashFiles('.github/workflows/build-libmpv.yml') }}
           restore-keys: apt-noble-v1-
 
       - name: Cache pip downloads
-        uses: actions/cache@v6
+        uses: actions/cache@v4
         with:
           path: ~/.cache/pip
           key: pip-meson-${{ runner.os }}
@@ -45,21 +48,16 @@ jobs:
           # --preserve-env=HOME so pip's cache hits the runner's home, not root's.
           sudo --preserve-env=HOME pip install meson
 
-      - name: Cache libplacebo build
-        id: cache-libplacebo
-        uses: actions/cache@v6
-        with:
-          path: /tmp/libplacebo-install
-          key: libplacebo-v7.360.1-vulkan-${{ runner.os }}
-
       - name: Build libplacebo
-        if: steps.cache-libplacebo.outputs.cache-hit != 'true'
         run: |
-          git clone --depth 1 --branch v7.360.1 https://code.videolan.org/videolan/libplacebo.git /tmp/libplacebo
+          git clone --filter=blob:none https://github.com/haasn/libplacebo.git /tmp/libplacebo
           cd /tmp/libplacebo
+          git checkout "$LIBPLACEBO_REV"
           git submodule update --init --depth 1
-          meson setup build -Dvulkan=enabled -Ddemos=false --prefix=/tmp/libplacebo-install
+          git apply "$GITHUB_WORKSPACE/third_party/libplacebo-sampler-rect.patch"
+          meson setup build -Dtests=true -Dvulkan=enabled -Ddemos=false --prefix=/tmp/libplacebo-install
           ninja -C build
+          meson test -C build --print-errorlogs
           ninja -C build install
 
       - name: Install libplacebo
@@ -108,7 +106,7 @@ jobs:
             patchelf --set-rpath '$ORIGIN' "$f"
           done
 
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@v4
         with:
           name: libmpv-linux-x86_64
           path: out/
@@ -124,11 +122,29 @@ jobs:
             architecture: x86_64
     runs-on: ${{ matrix.runner }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v4
 
       - name: Install build dependencies
         run: |
-          brew install meson ninja pkg-config ffmpeg libass libplacebo dylibbundler ccache molten-vk
+          brew install meson ninja pkg-config ffmpeg libass dylibbundler ccache molten-vk vulkan-loader vulkan-headers
+
+      - name: Build patched libplacebo
+        run: |
+          git clone --filter=blob:none https://github.com/haasn/libplacebo.git /tmp/libplacebo
+          cd /tmp/libplacebo
+          git checkout "$LIBPLACEBO_REV"
+          git submodule update --init --depth 1
+          git apply "$GITHUB_WORKSPACE/third_party/libplacebo-sampler-rect.patch"
+          meson setup build -Dtests=true -Ddemos=false -Dopengl=enabled -Dvulkan=enabled -Dprefix=/tmp/libplacebo-install
+          meson compile -C build
+          meson install -C build
+          export PKG_CONFIG_PATH="/tmp/libplacebo-install/lib/pkgconfig:$(brew --prefix)/lib/pkgconfig"
+          test "$(pkg-config --variable=prefix libplacebo)" = /tmp/libplacebo-install
+          test "$(pkg-config --modversion libplacebo)" = 7.371.0
+          meson test -C build --print-errorlogs
+          echo "PKG_CONFIG_PATH=/tmp/libplacebo-install/lib/pkgconfig:$(brew --prefix)/lib/pkgconfig" >> "$GITHUB_ENV"
+          echo "LDFLAGS=-L/tmp/libplacebo-install/lib" >> "$GITHUB_ENV"
+          echo "CPPFLAGS=-I/tmp/libplacebo-install/include" >> "$GITHUB_ENV"
 
       - name: Setup ccache
         uses: hendrikmuhs/ccache-action@v1.2
@@ -138,8 +154,15 @@ jobs:
 
       - name: Build mpv
         run: |
+          export PKG_CONFIG_PATH="/tmp/libplacebo-install/lib/pkgconfig:$(brew --prefix)/lib/pkgconfig"
+          test "$(pkg-config --variable=prefix libplacebo)" = /tmp/libplacebo-install
           meson setup build -Dlibmpv=true -Dgpl=false -Dvideotoolbox-gl=enabled
+          meson introspect --dependencies build
+          test "$(pkg-config --variable=prefix libplacebo)" = /tmp/libplacebo-install
           ninja -C build
+          otool -L build/libmpv.2.dylib
+          otool -L /tmp/libplacebo-install/lib/libplacebo*.dylib
+          otool -L build/libmpv.2.dylib | grep -F libplacebo
 
       - name: Package
         run: |
@@ -148,22 +171,25 @@ jobs:
           dylibbundler --bundle-deps --fix-file out/libmpv.dylib \
             --dest-dir out/ --install-path @loader_path/ --overwrite-files
           cp -L "$(brew --prefix molten-vk)/lib/libMoltenVK.dylib" out/
+          ls out/libplacebo*.dylib
 
       - name: Verify portable libraries
         run: |
           test -f out/libmpv.dylib
           test -f out/libMoltenVK.dylib
           for dylib in out/*.dylib; do
+            file "$dylib"
+            otool -L "$dylib"
             architectures="$(lipo -archs "$dylib")"
             echo "$dylib: $architectures"
             echo "$architectures" | grep -qw "${{ matrix.architecture }}"
-            if otool -arch "${{ matrix.architecture }}" -L "$dylib" | tail -n +3 | grep -Eq '^[[:space:]]+(@rpath/|/opt/homebrew/|/usr/local/)'; then
+            if otool -arch "${{ matrix.architecture }}" -L "$dylib" | tail -n +3 | grep -Eq '(/opt/homebrew/|/usr/local/|/tmp/libplacebo-install/)'; then
               echo "non-portable dependency found in $dylib" >&2
               exit 1
             fi
           done
 
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@v4
         with:
           name: libmpv-macos-${{ matrix.architecture }}
           path: out/
@@ -172,7 +198,7 @@ jobs:
     needs: macos
     runs-on: macos-15
     steps:
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@v4
         with:
           path: artifacts
 
@@ -187,19 +213,21 @@ jobs:
             lipo -create "$arm_dylib" "$INTEL_DIR/$name" -output "out/$name"
           done
           for dylib in out/*.dylib; do
+            file "$dylib"
+            otool -L "$dylib"
             architectures="$(lipo -archs "$dylib")"
             echo "$dylib: $architectures"
             echo "$architectures" | grep -qw arm64
             echo "$architectures" | grep -qw x86_64
             for architecture in arm64 x86_64; do
-              if otool -arch "$architecture" -L "$dylib" | tail -n +3 | grep -Eq '^[[:space:]]+(@rpath/|/opt/homebrew/|/usr/local/)'; then
+              if otool -arch "$architecture" -L "$dylib" | tail -n +3 | grep -Eq '(/opt/homebrew/|/usr/local/|/tmp/libplacebo-install/)'; then
                 echo "non-portable dependency found in $dylib ($architecture)" >&2
                 exit 1
               fi
             done
           done
 
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@v4
         with:
           name: libmpv-macos-universal
           path: out/
@@ -210,10 +238,10 @@ jobs:
       run:
         shell: msys2 {0}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v4
 
       - name: Cache MSYS2 package downloads
-        uses: actions/cache@v6
+        uses: actions/cache@v4
         with:
           path: C:\msys64\var\cache\pacman\pkg
           key: msys2-pacman-${{ runner.os }}-${{ hashFiles('.github/workflows/build-libmpv.yml') }}
@@ -261,7 +289,7 @@ jobs:
             done
           done
 
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@v4
         with:
           name: libmpv-windows-x86_64
           path: out/
@@ -273,12 +301,12 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v4
         with:
           fetch-depth: 0
           fetch-tags: true
 
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@v4
         with:
           path: artifacts
 
