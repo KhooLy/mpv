@@ -1455,6 +1455,8 @@ void run_playloop(struct MPContext *mpctx)
     update_skip_range(mpctx);
     update_watch_progress(mpctx);
 
+    update_vo_chain_el_pair(mpctx);
+
     handle_cursor_autohide(mpctx);
     handle_vo_events(mpctx);
     handle_command_updates(mpctx);
