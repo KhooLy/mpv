@@ -126,7 +126,7 @@ jobs:
 
       - name: Install build dependencies
         run: |
-          brew install meson ninja pkg-config ffmpeg libass xxhash dav1d dylibbundler ccache molten-vk vulkan-loader vulkan-headers
+          brew install meson ninja pkg-config ffmpeg libass xxhash dav1d dylibbundler ccache molten-vk vulkan-loader vulkan-headers shaderc
 
       - name: Build patched libplacebo
         run: |
@@ -141,12 +141,13 @@ jobs:
           git checkout "$LIBPLACEBO_REV"
           git submodule update --init --depth 1
           git apply "$GITHUB_WORKSPACE/third_party/libplacebo-sampler-rect.patch"
-          meson setup build -Dtests=true -Ddemos=false -Dopengl=enabled -Dvulkan=enabled -Dprefix=/tmp/libplacebo-install
+          meson setup build -Dtests=true -Ddemos=false -Dopengl=enabled -Dvulkan=enabled -Dshaderc=enabled -Dprefix=/tmp/libplacebo-install
           meson compile -C build
           meson install -C build
           export PKG_CONFIG_PATH="/tmp/libplacebo-install/lib/pkgconfig:$(brew --prefix)/lib/pkgconfig"
           test "$(pkg-config --variable=prefix libplacebo)" = /tmp/libplacebo-install
           test "$(pkg-config --modversion libplacebo)" = 7.371.0
+          otool -L /tmp/libplacebo-install/lib/libplacebo*.dylib | grep -F shaderc
           tests="$(meson test -C build --list | grep -v '^libplacebo:vulkan\.c$')"
           meson test -C build --print-errorlogs $tests
           echo "PKG_CONFIG_PATH=/tmp/libplacebo-install/lib/pkgconfig:$(brew --prefix)/lib/pkgconfig" >> "$GITHUB_ENV"
