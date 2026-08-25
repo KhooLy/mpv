@@ -59,8 +59,10 @@ static int init(struct render_backend *ctx, mpv_render_param *params)
         return MPV_ERROR_INVALID_PARAMETER;
 
     p->pllog = mppl_log_create(p, ctx->log);
-    if (!p->pllog)
+    if (!p->pllog) {
+        mp_err(ctx->log, "gpu-next Vulkan: failed to create libplacebo log\n");
         return MPV_ERROR_UNSUPPORTED;
+    }
 
     a->vk = pl_vulkan_import(p->pllog, pl_vulkan_import_params(
         .instance = init_params->instance,
@@ -75,16 +77,22 @@ static int init(struct render_backend *ctx, mpv_render_param *params)
         },
         .features = &pl_vulkan_required_features,
     ));
-    if (!a->vk)
+    if (!a->vk) {
+        mp_err(ctx->log,
+               "gpu-next Vulkan: pl_vulkan_import rejected the caller device; "
+               "device features/extensions do not satisfy libplacebo requirements\n");
         return MPV_ERROR_UNSUPPORTED;
+    }
     p->gpu = a->vk->gpu;
 
     a->ra_ctx = talloc_zero(p, struct ra_ctx);
     a->ra_ctx->ra = ra_create_pl(p->gpu, ctx->log);
     a->ra_ctx->global = ctx->global;
     a->ra_ctx->log = ctx->log;
-    if (!a->ra_ctx->ra)
+    if (!a->ra_ctx->ra) {
+        mp_err(ctx->log, "gpu-next Vulkan: failed to create libplacebo RA context\n");
         return MPV_ERROR_UNSUPPORTED;
+    }
 
     return lgn_common_init(ctx, a->ra_ctx);
 }
