@@ -148,8 +148,7 @@ jobs:
           test "$(pkg-config --variable=prefix libplacebo)" = /tmp/libplacebo-install
           test "$(pkg-config --modversion libplacebo)" = 7.371.0
           otool -L /tmp/libplacebo-install/lib/libplacebo*.dylib | grep -F shaderc
-          tests="$(meson test -C build --list | grep -v '^libplacebo:vulkan\.c$')"
-          meson test -C build --print-errorlogs $tests
+          meson test -C build --print-errorlogs
           echo "PKG_CONFIG_PATH=/tmp/libplacebo-install/lib/pkgconfig:$(brew --prefix)/lib/pkgconfig" >> "$GITHUB_ENV"
           echo "LDFLAGS=-L/tmp/libplacebo-install/lib" >> "$GITHUB_ENV"
           echo "CPPFLAGS=-I/tmp/libplacebo-install/include" >> "$GITHUB_ENV"
