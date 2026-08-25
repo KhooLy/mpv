@@ -127,6 +127,8 @@ jobs:
       - name: Install build dependencies
         run: |
           brew install meson ninja pkg-config ffmpeg libass xxhash dav1d dylibbundler ccache molten-vk vulkan-loader vulkan-headers shaderc
+          brew upgrade ffmpeg libass dav1d molten-vk vulkan-loader shaderc
+          ffmpeg -version | head -1
 
       - name: Build patched libplacebo
         run: |
