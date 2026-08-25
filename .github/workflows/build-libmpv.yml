@@ -150,6 +150,7 @@ jobs:
           otool -L /tmp/libplacebo-install/lib/libplacebo*.dylib | grep -F shaderc
           tests="$(meson test -C build --list | grep -v '^libplacebo:vulkan\.c$')"
           meson test -C build --print-errorlogs $tests
+          lldb --batch -o run -o 'thread backtrace all' -o quit -- build/src/tests/test.vulkan.c 2>&1 | tail -120 || true
           echo "PKG_CONFIG_PATH=/tmp/libplacebo-install/lib/pkgconfig:$(brew --prefix)/lib/pkgconfig" >> "$GITHUB_ENV"
           echo "LDFLAGS=-L/tmp/libplacebo-install/lib" >> "$GITHUB_ENV"
           echo "CPPFLAGS=-I/tmp/libplacebo-install/include" >> "$GITHUB_ENV"
