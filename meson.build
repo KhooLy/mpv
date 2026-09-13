@@ -489,6 +489,7 @@ features += {'android': host_machine.system() == 'android'}
 if features['android']
     dependencies += cc.find_library('android')
     sources += files('misc/jni.c',
+                     'audio/decode/ad_mediacodec.c',
                      'osdep/android/strnlen.c',
                      'video/out/android_common.c',
                      'video/out/vo_mediacodec_embed.c')
@@ -839,12 +840,13 @@ endif
 
 avfoundation = dependency('appleframeworks',
                           modules: ['CoreMedia', 'CoreVideo', 'CoreGraphics', 'QuartzCore',
-                                   'AVFoundation', 'VideoToolbox'],
+                                   'AVFoundation', 'AudioToolbox', 'VideoToolbox'],
                           required: get_option('avfoundation'))
 features += {'avfoundation': avfoundation.found()}
 if features['avfoundation']
     dependencies += avfoundation
     sources += files('audio/out/ao_avfoundation.m',
+                     'audio/decode/ad_avfoundation.m',
                      'video/decode/vd_apple_native.m',
                      'video/out/vo_apple_native.m')
     if host_machine.subsystem() == 'tvos'
