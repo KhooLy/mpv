@@ -527,12 +527,14 @@ int init_audio_decoder(struct MPContext *mpctx, struct track *track)
     if (!track->dec)
         goto init_error;
 
-    if (track->ao_c)
-        mp_decoder_wrapper_set_spdif_flag(track->dec, true);
-
-    if (track->ao_c)
+    if (track->ao_c) {
+        track->ao_c->spdif_passthrough =
+            mp_decoder_wrapper_should_try_passthrough(track->dec);
+        mp_decoder_wrapper_set_spdif_flag(
+            track->dec, track->ao_c->spdif_passthrough);
         track->ao_c->spdif_strict =
             mp_decoder_wrapper_is_strict_passthrough(track->dec);
+    }
 
     if (!mp_decoder_wrapper_reinit(track->dec))
         goto init_error;

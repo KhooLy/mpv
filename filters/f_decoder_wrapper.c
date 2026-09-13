@@ -102,6 +102,7 @@ struct dec_wrapper_opts {
     int video_rotate;
     char *audio_decoders;
     int audio_decoder_mode;
+    int audio_output_mode;
     char *video_decoders;
     char *audio_spdif;
     struct dec_queue_opts *vdec_queue_opts;
@@ -121,8 +122,10 @@ const struct m_sub_options dec_wrapper_conf = {
             .flags = UPDATE_AD,
             .help = decoder_list_help},
         {"audio-decoder", OPT_CHOICE(audio_decoder_mode,
-            {"auto", 0}, {"native", 1}, {"ffmpeg", 2},
-            {"passthrough", 3}),
+            {"auto", 0}, {"native", 1}, {"ffmpeg", 2}),
+            .flags = UPDATE_AD},
+        {"audio-output-mode", OPT_CHOICE(audio_output_mode,
+            {"auto", 0}, {"passthrough", 1}, {"pcm", 2}),
             .flags = UPDATE_AD},
         {"vd", OPT_STRING(video_decoders),
             .flags = UPDATE_VD,
@@ -459,7 +462,7 @@ static bool reinit_decoder(struct priv *p)
 
         if (try_spdif && p->codec->codec) {
             const char *spdif_codecs = p->opts->audio_spdif;
-            if (p->opts->audio_decoder_mode == 3 &&
+            if (p->opts->audio_output_mode != 2 &&
                 (!spdif_codecs || !spdif_codecs[0]))
                 spdif_codecs = "ac3,dts,dts-hd,eac3,truehd";
             struct mp_decoder_list *spdif =
@@ -469,7 +472,7 @@ static bool reinit_decoder(struct priv *p)
                 list = spdif;
             } else {
                 talloc_free(spdif);
-                if (p->opts->audio_decoder_mode == 3) {
+                if (p->opts->audio_output_mode == 1) {
                     MP_ERR(p, "Strict audio passthrough requested, but codec '%s' is not supported by the passthrough wrapper.\n",
                            p->codec->codec ? p->codec->codec : "<?>");
                     return false;
@@ -571,7 +574,13 @@ bool mp_decoder_wrapper_reinit(struct mp_decoder_wrapper *d)
 bool mp_decoder_wrapper_is_strict_passthrough(struct mp_decoder_wrapper *d)
 {
     struct priv *p = d->f->priv;
-    return p->opts->audio_decoder_mode == 3;
+    return p->opts->audio_output_mode == 1;
+}
+
+bool mp_decoder_wrapper_should_try_passthrough(struct mp_decoder_wrapper *d)
+{
+    struct priv *p = d->f->priv;
+    return p->opts->audio_output_mode != 2;
 }
 
 void mp_decoder_wrapper_set_frame_drops(struct mp_decoder_wrapper *d, int num)
