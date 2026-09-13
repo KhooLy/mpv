@@ -417,7 +417,7 @@ static int reinit_audio_filters_and_output(struct MPContext *mpctx)
 
     int ao_flags = 0;
     bool spdif_fallback = af_fmt_is_spdif(out_format) &&
-                          ao_c->spdif_passthrough;
+                          ao_c->spdif_passthrough && !ao_c->spdif_strict;
 
     if (opts->ao_null_fallback && !spdif_fallback)
         ao_flags |= AO_INIT_NULL_FALLBACK;
@@ -529,6 +529,10 @@ int init_audio_decoder(struct MPContext *mpctx, struct track *track)
 
     if (track->ao_c)
         mp_decoder_wrapper_set_spdif_flag(track->dec, true);
+
+    if (track->ao_c)
+        track->ao_c->spdif_strict =
+            mp_decoder_wrapper_is_strict_passthrough(track->dec);
 
     if (!mp_decoder_wrapper_reinit(track->dec))
         goto init_error;

@@ -2142,17 +2142,22 @@ Audio
         Enabling compressed audio passthrough (AC3 and DTS via SPDIF/HDMI) with
         this option is not possible. Use ``--audio-spdif`` instead.
 
-``--audio-decoder=<auto|native|ffmpeg>``
+``--audio-decoder=<auto|native|ffmpeg|passthrough>``
     Select the audio decoder family. ``auto`` (default) prefers a platform
     decoder when available and falls back to FFmpeg. ``native`` has the same
     preference but is intended for applications that want the Android
     MediaCodec or Apple AudioConverter path; FFmpeg is still used if the
     platform decoder cannot be initialized. ``ffmpeg`` disables the native
-    decoder entries and uses mpv's FFmpeg decoders.
+    decoder entries and uses mpv's FFmpeg decoders. ``passthrough`` selects
+    the compressed bitstream wrapper for AC-3, E-AC-3, DTS and TrueHD, enables
+    those codecs when ``--audio-spdif`` is not specified, and refuses to fall
+    back to PCM if the selected audio output cannot accept passthrough.
 
     Native decoders still return PCM to mpv's audio filter/output contract.
     This preserves mpv's volume, channel mapping, and ``--af`` support, but it
     is not compressed bitstream passthrough to a platform audio renderer.
+    Passthrough is intentionally incompatible with audio filters and software
+    volume control; the receiver must perform the final decode/render step.
 
 ``--volume=<value>``
     Set the startup volume. 0 means silence, 100 means no volume reduction or
