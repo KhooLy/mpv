@@ -1,0 +1,168 @@
+diff --git a/libavcodec/mediacodecdec.c b/libavcodec/mediacodecdec.c
+index bc176d8..640457a 100644
+--- a/libavcodec/mediacodecdec.c
++++ b/libavcodec/mediacodecdec.c
+@@ -32,6 +32,7 @@
+ #include "libavutil/intreadwrite.h"
+ #include "libavutil/pixfmt.h"
+ #include "libavutil/internal.h"
++#include "libavutil/dovi_meta.h"
+ 
+ #include "avcodec.h"
+ #include "codec_internal.h"
+@@ -305,4 +305,50 @@
+ }
+ #endif
+ 
++static int mediacodec_dolby_vision_profile(const AVPacketSideData *sd)
++{
++    if (!sd || sd->size < sizeof(AVDOVIDecoderConfigurationRecord))
++        return -1;
++
++    const AVDOVIDecoderConfigurationRecord *cfg =
++        (const AVDOVIDecoderConfigurationRecord *)sd->data;
++    switch (cfg->dv_profile) {
++    case 4:  // DolbyVisionProfileDvheDtr
++        return 16;
++    case 5:  // DolbyVisionProfileDvheStn
++        return 32;
++    case 7:  // DolbyVisionProfileDvheDtb
++        return 128;
++    case 8:  // DolbyVisionProfileDvheSt
++        return 256;
++    case 9:  // DolbyVisionProfileDvavSe
++        return 512;
++    case 10: // DolbyVisionProfileDvav110
++        return 1024;
++    default:
++        return -1;
++    }
++}
++
++static void mediacodec_set_color_info(AVCodecContext *avctx,
++                                      FFAMediaFormat *format)
++{
++    int value;
++
++    value = ff_AMediaFormatColorRange_from_AVColorRange(avctx->color_range);
++    if (value != COLOR_RANGE_UNSPECIFIED)
++        ff_AMediaFormat_setInt32(format, "color-range", value);
++
++    value = ff_AMediaFormatColorStandard_from_AVColorSpace(avctx->colorspace);
++    if (value == COLOR_STANDARD_UNSPECIFIED &&
++        avctx->color_primaries == AVCOL_PRI_BT2020)
++        value = COLOR_STANDARD_BT2020;
++    if (value != COLOR_STANDARD_UNSPECIFIED)
++        ff_AMediaFormat_setInt32(format, "color-standard", value);
++
++    value = ff_AMediaFormatColorTransfer_from_AVColorTransfer(avctx->color_trc);
++    if (value != COLOR_TRANSFER_UNSPECIFIED)
++        ff_AMediaFormat_setInt32(format, "color-transfer", value);
++}
++
+ static av_cold int mediacodec_decode_init(AVCodecContext *avctx)
+@@ -311,5 +312,11 @@
+     int sdk_int;
+ 
+     const char *codec_mime = NULL;
++    const char *base_codec_mime = NULL;
++    const AVPacketSideData *dovi_sd =
++        ff_get_coded_side_data(avctx, AV_PKT_DATA_DOVI_CONF);
++    int dovi_profile = mediacodec_dolby_vision_profile(dovi_sd);
++    int is_dolby_vision = dovi_sd &&
++        dovi_sd->size >= sizeof(AVDOVIDecoderConfigurationRecord);
+ 
+     FFAMediaFormat *format = NULL;
+@@ -328,7 +334,10 @@ static av_cold int mediacodec_decode_init(AVCodecContext *avctx)
+     switch (avctx->codec_id) {
+ #if CONFIG_AV1_MEDIACODEC_DECODER
+     case AV_CODEC_ID_AV1:
++        base_codec_mime = "video/av01";
+         codec_mime = "video/av01";
++        if (is_dolby_vision)
++            codec_mime = "video/dolby-vision";
+ 
+         ret = common_set_extradata(avctx, format);
+         if (ret < 0)
+@@ -337,7 +346,10 @@ static av_cold int mediacodec_decode_init(AVCodecContext *avctx)
+ #endif
+ #if CONFIG_H264_MEDIACODEC_DECODER
+     case AV_CODEC_ID_H264:
++        base_codec_mime = "video/avc";
+         codec_mime = "video/avc";
++        if (is_dolby_vision)
++            codec_mime = "video/dolby-vision";
+ 
+         ret = h264_set_extradata(avctx, format);
+         if (ret < 0)
+@@ -346,7 +358,10 @@ static av_cold int mediacodec_decode_init(AVCodecContext *avctx)
+ #endif
+ #if CONFIG_HEVC_MEDIACODEC_DECODER
+     case AV_CODEC_ID_HEVC:
++        base_codec_mime = "video/hevc";
+         codec_mime = "video/hevc";
++        if (is_dolby_vision)
++            codec_mime = "video/dolby-vision";
+ 
+         ret = hevc_set_extradata(avctx, format);
+         if (ret < 0)
+@@ -430,6 +445,9 @@
+     }
+ 
+     ff_AMediaFormat_setString(format, "mime", codec_mime);
++    if (dovi_profile >= 0 && base_codec_mime)
++        ff_AMediaFormat_setInt32(format, "profile", dovi_profile);
++    mediacodec_set_color_info(avctx, format);
+ 
+     if (avctx->codec_type == AVMEDIA_TYPE_VIDEO) {
+         ff_AMediaFormat_setInt32(format, "width", avctx->width);
+@@ -451,9 +468,32 @@ static av_cold int mediacodec_decode_init(AVCodecContext *avctx)
+     s->ctx->delay_flush = s->delay_flush;
+     s->ctx->use_ndk_codec = s->use_ndk_codec;
+ 
+-    if ((ret = ff_mediacodec_dec_init(avctx, s->ctx, codec_mime, format)) < 0) {
++    ret = ff_mediacodec_dec_init(avctx, s->ctx, codec_mime, format);
++    if (ret < 0) {
+         s->ctx = NULL;
+-        goto done;
++        if (is_dolby_vision && base_codec_mime) {
++            av_log(avctx, AV_LOG_INFO,
++                   "Dolby Vision decoder unavailable for %s; trying %s\n",
++                   codec_mime, base_codec_mime);
++            ff_AMediaFormat_setString(format, "mime", base_codec_mime);
++            s->ctx = av_mallocz(sizeof(*s->ctx));
++            if (!s->ctx) {
++                ret = AVERROR(ENOMEM);
++                goto done;
++            }
++            s->ctx->delay_flush = s->delay_flush;
++            s->ctx->use_ndk_codec = s->use_ndk_codec;
++            int base_profile = ff_AMediaCodecProfile_getProfileFromAVCodecContext(avctx);
++            if (base_profile >= 0)
++                ff_AMediaFormat_setInt32(format, "profile", base_profile);
++            ret = ff_mediacodec_dec_init(avctx, s->ctx, base_codec_mime, format);
++            if (ret < 0)
++                s->ctx = NULL;
++            else
++                codec_mime = base_codec_mime;
++        }
++        if (ret < 0)
++            goto done;
+     }
+ 
+     av_log(avctx, AV_LOG_INFO,
+diff --git a/libavcodec/mediacodecdec_common.c b/libavcodec/mediacodecdec_common.c
+index 9a627c0..0a518fd 100644
+--- a/libavcodec/mediacodecdec_common.c
++++ b/libavcodec/mediacodecdec_common.c
+@@ -772,7 +772,8 @@ static int mediacodec_dec_get_video_codec(AVCodecContext *avctx, MediaCodecDecContext *s,
+         }
+     }
+ 
+-    profile = ff_AMediaCodecProfile_getProfileFromAVCodecContext(avctx);
++    profile = !strcmp(mime, "video/dolby-vision") ? -1 :
++              ff_AMediaCodecProfile_getProfileFromAVCodecContext(avctx);
+-    if (profile < 0) {
++    if (profile < 0 && strcmp(mime, "video/dolby-vision")) {
+         av_log(avctx, AV_LOG_WARNING, "Unsupported or unknown profile\n");
+     }

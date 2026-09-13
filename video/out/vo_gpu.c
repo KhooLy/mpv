@@ -26,6 +26,7 @@
 
 #include <libavutil/common.h>
 
+#include "config.h"
 #include "mpv_talloc.h"
 #include "common/common.h"
 #include "misc/bstr.h"
@@ -38,6 +39,10 @@
 #include "gpu/context.h"
 #include "gpu/hwdec.h"
 #include "gpu/video.h"
+
+#if HAVE_ANDROID
+#include "video/out/android_common.h"
+#endif
 
 struct gpu_priv {
     struct mp_log *log;
@@ -89,6 +94,13 @@ static bool draw_frame(struct vo *vo, struct vo_frame *frame)
     mp_mutex_lock(&vo->params_mutex);
     vo->target_params = params;
     mp_mutex_unlock(&vo->params_mutex);
+
+#if HAVE_ANDROID
+    // The target parameters include any tone mapping or output conversion.
+    // Signal those parameters, rather than the source HDR metadata, to the
+    // Android buffer queue immediately before the frame is presented.
+    vo_android_set_buffers_dataspace(vo, params);
+#endif
 
     return VO_TRUE;
 }

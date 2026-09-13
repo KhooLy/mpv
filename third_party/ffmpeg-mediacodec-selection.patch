@@ -1,0 +1,50 @@
+diff --git a/libavcodec/mediacodecdec.c b/libavcodec/mediacodecdec.c
+index 1875025..0000000 100644
+--- a/libavcodec/mediacodecdec.c
++++ b/libavcodec/mediacodecdec.c
+@@ -60,6 +60,9 @@ typedef struct MediaCodecH264DecContext {
+     int use_ndk_codec;
+     // Ref. MediaFormat KEY_OPERATING_RATE
+     int operating_rate;
+     // Request Android's decoder-side HDR -> SDR tone mapper when available.
+     int tone_map_to_sdr;
++    // Media3-style selection: use the backward-compatible DV base layer when
++    // the display cannot present Dolby Vision.
++    int prefer_base_layer;
+ } MediaCodecH264DecContext;
+@@ -386,7 +389,7 @@ static av_cold int mediacodec_decode_init(AVCodecContext *avctx)
+         base_codec_mime = "video/av01";
+         codec_mime = "video/av01";
+-        if (is_dolby_vision)
++        if (is_dolby_vision && !s->prefer_base_layer)
+             codec_mime = "video/dolby-vision";
+@@ -398,7 +401,7 @@ static av_cold int mediacodec_decode_init(AVCodecContext *avctx)
+         base_codec_mime = "video/avc";
+         codec_mime = "video/avc";
+-        if (is_dolby_vision)
++        if (is_dolby_vision && !s->prefer_base_layer)
+             codec_mime = "video/dolby-vision";
+@@ -410,7 +413,7 @@ static av_cold int mediacodec_decode_init(AVCodecContext *avctx)
+         base_codec_mime = "video/hevc";
+         codec_mime = "video/hevc";
+-        if (is_dolby_vision)
++        if (is_dolby_vision && !s->prefer_base_layer)
+             codec_mime = "video/dolby-vision";
+@@ -496,7 +499,7 @@ static av_cold int mediacodec_decode_init(AVCodecContext *avctx)
+     ff_AMediaFormat_setString(format, "mime", codec_mime);
+-    if (dovi_profile >= 0 && base_codec_mime)
++    if (dovi_profile >= 0 && base_codec_mime && !s->prefer_base_layer)
+         ff_AMediaFormat_setInt32(format, "profile", dovi_profile);
+@@ -529,7 +532,7 @@ static av_cold int mediacodec_decode_init(AVCodecContext *avctx)
+     ret = ff_mediacodec_dec_init(avctx, s->ctx, codec_mime, format);
+     if (ret < 0) {
+         s->ctx = NULL;
+-        if (is_dolby_vision && base_codec_mime) {
++        if (is_dolby_vision && base_codec_mime && !s->prefer_base_layer) {
+@@ -704,6 +707,8 @@ static const AVOption ff_mediacodec_vdec_options[] = {
+     { "tone_map_to_sdr", "Request decoder-side HDR to SDR tone mapping when supported",
+             OFFSET(tone_map_to_sdr), AV_OPT_TYPE_BOOL, {.i64 = 0}, 0, 1, VD },
++    { "prefer_base_layer", "Prefer the backward-compatible Dolby Vision base layer when the display lacks DV",
++            OFFSET(prefer_base_layer), AV_OPT_TYPE_BOOL, {.i64 = 0}, 0, 1, VD },
+     { NULL }
+ };

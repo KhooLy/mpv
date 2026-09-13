@@ -731,6 +731,12 @@ Available video output drivers are:
     many of mpv's features (subtitle rendering, OSD/OSC, video filters, etc)
     are not available with this driver.
 
+    For HDR playback, pass a ``Surface`` backed by a ``SurfaceView``. On
+    Android API 28 and newer, mpv propagates the selected output dataspace to
+    the native buffer queue, including BT.2020/PQ and BT.2020/HLG. Dolby
+    Vision still depends on the device's MediaCodec decoder and display path;
+    Android does not expose a separate Dolby Vision dataspace.
+
     To use hardware decoding with ``--vo=gpu`` instead, use ``--hwdec=mediacodec``
     or ``mediacodec-copy`` along with ``--gpu-context=android``.
 

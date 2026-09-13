@@ -22,8 +22,15 @@
 #include "common/common.h"
 
 struct vo;
+struct mp_image_params;
 
 bool vo_android_init(struct vo *vo);
 void vo_android_uninit(struct vo *vo);
 ANativeWindow *vo_android_native_window(struct vo *vo);
 bool vo_android_surface_size(struct vo *vo, int *w, int *h);
+
+// Propagate the active output color space to the Android buffer queue. This
+// makes PQ/HLG signaling explicit when the MediaCodec or EGL producer does not
+// provide it itself.
+void vo_android_set_buffers_dataspace(struct vo *vo,
+                                      const struct mp_image_params *params);
