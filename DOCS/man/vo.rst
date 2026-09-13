@@ -747,11 +747,13 @@ Available video output drivers are:
     The layer receives the VideoToolbox pixel buffers and their CoreVideo color
     attachments without a libplacebo conversion or system-memory readback.
 
-    The VO is intended for embedded iOS, tvOS, and macOS hosts. The host owns
-    the layer's layout and can place a separate libass/OSD overlay above it.
-    This driver is deliberately low-level: mpv remains responsible for
-    playback timing, seeking, buffering, and track state while CoreMedia owns
-    native frame presentation.
+    The VO is intended for embedded iOS, tvOS, and macOS hosts. It creates a
+    separate Core Animation overlay for mpv's libass/OSD bitmaps, so subtitle
+    composition does not force a readback or alter the HDR/Dolby Vision video
+    pixel buffer. The host owns the display layer's layout. This driver is
+    deliberately low-level: mpv remains responsible for playback timing,
+    seeking, buffering, and track state while CoreMedia owns native frame
+    presentation.
 
 ``wlshm`` (Wayland only)
     Shared memory video output driver without hardware acceleration that works

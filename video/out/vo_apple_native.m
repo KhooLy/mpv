@@ -13,6 +13,8 @@
  */
 
 #include <stdint.h>
+#include <stdlib.h>
+#include <string.h>
 
 #include <libavcodec/avcodec.h>
 #include <libavutil/hwcontext.h>
@@ -21,12 +23,14 @@
 #import <AVFoundation/AVFoundation.h>
 #import <CoreMedia/CoreMedia.h>
 #import <CoreVideo/CoreVideo.h>
+#import <QuartzCore/QuartzCore.h>
 
 #include "common/common.h"
 #include "common/msg.h"
 #include "osdep/timer.h"
 #include "video/hwdec.h"
 #include "video/mp_image.h"
+#include "sub/osd.h"
 #include "vo.h"
 
 /*
@@ -45,10 +49,116 @@ struct priv {
     struct mp_log *log;
     AVSampleBufferDisplayLayer *layer;
     CMTimebaseRef timebase;
+    CALayer *overlay;
+    NSMutableArray *overlay_layers;
+    struct mp_osd_res osd_res;
+    double osd_pts;
     struct mp_image *next_image;
     int64_t next_pts;
     struct mp_hwdec_ctx hwctx;
 };
+
+static void release_osd_data(void *info, const void *data, size_t size)
+{
+    free((void *)data);
+}
+
+static CGImageRef create_osd_image(const struct sub_bitmaps *imgs,
+                                   const struct sub_bitmap *bitmap)
+{
+    if (imgs->format != SUBBITMAP_BGRA || !bitmap->bitmap ||
+        bitmap->w <= 0 || bitmap->h <= 0)
+        return NULL;
+
+    size_t stride = (size_t)bitmap->w * 4;
+    size_t size = stride * bitmap->h;
+    uint8_t *data = malloc(size);
+    if (!data)
+        return NULL;
+
+    const uint8_t *src = bitmap->bitmap;
+    if (imgs->packed && imgs->packed->planes[0]) {
+        src = imgs->packed->planes[0] +
+              (size_t)bitmap->src_y * imgs->packed->stride[0] +
+              (size_t)bitmap->src_x * 4;
+    }
+
+    for (int y = 0; y < bitmap->h; y++) {
+        memcpy(data + (size_t)y * stride,
+               src + (size_t)y * (imgs->packed ? imgs->packed->stride[0] : bitmap->stride),
+               stride);
+    }
+
+    CGDataProviderRef provider = CGDataProviderCreateWithData(
+        NULL, data, size, release_osd_data);
+    if (!provider) {
+        free(data);
+        return NULL;
+    }
+
+    CGColorSpaceRef colorspace = CGColorSpaceCreateDeviceRGB();
+    CGImageRef image = CGImageCreate(
+        bitmap->w, bitmap->h, 8, 32, stride, colorspace,
+        kCGBitmapByteOrder32Little | kCGImageAlphaPremultipliedFirst,
+        provider, NULL, false, kCGRenderingIntentDefault);
+    CGColorSpaceRelease(colorspace);
+    CGDataProviderRelease(provider);
+    return image;
+}
+
+static void clear_osd(struct priv *p)
+{
+    for (CALayer *layer in p->overlay_layers)
+        [layer removeFromSuperlayer];
+    [p->overlay_layers removeAllObjects];
+}
+
+static void draw_osd(struct vo *vo)
+{
+    struct priv *p = vo->priv;
+    if (!vo->osd || !p->overlay || p->osd_res.w <= 0 || p->osd_res.h <= 0)
+        return;
+
+    static const bool formats[SUBBITMAP_COUNT] = {
+        [SUBBITMAP_BGRA] = true,
+    };
+    struct sub_bitmap_list *list = osd_render(
+        vo->osd, p->osd_res, p->osd_pts, 0, formats);
+
+    CGRect bounds = p->overlay.bounds;
+    CGFloat scale_x = bounds.size.width / p->osd_res.w;
+    CGFloat scale_y = bounds.size.height / p->osd_res.h;
+
+    [CATransaction begin];
+    [CATransaction setDisableActions:YES];
+    clear_osd(p);
+
+    for (int n = 0; n < list->num_items; n++) {
+        struct sub_bitmaps *imgs = list->items[n];
+        for (int i = 0; i < imgs->num_parts; i++) {
+            const struct sub_bitmap *bitmap = &imgs->parts[i];
+            if (bitmap->dw <= 0 || bitmap->dh <= 0)
+                continue;
+
+            CGImageRef image = create_osd_image(imgs, bitmap);
+            if (!image)
+                continue;
+
+            CALayer *layer = [CALayer layer];
+            layer.frame = CGRectMake(bitmap->x * scale_x, bitmap->y * scale_y,
+                                     bitmap->dw * scale_x, bitmap->dh * scale_y);
+            layer.contents = (id)image;
+            layer.contentsGravity = kCAGravityResize;
+            layer.contentsScale = 1.0;
+            [p->overlay addSublayer:layer];
+            [p->overlay_layers addObject:layer];
+            CGImageRelease(image);
+        }
+    }
+
+    [CATransaction commit];
+    talloc_free(list);
+}
 
 static AVBufferRef *create_videotoolbox_device_ref(void)
 {
@@ -124,6 +234,13 @@ static int preinit(struct vo *vo)
 
     p->layer = (AVSampleBufferDisplayLayer *)(uintptr_t)vo->opts->WinID;
     [p->layer retain];
+    p->overlay_layers = [[NSMutableArray alloc] init];
+    p->overlay = [[CALayer alloc] init];
+    p->overlay.frame = p->layer.bounds;
+    p->overlay.zPosition = 1.0;
+    p->overlay.masksToBounds = NO;
+    p->overlay.autoresizingMask = kCALayerWidthSizable | kCALayerHeightSizable;
+    [p->layer addSublayer:p->overlay];
 
     if (CMTimebaseCreateWithMasterClock(
             kCFAllocatorDefault, CMClockGetHostTimeClock(), &p->timebase) != noErr) {
@@ -156,6 +273,10 @@ error:
         CFRelease(p->timebase);
     if (p->layer)
         [p->layer release];
+    [p->overlay_layers release];
+    [p->overlay release];
+    p->overlay_layers = nil;
+    p->overlay = nil;
     p->timebase = NULL;
     p->layer = nil;
     return -1;
@@ -172,12 +293,14 @@ static bool draw_frame(struct vo *vo, struct vo_frame *frame)
     mp_image_unrefp(&p->next_image);
     p->next_image = mpi;
     p->next_pts = mpi ? frame->pts : 0;
+    p->osd_pts = frame->current ? frame->current->pts : 0;
     return true;
 }
 
 static void flip_page(struct vo *vo)
 {
     struct priv *p = vo->priv;
+    draw_osd(vo);
     if (!p->next_image)
         return;
 
@@ -221,9 +344,18 @@ static int control(struct vo *vo, uint32_t request, void *data)
 
 static int reconfig(struct vo *vo, struct mp_image_params *params)
 {
+    struct priv *p = vo->priv;
+
     // The CVPixelBuffer and its format description carry the source color
     // properties. No libplacebo conversion is performed in this VO.
-    return params->imgfmt == IMGFMT_VIDEOTOOLBOX ? 0 : -1;
+    if (params->imgfmt != IMGFMT_VIDEOTOOLBOX)
+        return -1;
+
+    p->osd_res = osd_res_from_image_params(params);
+    osd_resize(vo->osd, p->osd_res);
+    if (p->overlay)
+        p->overlay.frame = p->layer.bounds;
+    return 0;
 }
 
 static void uninit(struct vo *vo)
@@ -231,6 +363,12 @@ static void uninit(struct vo *vo)
     struct priv *p = vo->priv;
 
     mp_image_unrefp(&p->next_image);
+    clear_osd(p);
+    [p->overlay removeFromSuperlayer];
+    [p->overlay_layers release];
+    [p->overlay release];
+    p->overlay_layers = nil;
+    p->overlay = nil;
     if (p->layer)
         [p->layer flushAndRemoveImage];
     if (p->timebase)
