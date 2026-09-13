@@ -762,6 +762,15 @@ static void init_avctx(struct mp_filter *vd)
         if (!lavc_param->check_hw_profile)
             avctx->hwaccel_flags |= AV_HWACCEL_FLAG_ALLOW_PROFILE_MISMATCH;
 
+        if (ctx->hwdec.lavc_device == AV_HWDEVICE_TYPE_MEDIACODEC) {
+            // MediaCodec output buffers are retained by mpv until the VO
+            // presents them. Keep decoder flush ordered behind those releases
+            // so seek/reconfigure cannot recycle a surface still owned by the
+            // Android consumer. User-supplied vd-lavc-o options are applied
+            // below and can override this default.
+            av_opt_set(avctx, "delay_flush", "1", AV_OPT_SEARCH_CHILDREN);
+        }
+
 #ifdef AV_HWACCEL_FLAG_UNSAFE_OUTPUT
         /*
          * This flag primarily exists for nvdec which has a very limited

@@ -18,11 +18,13 @@
  */
 
 #include <assert.h>
+#include <errno.h>
 #include <dlfcn.h>
 #include <EGL/egl.h>
 #include <media/NdkImageReader.h>
 #include <android/native_window_jni.h>
 #include <libavcodec/mediacodec.h>
+#include <libavutil/error.h>
 #include <libavutil/hwcontext.h>
 #include <libavutil/hwcontext_mediacodec.h>
 
@@ -153,10 +155,14 @@ static int init(struct ra_hwdec *hw)
     else
         hw->glsl_extensions = es2_exts;
 
-    // dummy dimensions, AImageReader only transports hardware buffers
+    // This sets the upper bound for AImages we can acquire from this reader
+    // (including images currently queued). The documentation recommends a
+    // margin of two for acquireLatestImage() to work correctly.
+    const int max_images = 3;
+    // Dummy dimensions: AImageReader only transports hardware buffers.
     media_status_t ret = p->AImageReader_newWithUsage(16, 16,
         AIMAGE_FORMAT_PRIVATE, AHARDWAREBUFFER_USAGE_GPU_SAMPLED_IMAGE,
-        5, &p->reader);
+        max_images, &p->reader);
     if (ret != AMEDIA_OK) {
         MP_ERR(hw, "newWithUsage failed: %d\n", ret);
         return -1;
@@ -172,6 +178,10 @@ static int init(struct ra_hwdec *hw)
     mp_assert(window);
 
     jobject surface = p->ANativeWindow_toSurface(env, window);
+    if (!surface) {
+        MP_ERR(hw, "ANativeWindow_toSurface returned null\n");
+        return -1;
+    }
     p->surface = (*env)->NewGlobalRef(env, surface);
     (*env)->DeleteLocalRef(env, surface);
 
@@ -326,19 +336,27 @@ static int mapper_map(struct ra_hwdec_mapper *mapper)
     struct priv_owner *o = mapper->owner->priv;
     GL *gl = ra_gl_get(mapper->ra);
 
-    {
-        if (mapper->src->imgfmt != IMGFMT_MEDIACODEC)
-            return -1;
-        AVMediaCodecBuffer *buffer = (AVMediaCodecBuffer *)mapper->src->planes[3];
-        av_mediacodec_release_buffer(buffer, 1);
+    mp_mutex_lock(&p->lock);
+    p->image_available = false;
+    mp_mutex_unlock(&p->lock);
+
+    if (mapper->src->imgfmt != IMGFMT_MEDIACODEC)
+        return -1;
+    AVMediaCodecBuffer *buffer = (AVMediaCodecBuffer *)mapper->src->planes[3];
+    int err = av_mediacodec_release_buffer(buffer, 1);
+    if (err != 0) {
+        char errstr[80];
+        av_strerror(err, errstr, sizeof(errstr));
+        MP_ERR(p, "Failed to render MediaCodec buffer: %s\n", errstr);
+        // A decoder/VO race can release a buffer twice. Treat only that case
+        // as a harmless no-op; all other failures must invalidate the map.
+        return err == AVERROR(ENOENT) ? 0 : -1;
     }
 
     bool image_available = false;
     mp_mutex_lock(&p->lock);
     if (!p->image_available) {
         mp_cond_timedwait(&p->cond, &p->lock, MP_TIME_MS_TO_NS(100));
-        if (!p->image_available)
-            MP_WARN(mapper, "Waiting for frame timed out!\n");
     }
     image_available = p->image_available;
     p->image_available = false;

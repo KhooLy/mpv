@@ -62,6 +62,10 @@
 #include "osdep/windows_utils.h"
 #endif
 
+#if HAVE_ANDROID
+#include "video/out/android_common.h"
+#endif
+
 
 struct osd_entry {
     pl_tex tex;
@@ -1494,6 +1498,13 @@ static bool draw_frame(struct vo *vo, struct vo_frame *frame)
         vo->has_peak_detect_values = pl_renderer_get_hdr_metadata(p->rr, &vo->params->color.hdr);
     }
     mp_mutex_unlock(&vo->params_mutex);
+
+#if HAVE_ANDROID
+    // Publish the actual post-processing target color space. This is what
+    // lets Android keep a PQ/HLG swapchain in HDR mode after gpu-next has
+    // selected its output transform.
+    vo_android_set_buffers_dataspace(vo, &p->target_params);
+#endif
 
     p->is_interpolated = pts_offset != 0 && mix.num_frames > 1;
     valid = true;

@@ -1,0 +1,34 @@
+diff --git a/libavcodec/mediacodecdec.c b/libavcodec/mediacodecdec.c
+index 640457a..1875025 100644
+--- a/libavcodec/mediacodecdec.c
++++ b/libavcodec/mediacodecdec.c
+@@ -60,4 +60,6 @@ typedef struct MediaCodecH264DecContext {
+     int use_ndk_codec;
+     // Ref. MediaFormat KEY_OPERATING_RATE
+     int operating_rate;
++    // Request Android's decoder-side HDR -> SDR tone mapper when available.
++    int tone_map_to_sdr;
+ } MediaCodecH264DecContext;
+@@ -496,4 +496,15 @@ static av_cold int mediacodec_decode_init(AVCodecContext *avctx)
+     ff_AMediaFormat_setString(format, "mime", codec_mime);
+     if (dovi_profile >= 0 && base_codec_mime)
+         ff_AMediaFormat_setInt32(format, "profile", dovi_profile);
+     mediacodec_set_color_info(avctx, format);
++    if (s->tone_map_to_sdr && avctx->codec_type == AVMEDIA_TYPE_VIDEO &&
++        ff_Build_SDK_INT(avctx) >= 31) {
++        // Android's public MediaFormat contract: when accepted by the
++        // decoder, this asks it to output SDR_VIDEO instead of the input HDR
++        // transfer function. The output format is logged below by the common
++        // MediaCodec code so callers can verify the actual result.
++        ff_AMediaFormat_setInt32(format, "color-transfer-request",
++                                 COLOR_TRANSFER_SDR_VIDEO);
++        av_log(avctx, AV_LOG_INFO,
++               "Requesting MediaCodec HDR-to-SDR tone mapping\n");
++    }
+@@ -697,3 +697,5 @@ static const AVOption ff_mediacodec_vdec_options[] = {
+     { "operating_rate", "The desired operating rate that the codec will need to operate at, zero for unspecified",
+             OFFSET(operating_rate), AV_OPT_TYPE_INT, {.i64 = 0}, 0, INT_MAX, VD },
++    { "tone_map_to_sdr", "Request decoder-side HDR to SDR tone mapping when supported",
++            OFFSET(tone_map_to_sdr), AV_OPT_TYPE_BOOL, {.i64 = 0}, 0, 1, VD },
+     { NULL }
+ };

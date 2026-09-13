@@ -1,0 +1,104 @@
+# Media3-style MediaCodec capability filtering
+#
+# Apply after the Dolby Vision and tone-map FFmpeg patches.
+diff --git a/libavcodec/mediacodec_wrapper.c b/libavcodec/mediacodec_wrapper.c
+--- a/libavcodec/mediacodec_wrapper.c
++++ b/libavcodec/mediacodec_wrapper.c
+@@ -54,6 +54,10 @@ struct JNIAMediaCodecListFields {
+     jclass codec_capabilities_class;
+     jfieldID color_formats_id;
+     jfieldID profile_levels_id;
++    jmethodID get_video_capabilities_id;
++
++    jclass video_capabilities_class;
++    jmethodID are_size_and_rate_supported_id;
+ 
+     jclass codec_profile_level_class;
+@@ -79,6 +83,10 @@ static const struct FFJniField jni_amediacodeclist_mapping[] = {
+     { "android/media/MediaCodecInfo$CodecCapabilities", NULL, NULL, FF_JNI_CLASS, OFFSET(codec_capabilities_class), 1 },
+         { "android/media/MediaCodecInfo$CodecCapabilities", "colorFormats", "[I", FF_JNI_FIELD, OFFSET(color_formats_id), 1 },
+         { "android/media/MediaCodecInfo$CodecCapabilities", "profileLevels", "[Landroid/media/MediaCodecInfo$CodecProfileLevel;", FF_JNI_FIELD, OFFSET(profile_levels_id), 1 },
++        { "android/media/MediaCodecInfo$CodecCapabilities", "getVideoCapabilities", "()Landroid/media/MediaCodecInfo$VideoCapabilities;", FF_JNI_METHOD, OFFSET(get_video_capabilities_id), 0 },
++
++    { "android/media/MediaCodecInfo$VideoCapabilities", NULL, NULL, FF_JNI_CLASS, OFFSET(video_capabilities_class), 0 },
++        { "android/media/MediaCodecInfo$VideoCapabilities", "areSizeAndRateSupported", "(IID)Z", FF_JNI_METHOD, OFFSET(are_size_and_rate_supported_id), 0 },
+ 
+     { "android/media/MediaCodecInfo$CodecProfileLevel", NULL, NULL, FF_JNI_CLASS, OFFSET(codec_profile_level_class), 1 },
+@@ -467,7 +475,8 @@ int ff_AMediaCodecProfile_getProfileFromAVCodecContext(AVCodecContext *avctx)
+     return -1;
+ }
+ 
+-char *ff_AMediaCodecList_getCodecNameByType(const char *mime, int profile, int encoder, void *log_ctx)
++char *ff_AMediaCodecList_getCodecNameByType(const char *mime, int profile, int encoder,
++                                            AVCodecContext *avctx, void *log_ctx)
+ {
+@@ -489,6 +498,7 @@ char *ff_AMediaCodecList_getCodecNameByType(const char *mime, int profile, int encoder,
+     jobject capabilities = NULL;
+     jobject profile_level = NULL;
+     jobjectArray profile_levels = NULL;
++    jobject video_capabilities = NULL;
+ 
+     JNI_GET_ENV_OR_RETURN(env, log_ctx, NULL);
+@@ -636,6 +646,28 @@ done_with_type:
+             av_freep(&supported_type);
+ 
+             if (found_codec) {
++                // Match Media3's format support check: a MIME/profile match
++                // is insufficient when the decoder rejects the stream's
++                // dimensions or frame rate. Keep this optional for older
++                // vendor implementations.
++                if (jfields.get_video_capabilities_id &&
++                    jfields.are_size_and_rate_supported_id &&
++                    avctx && avctx->codec_type == AVMEDIA_TYPE_VIDEO &&
++                    avctx->width > 0 && avctx->height > 0 &&
++                    avctx->framerate.num > 0 && avctx->framerate.den > 0)
++                {
++                    video_capabilities = (*env)->CallObjectMethod(
++                        env, capabilities, jfields.get_video_capabilities_id);
++                    if (ff_jni_exception_check(env, 1, log_ctx) < 0)
++                        goto done;
++
++                    if (video_capabilities) {
++                        const double frame_rate =
++                            (double)avctx->framerate.num / avctx->framerate.den;
++                        found_codec = (*env)->CallBooleanMethod(
++                            env, video_capabilities,
++                            jfields.are_size_and_rate_supported_id,
++                            avctx->width, avctx->height, frame_rate);
++                        if (ff_jni_exception_check(env, 1, log_ctx) < 0)
++                            goto done;
++                        (*env)->DeleteLocalRef(env, video_capabilities);
++                        video_capabilities = NULL;
++                    }
++                }
+                 break;
+             }
+@@ -662,6 +694,7 @@ done:
+     (*env)->DeleteLocalRef(env, capabilities);
+     (*env)->DeleteLocalRef(env, profile_level);
+     (*env)->DeleteLocalRef(env, profile_levels);
++    (*env)->DeleteLocalRef(env, video_capabilities);
+ 
+     av_freep(&supported_type);
+diff --git a/libavcodec/mediacodec_wrapper.h b/libavcodec/mediacodec_wrapper.h
+--- a/libavcodec/mediacodec_wrapper.h
++++ b/libavcodec/mediacodec_wrapper.h
+@@ -57,7 +57,8 @@
+ 
+ int ff_AMediaCodecProfile_getProfileFromAVCodecContext(AVCodecContext *avctx);
+ 
+-char *ff_AMediaCodecList_getCodecNameByType(const char *mime, int profile, int encoder, void *log_ctx);
++char *ff_AMediaCodecList_getCodecNameByType(const char *mime, int profile, int encoder,
++                                            AVCodecContext *avctx, void *log_ctx);
+ 
+ typedef struct FFAMediaFormat FFAMediaFormat;
+diff --git a/libavcodec/mediacodecdec_common.c b/libavcodec/mediacodecdec_common.c
+--- a/libavcodec/mediacodecdec_common.c
++++ b/libavcodec/mediacodecdec_common.c
+@@ -780,7 +780,7 @@ static int mediacodec_dec_get_video_codec(AVCodecContext *avctx, MediaCodecDecContext *s,
+     }
+ 
+-    s->codec_name = ff_AMediaCodecList_getCodecNameByType(mime, profile, 0, avctx);
++    s->codec_name = ff_AMediaCodecList_getCodecNameByType(mime, profile, 0, avctx, avctx);
+     if (!s->codec_name) {
+ 

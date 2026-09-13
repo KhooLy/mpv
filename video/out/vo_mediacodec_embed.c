@@ -23,9 +23,11 @@
 #include "vo.h"
 #include "video/mp_image.h"
 #include "video/hwdec.h"
+#include "android_common.h"
 
 struct priv {
     struct mp_image *next_image;
+    int64_t next_image_pts;
     struct mp_hwdec_ctx hwctx;
 };
 
@@ -49,6 +51,9 @@ static AVBufferRef *create_mediacodec_device_ref(struct vo *vo)
 static int preinit(struct vo *vo)
 {
     struct priv *p = vo->priv;
+    if (!vo_android_init(vo))
+        return -1;
+
     vo->hwdec_devs = hwdec_devices_create();
     p->hwctx = (struct mp_hwdec_ctx){
         .driver_name = "mediacodec_embed",
@@ -58,6 +63,7 @@ static int preinit(struct vo *vo)
 
     if (!p->hwctx.av_device_ref) {
         MP_VERBOSE(vo, "Failed to create hwdevice_ctx\n");
+        vo_android_uninit(vo);
         return -1;
     }
 
@@ -71,8 +77,34 @@ static void flip_page(struct vo *vo)
     if (!p->next_image)
         return;
 
+    if (p->next_image->imgfmt != IMGFMT_MEDIACODEC ||
+        !p->next_image->planes[3]) {
+        MP_ERR(vo, "Invalid MediaCodec output frame\n");
+        p->next_image_pts = 0;
+        mp_image_unrefp(&p->next_image);
+        return;
+    }
+
     AVMediaCodecBuffer *buffer = (AVMediaCodecBuffer *)p->next_image->planes[3];
-    av_mediacodec_release_buffer(buffer, 1);
+    int err = 0;
+    bool timed = false;
+    if (p->next_image_pts > 0) {
+        // Match Media3's timed output release. mpv's VO pts is already in the
+        // monotonic clock domain used by MediaCodec's releaseOutputBuffer.
+        const int64_t now = mp_time_ns();
+        const int64_t delta = p->next_image_pts - now;
+        if (delta > -MP_TIME_S_TO_NS(1) && delta < MP_TIME_S_TO_NS(1)) {
+            timed = true;
+            err = av_mediacodec_render_buffer_at_time(buffer,
+                                                       p->next_image_pts);
+        }
+    }
+    if (!timed)
+        err = av_mediacodec_release_buffer(buffer, 1);
+    if (err < 0)
+        MP_WARN(vo, "Failed to release MediaCodec output buffer: %d\n", err);
+
+    p->next_image_pts = 0;
     mp_image_unrefp(&p->next_image);
 }
 
@@ -86,6 +118,9 @@ static bool draw_frame(struct vo *vo, struct vo_frame *frame)
 
     talloc_free(p->next_image);
     p->next_image = mpi;
+    p->next_image_pts = mpi ? frame->pts : 0;
+    if (mpi)
+        vo_android_set_buffers_dataspace(vo, &mpi->params);
     return VO_TRUE;
 }
 
@@ -101,6 +136,9 @@ static int control(struct vo *vo, uint32_t request, void *data)
 
 static int reconfig(struct vo *vo, struct mp_image_params *params)
 {
+    // Keep the direct Surface path color-managed by Android. In particular,
+    // this preserves PQ/HLG signaling for HDR10, HDR10+ and decoded DV.
+    vo_android_set_buffers_dataspace(vo, params);
     return 0;
 }
 
@@ -111,6 +149,7 @@ static void uninit(struct vo *vo)
 
     hwdec_devices_remove(vo->hwdec_devs, &p->hwctx);
     av_buffer_unref(&p->hwctx.av_device_ref);
+    vo_android_uninit(vo);
 }
 
 const struct vo_driver video_out_mediacodec_embed = {
