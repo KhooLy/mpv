@@ -92,6 +92,7 @@ bool mp_decoder_wrapper_reinit(struct mp_decoder_wrapper *d);
 // True when compressed passthrough was explicitly requested and PCM fallback
 // must not be used if the output device rejects the encoded stream.
 bool mp_decoder_wrapper_is_strict_passthrough(struct mp_decoder_wrapper *d);
+bool mp_decoder_wrapper_should_try_passthrough(struct mp_decoder_wrapper *d);
 
 struct mp_decoder {
     // Bidirectional filter; takes MP_FRAME_PACKET for input.
