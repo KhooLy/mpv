@@ -20,6 +20,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 
+#include "config.h"
 #include "filter.h"
 
 struct sh_stream;
@@ -106,6 +107,12 @@ struct mp_decoder_fns {
 extern const struct mp_decoder_fns vd_lavc;
 extern const struct mp_decoder_fns ad_lavc;
 extern const struct mp_decoder_fns ad_spdif;
+#if HAVE_AVFOUNDATION
+extern const struct mp_decoder_fns ad_avfoundation;
+#endif
+#if HAVE_ANDROID
+extern const struct mp_decoder_fns ad_mediacodec;
+#endif
 
 // Convenience wrapper for lavc based decoders. Treat lavc_state as private;
 // init to all-0 on init and resets.

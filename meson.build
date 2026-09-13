@@ -486,6 +486,7 @@ features += {'android': host_machine.system() == 'android'}
 if features['android']
     dependencies += cc.find_library('android')
     sources += files('misc/jni.c',
+                     'audio/decode/ad_mediacodec.c',
                      'osdep/android/strnlen.c',
                      'video/out/android_common.c',
                      'video/out/vo_mediacodec_embed.c')
@@ -834,12 +835,13 @@ if features['audiounit']
     sources += files('audio/out/ao_audiounit.m')
 endif
 
-avfoundation = dependency('appleframeworks', modules: ['CoreMedia', 'AVFoundation'],
+avfoundation = dependency('appleframeworks', modules: ['CoreMedia', 'AVFoundation', 'AudioToolbox'],
                           required: get_option('avfoundation'))
 features += {'avfoundation': avfoundation.found()}
 if features['avfoundation']
     dependencies += avfoundation
     sources += files('audio/out/ao_avfoundation.m',
+                     'audio/decode/ad_avfoundation.m',
                      'video/out/vo_apple_native.m')
 endif
 

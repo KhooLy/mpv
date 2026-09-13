@@ -2129,6 +2129,14 @@ Audio
         ``--ad=help``
             List all available decoders.
 
+    On Apple platforms, ``avfoundation_aac``, ``avfoundation_ac3``,
+    ``avfoundation_eac3`` and ``avfoundation_mp3`` use the system
+    AudioConverter decoder when available. On Android, the corresponding
+    ``mediacodec_*`` decoders use MediaCodec for AAC, AC-3, E-AC-3, MP3,
+    Opus, Vorbis and FLAC. These native decoders are preferred automatically;
+    FFmpeg remains the fallback. To force the FFmpeg decoder, put its name
+    first, for example ``--ad=aac``.
+
     .. warning::
 
         Enabling compressed audio passthrough (AC3 and DTS via SPDIF/HDMI) with

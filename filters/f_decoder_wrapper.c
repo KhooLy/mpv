@@ -21,6 +21,7 @@
 #include <stdbool.h>
 #include <math.h>
 #include <assert.h>
+#include <string.h>
 
 #include <libavutil/buffer.h>
 #include <libavutil/common.h>
@@ -414,6 +415,12 @@ struct mp_decoder_list *video_decoder_list(void)
 struct mp_decoder_list *audio_decoder_list(void)
 {
     struct mp_decoder_list *list = talloc_zero(NULL, struct mp_decoder_list);
+#if HAVE_AVFOUNDATION
+    ad_avfoundation.add_decoders(list);
+#endif
+#if HAVE_ANDROID
+    ad_mediacodec.add_decoders(list);
+#endif
     ad_lavc.add_decoders(list);
     return list;
 }
@@ -476,7 +483,18 @@ static bool reinit_decoder(struct priv *p)
         struct mp_decoder_entry *sel = &list->entries[n];
         MP_VERBOSE(p, "Opening decoder %s\n", sel->decoder);
 
-        p->decoder = driver->create(p->decf, p->codec, sel->decoder);
+        const struct mp_decoder_fns *decoder_driver = driver;
+#if HAVE_AVFOUNDATION
+        if (p->codec->type == STREAM_AUDIO &&
+            strncmp(sel->decoder, "avfoundation_", 13) == 0)
+            decoder_driver = &ad_avfoundation;
+#endif
+#if HAVE_ANDROID
+        if (p->codec->type == STREAM_AUDIO &&
+            strncmp(sel->decoder, "mediacodec_", 11) == 0)
+            decoder_driver = &ad_mediacodec;
+#endif
+        p->decoder = decoder_driver->create(p->decf, p->codec, sel->decoder);
         if (p->decoder) {
             p->codec->decoder = talloc_strdup(p->codec, sel->decoder);
             p->codec->decoder_desc = talloc_strdup(p->codec, sel->desc && sel->desc[0] ? sel->desc : NULL);
