@@ -740,6 +740,19 @@ Available video output drivers are:
     To use hardware decoding with ``--vo=gpu`` instead, use ``--hwdec=mediacodec``
     or ``mediacodec-copy`` along with ``--gpu-context=android``.
 
+``apple_native`` (Apple platforms)
+    Sends ``IMGFMT_VIDEOTOOLBOX`` frames to an
+    ``AVSampleBufferDisplayLayer`` supplied by the host. Requires
+    ``--hwdec=videotoolbox`` and ``--wid=(intptr_t)(*AVSampleBufferDisplayLayer)``.
+    The layer receives the VideoToolbox pixel buffers and their CoreVideo color
+    attachments without a libplacebo conversion or system-memory readback.
+
+    The VO is intended for embedded iOS, tvOS, and macOS hosts. The host owns
+    the layer's layout and can place a separate libass/OSD overlay above it.
+    This driver is deliberately low-level: mpv remains responsible for
+    playback timing, seeking, buffering, and track state while CoreMedia owns
+    native frame presentation.
+
 ``wlshm`` (Wayland only)
     Shared memory video output driver without hardware acceleration that works
     whenever Wayland is present.

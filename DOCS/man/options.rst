@@ -3798,6 +3798,10 @@ Window
     ``--hwdec=mediacodec`` for direct rendering using MediaCodec, or with
     ``--vo=gpu --gpu-context=android`` (with or without ``--hwdec=mediacodec``).
 
+    On Apple platforms, ``--vo=apple_native`` interprets the ID as an
+    ``AVSampleBufferDisplayLayer`` pointer. Pass it as a value cast to
+    ``intptr_t`` together with ``--hwdec=videotoolbox``.
+
     .. note::
 
         On win32, if desktop wallpaper transition occurs (e.g. setting desktop
