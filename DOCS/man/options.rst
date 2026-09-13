@@ -2134,13 +2134,25 @@ Audio
     AudioConverter decoder when available. On Android, the corresponding
     ``mediacodec_*`` decoders use MediaCodec for AAC, AC-3, E-AC-3, MP3,
     Opus, Vorbis and FLAC. These native decoders are preferred automatically;
-    FFmpeg remains the fallback. To force the FFmpeg decoder, put its name
-    first, for example ``--ad=aac``.
+    FFmpeg remains the fallback. Use ``--audio-decoder`` to select the policy
+    explicitly.
 
     .. warning::
 
         Enabling compressed audio passthrough (AC3 and DTS via SPDIF/HDMI) with
         this option is not possible. Use ``--audio-spdif`` instead.
+
+``--audio-decoder=<auto|native|ffmpeg>``
+    Select the audio decoder family. ``auto`` (default) prefers a platform
+    decoder when available and falls back to FFmpeg. ``native`` has the same
+    preference but is intended for applications that want the Android
+    MediaCodec or Apple AudioConverter path; FFmpeg is still used if the
+    platform decoder cannot be initialized. ``ffmpeg`` disables the native
+    decoder entries and uses mpv's FFmpeg decoders.
+
+    Native decoders still return PCM to mpv's audio filter/output contract.
+    This preserves mpv's volume, channel mapping, and ``--af`` support, but it
+    is not compressed bitstream passthrough to a platform audio renderer.
 
 ``--volume=<value>``
     Set the startup volume. 0 means silence, 100 means no volume reduction or

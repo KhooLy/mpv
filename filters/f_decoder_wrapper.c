@@ -101,6 +101,7 @@ struct dec_wrapper_opts {
     bool correct_pts;
     int video_rotate;
     char *audio_decoders;
+    int audio_decoder_mode;
     char *video_decoders;
     char *audio_spdif;
     struct dec_queue_opts *vdec_queue_opts;
@@ -119,6 +120,9 @@ const struct m_sub_options dec_wrapper_conf = {
         {"ad", OPT_STRING(audio_decoders),
             .flags = UPDATE_AD,
             .help = decoder_list_help},
+        {"audio-decoder", OPT_CHOICE(audio_decoder_mode,
+            {"auto", 0}, {"native", 1}, {"ffmpeg", 2}),
+            .flags = UPDATE_AD},
         {"vd", OPT_STRING(video_decoders),
             .flags = UPDATE_VD,
             .help = decoder_list_help},
@@ -469,6 +473,19 @@ static bool reinit_decoder(struct priv *p)
 
     if (!list) {
         struct mp_decoder_list *full = talloc_zero(NULL, struct mp_decoder_list);
+        // Prefer platform decoders unless the user explicitly selects FFmpeg.
+        if (p->codec->type != STREAM_AUDIO ||
+            p->opts->audio_decoder_mode != 2)
+        {
+#if HAVE_AVFOUNDATION
+            if (p->codec->type == STREAM_AUDIO)
+                ad_avfoundation.add_decoders(full);
+#endif
+#if HAVE_ANDROID
+            if (p->codec->type == STREAM_AUDIO)
+                ad_mediacodec.add_decoders(full);
+#endif
+        }
         driver->add_decoders(full);
         const char *codec = p->codec->codec;
         if (codec && strcmp(codec, "null") == 0)
