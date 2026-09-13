@@ -128,7 +128,8 @@ const struct m_sub_options dec_wrapper_conf = {
             .flags = UPDATE_AD,
             .help = decoder_list_help},
         {"audio-decoder", OPT_CHOICE(audio_decoder_mode,
-            {"auto", 0}, {"native", 1}, {"ffmpeg", 2}),
+            {"auto", 0}, {"native", 1}, {"ffmpeg", 2},
+            {"passthrough", 3}),
             .flags = UPDATE_AD},
         {"vd", OPT_STRING(video_decoders),
             .flags = UPDATE_VD,
@@ -503,6 +504,8 @@ static bool reinit_decoder(struct priv *p)
             char *detected = NULL;
             if (pref && strcmp(pref, "auto") == 0)
                 pref = detected = auto_spdif_codecs(p);
+            if (p->opts->audio_decoder_mode == 3 && (!pref || !pref[0]))
+                pref = "ac3,dts,dts-hd,eac3,truehd";
             struct mp_decoder_list *spdif =
                 select_spdif_codec(p->codec->codec, pref);
             talloc_free(detected);
@@ -511,6 +514,11 @@ static bool reinit_decoder(struct priv *p)
                 list = spdif;
             } else {
                 talloc_free(spdif);
+                if (p->opts->audio_decoder_mode == 3) {
+                    MP_ERR(p, "Strict audio passthrough requested, but codec '%s' is not supported by the passthrough wrapper.\n",
+                           p->codec->codec ? p->codec->codec : "<?>");
+                    return false;
+                }
             }
         }
     }
@@ -616,6 +624,12 @@ bool mp_decoder_wrapper_reinit(struct mp_decoder_wrapper *d)
     bool res = reinit_decoder(p);
     thread_unlock(p);
     return res;
+}
+
+bool mp_decoder_wrapper_is_strict_passthrough(struct mp_decoder_wrapper *d)
+{
+    struct priv *p = d->f->priv;
+    return p->opts->audio_decoder_mode == 3;
 }
 
 void mp_decoder_wrapper_set_frame_drops(struct mp_decoder_wrapper *d, int num)
