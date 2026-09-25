@@ -475,6 +475,16 @@ static char *auto_spdif_codecs(struct priv *p)
 #endif
 }
 
+static void add_native_audio_decoders(struct mp_decoder_list *list)
+{
+#if HAVE_AVFOUNDATION
+    ad_avfoundation.add_decoders(list);
+#endif
+#if HAVE_ANDROID
+    ad_mediacodec.add_decoders(list);
+#endif
+}
+
 static bool reinit_decoder(struct priv *p)
 {
     if (p->decoder)
@@ -544,20 +554,13 @@ static bool reinit_decoder(struct priv *p)
 
     if (!list) {
         struct mp_decoder_list *full = talloc_zero(NULL, struct mp_decoder_list);
-        // Prefer platform decoders unless the user explicitly selects FFmpeg.
-        if (p->codec->type != STREAM_AUDIO ||
-            p->opts->audio_decoder_mode != 2)
-        {
-#if HAVE_AVFOUNDATION
-            if (p->codec->type == STREAM_AUDIO)
-                ad_avfoundation.add_decoders(full);
-#endif
-#if HAVE_ANDROID
-            if (p->codec->type == STREAM_AUDIO)
-                ad_mediacodec.add_decoders(full);
-#endif
-        }
+        bool audio = p->codec->type == STREAM_AUDIO;
+        int mode = p->opts->audio_decoder_mode;
+        if (audio && mode == 1)
+            add_native_audio_decoders(full);
         driver->add_decoders(full);
+        if (audio && mode == 0)
+            add_native_audio_decoders(full);
         const char *codec = p->codec->codec;
         if (codec && strcmp(codec, "null") == 0)
             codec = fallback;

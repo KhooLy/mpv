@@ -2169,11 +2169,9 @@ Audio
 
     On Apple platforms, ``avfoundation_aac``, ``avfoundation_ac3``,
     ``avfoundation_eac3`` and ``avfoundation_mp3`` use the system
-    AudioConverter decoder when available. On Android, the corresponding
-    ``mediacodec_*`` decoders use MediaCodec for AAC, AC-3, E-AC-3, MP3,
-    Opus, Vorbis and FLAC. These native decoders are preferred automatically;
-    FFmpeg remains the fallback. Use ``--audio-decoder`` to select the policy
-    explicitly.
+    AudioConverter decoder. On Android, the corresponding ``mediacodec_*``
+    decoders use MediaCodec for AAC, AC-3, E-AC-3, MP3, Opus, Vorbis and FLAC.
+    Use ``--audio-decoder`` to choose whether they are preferred over FFmpeg.
 
     .. warning::
 
@@ -2181,22 +2179,23 @@ Audio
         this option is not possible. Use ``--audio-spdif`` instead.
 
 ``--audio-decoder=<auto|native|ffmpeg>``
-    Select the audio decoder family. ``auto`` (default) prefers a platform
-    decoder when available and falls back to FFmpeg. ``native`` has the same
-    preference but is intended for applications that want the Android
-    MediaCodec or Apple AudioConverter path; FFmpeg is still used if the
-    platform decoder cannot be initialized. ``ffmpeg`` disables the native
-    decoder entries and uses mpv's FFmpeg decoders.
+    Select the audio decoder family. ``auto`` (default) uses FFmpeg and only
+    falls back to a platform decoder for codecs FFmpeg cannot open. ``native``
+    prefers the Android MediaCodec or Apple AudioConverter decoder and falls
+    back to FFmpeg if the platform decoder cannot be initialized. ``ffmpeg``
+    never uses the platform decoders.
 
     Native decoders still return PCM to mpv's audio filter/output contract.
     This preserves mpv's volume, channel mapping, and ``--af`` support, but it
     is not compressed bitstream passthrough to a platform audio renderer.
+
 ``--audio-output-mode=<auto|passthrough|pcm>``
-    Select how encoded audio is delivered. ``auto`` (default) tries compressed
-    passthrough for AC-3, E-AC-3, DTS and TrueHD, then falls back to decoded
-    PCM if the selected output device rejects passthrough. ``passthrough``
-    requires the compressed path and fails instead of falling back to PCM.
-    ``pcm`` disables passthrough and always uses a decoded PCM path.
+    Select how encoded audio is delivered. ``auto`` (default) behaves like
+    upstream mpv: codecs listed in ``--audio-spdif`` are passed through, with a
+    fallback to decoded PCM if the output device rejects them. ``passthrough``
+    requires the compressed path and fails instead of falling back to PCM; if
+    ``--audio-spdif`` is empty it uses ``ac3,dts,dts-hd,eac3,truehd``. ``pcm``
+    disables passthrough and always decodes to PCM.
 
     Passthrough is intentionally incompatible with audio filters and software
     volume control; the receiver must perform the final decode/render step.
