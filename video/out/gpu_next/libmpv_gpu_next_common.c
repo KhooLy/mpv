@@ -173,6 +173,36 @@ static void hwdec_release(pl_gpu gpu, struct pl_frame *frame)
     ra_hwdec_mapper_unmap(p->hwdec_mapper);
 }
 
+static bool upload_frame(struct gpu_next_priv *p, pl_gpu gpu, pl_tex *tex,
+                         struct mp_image *mpi, struct pl_frame *frame)
+{
+    struct pl_plane_data data[4] = {0};
+    bool use_uint = !format_supported(p, mpi->imgfmt, false);
+    frame->num_planes = plane_data_from_imgfmt(data, &frame->repr.bits, mpi->imgfmt);
+    if (use_uint) {
+        for (int n = 0; n < frame->num_planes; n++)
+            data[n].type = PL_FMT_UINT;
+    }
+    for (int n = 0; n < frame->num_planes; n++) {
+        struct pl_plane *plane = &frame->planes[n];
+        data[n].width = mp_image_plane_w(mpi, n);
+        data[n].height = mp_image_plane_h(mpi, n);
+        if (mpi->stride[n] < 0) {
+            data[n].pixels = mpi->planes[n] + (data[n].height - 1) * mpi->stride[n];
+            data[n].row_stride = -mpi->stride[n];
+            plane->flipped = true;
+        } else {
+            data[n].pixels = mpi->planes[n];
+            data[n].row_stride = mpi->stride[n];
+        }
+        if (!pl_upload_plane(gpu, plane, &tex[n], &data[n])) {
+            MP_ERR(p, "Failed uploading frame!\n");
+            return false;
+        }
+    }
+    return true;
+}
+
 static bool map_frame(pl_gpu gpu, pl_tex *tex, const struct pl_source_frame *src,
                       struct pl_frame *frame)
 {
@@ -212,42 +242,27 @@ static bool map_frame(pl_gpu gpu, pl_tex *tex, const struct pl_source_frame *src
         frame->num_planes = desc.num_planes;
         for (int n = 0; n < frame->num_planes; n++) {
             struct pl_plane *plane = &frame->planes[n];
+            int *map = plane->component_mapping;
             for (int c = 0; c < mp_imgfmt_desc_get_num_comps(&desc); c++) {
                 if (desc.comps[c].plane != n)
                     continue;
-                plane->component_mapping[plane->components++] = c;
+                uint8_t offset = desc.comps[c].offset;
+                int index = plane->components++;
+                while (index > 0 && desc.comps[map[index - 1]].offset > offset) {
+                    map[index] = map[index - 1];
+                    index--;
+                }
+                map[index] = c;
             }
         }
-        return true;
+    } else if (!upload_frame(p, gpu, tex, mpi, frame)) {
+        return false;
     }
 
-    struct pl_plane_data data[4] = {0};
-    bool use_uint = !format_supported(p, mpi->imgfmt, false);
-    frame->num_planes = plane_data_from_imgfmt(data, &frame->repr.bits, mpi->imgfmt);
-    if (use_uint) {
-        for (int n = 0; n < frame->num_planes; n++)
-            data[n].type = PL_FMT_UINT;
-    }
-    for (int n = 0; n < frame->num_planes; n++) {
-        struct pl_plane *plane = &frame->planes[n];
-        data[n].width = mp_image_plane_w(mpi, n);
-        data[n].height = mp_image_plane_h(mpi, n);
-        if (mpi->stride[n] < 0) {
-            data[n].pixels = mpi->planes[n] + (data[n].height - 1) * mpi->stride[n];
-            data[n].row_stride = -mpi->stride[n];
-            plane->flipped = true;
-        } else {
-            data[n].pixels = mpi->planes[n];
-            data[n].row_stride = mpi->stride[n];
-        }
-        if (!pl_upload_plane(gpu, plane, &tex[n], &data[n])) {
-            MP_ERR(p, "Failed uploading frame!\n");
-            return false;
-        }
-    }
     pl_frame_set_chroma_location(frame, par.chroma_location);
     if (mpi->film_grain)
         pl_film_grain_from_av(&frame->film_grain, (AVFilmGrainParams *)mpi->film_grain->data);
+    pl_icc_profile_compute_signature(&frame->profile);
 
     update_lut(p, &p->next_opts->image_lut);
     frame->lut = p->next_opts->image_lut.lut;
