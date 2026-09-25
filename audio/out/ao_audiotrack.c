@@ -673,7 +673,7 @@ static int init(struct ao *ao)
         p->format = AudioFormat.ENCODING_PCM_16BIT;
     }
 
-    if (AudioTrack.getNativeOutputSampleRate) {
+    if (p->format != AudioFormat.ENCODING_IEC61937 && AudioTrack.getNativeOutputSampleRate) {
         jint samplerate = MP_JNI_CALL_STATIC_INT(
             AudioTrack.clazz,
             AudioTrack.getNativeOutputSampleRate,
@@ -711,7 +711,12 @@ static int init(struct ao *ao)
     };
     static_assert(MP_ARRAY_SIZE(layout_map) == MP_ARRAY_SIZE(layouts), "");
     if (p->format == AudioFormat.ENCODING_IEC61937) {
-        p->channel_config = AudioFormat.CHANNEL_OUT_STEREO;
+        if (ao->channels.num == 8 && AudioFormat.CHANNEL_OUT_7POINT1_SURROUND) {
+            p->channel_config = AudioFormat.CHANNEL_OUT_7POINT1_SURROUND;
+        } else {
+            p->channel_config = AudioFormat.CHANNEL_OUT_STEREO;
+            mp_chmap_from_channels(&ao->channels, 2);
+        }
     } else {
         struct mp_chmap_sel sel = {0};
         for (int i = 0; i < MP_ARRAY_SIZE(layouts); i++) {
