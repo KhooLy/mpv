@@ -23,6 +23,7 @@
 #include "osdep/io.h"
 #include "osdep/threads.h"
 #include "osdep/timer.h"
+#include "stream/stream.h"
 #include "mpv_talloc.h"
 #include "common/av_common.h"
 #include "common/msg.h"
@@ -262,11 +263,12 @@ static uint8_t *grab(struct thumbnailer *t, struct demuxer *d,
         if (r < 0 && r != AVERROR(EAGAIN))
             continue;
         sent = true;
-        if (avcodec_receive_frame(avctx, frame) >= 0)
-            goto got;
+        break;
     }
     if (!sent)
         return NULL;
+    if (avcodec_receive_frame(avctx, frame) >= 0)
+        goto got;
     avcodec_send_packet(avctx, NULL);
     if (avcodec_receive_frame(avctx, frame) < 0)
         return NULL;
@@ -307,7 +309,7 @@ static MP_THREAD_VOID thumbnail_thread(void *arg)
     struct thumbnailer *t = arg;
     mp_thread_set_name("thumbnail");
 
-    struct demuxer_params params = {.stream_flags = t->stream_flags};
+    struct demuxer_params params = {.stream_flags = t->stream_flags | STREAM_SPARSE_READS};
     struct demuxer *d = demux_open_url(t->url, &params, t->cancel, t->global);
     if (!d) {
         MP_WARN(t, "Could not open %s\n", t->url);

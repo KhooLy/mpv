@@ -54,6 +54,7 @@
 #define STREAM_LOCAL_FS_ONLY      (1 << 5) // stream_file only, no URLs
 #define STREAM_LESS_NOISE         (1 << 6) // try to log errors only
 #define STREAM_ALLOW_PARTIAL_READ (1 << 7) // allows partial read with stream_read_file()
+#define STREAM_SPARSE_READS       (1 << 8)
 
 // Default flags used by stream_read_file().
 #define STREAM_READ_FILE_FLAGS_DEFAULT \
@@ -166,6 +167,7 @@ typedef struct stream {
     bool is_regular : 1; // regular file
     bool access_references : 1; // open other streams
     bool allow_partial_read : 1; // allows partial read with stream_read_file()
+    bool sparse_reads : 1;
     struct mp_log *log;
     struct mpv_global *global;
 
