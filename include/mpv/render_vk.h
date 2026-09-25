@@ -56,10 +56,8 @@ extern "C" {
  * recreate both semaphores (and re-transition the image) before reusing
  * them after a failure.
  *
- * This backend additionally requires that
- * MPV_LIBMPV_RENDER_BACKEND=gpu-next is set in the environment before
- * mpv_render_context_create() is called, same as the OpenGL gpu-next
- * backend -- it is opt-in and does not affect any other libmpv embedder.
+ * Selecting this API type is enough to use the gpu-next renderer; unlike the
+ * OpenGL backend it does not need MPV_LIBMPV_RENDER_BACKEND.
  */
 
 /**
@@ -105,6 +103,22 @@ typedef struct mpv_vulkan_init_params {
      */
     const char *const *enabled_extensions;
     int num_enabled_extensions;
+    /**
+     * Optional. The feature chain `device` was created with. If NULL, mpv
+     * assumes the device enabled at least libplacebo's required features
+     * (pl_vulkan_required_features). Hardware decoding via Vulkan Video needs
+     * the real chain here.
+     */
+    const VkPhysicalDeviceFeatures2 *features;
+    /**
+     * Optional. Transfer and compute queue families mpv may use, with the
+     * number of queues it may use from each. A count of 0 means the family is
+     * not available to mpv.
+     */
+    uint32_t queue_transfer_index;
+    uint32_t queue_transfer_count;
+    uint32_t queue_compute_index;
+    uint32_t queue_compute_count;
 } mpv_vulkan_init_params;
 
 /**

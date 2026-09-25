@@ -44,10 +44,6 @@ static int init(struct render_backend *ctx, mpv_render_param *params)
     p->api_priv = a;
     p->wrap_hwdec_tex = wrap_hwdec_tex;
 
-    const char *backend = getenv("MPV_LIBMPV_RENDER_BACKEND");
-    if (!backend || strcmp(backend, "gpu-next") != 0)
-        return MPV_ERROR_NOT_IMPLEMENTED;
-
     char *api = get_mpv_render_param(params, MPV_RENDER_PARAM_API_TYPE, NULL);
     if (!api || strcmp(api, MPV_RENDER_API_TYPE_VULKAN) != 0)
         return MPV_ERROR_NOT_IMPLEMENTED;
@@ -75,7 +71,16 @@ static int init(struct render_backend *ctx, mpv_render_param *params)
             .index = init_params->queue_graphics_index,
             .count = MPMAX(init_params->queue_graphics_count, 1),
         },
-        .features = &pl_vulkan_required_features,
+        .queue_transfer = {
+            .index = init_params->queue_transfer_index,
+            .count = init_params->queue_transfer_count,
+        },
+        .queue_compute = {
+            .index = init_params->queue_compute_index,
+            .count = init_params->queue_compute_count,
+        },
+        .features = init_params->features ? init_params->features
+                                          : &pl_vulkan_required_features,
     ));
     if (!a->vk) {
         mp_err(ctx->log,
