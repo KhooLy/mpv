@@ -59,6 +59,10 @@ MPV_LIBMPV_RENDER_BACKEND=gpu-next
 Then create the render context the normal way, with
 `MPV_RENDER_PARAM_API_TYPE` set to `MPV_RENDER_API_TYPE_OPENGL`.
 
+The Vulkan (`MPV_RENDER_API_TYPE_VULKAN`, `render_vk.h`) and D3D11
+(`MPV_RENDER_API_TYPE_D3D11`, `render_d3d11.h`) API types are new, so they
+select the gpu-next backend without the environment variable.
+
 ## What changed
 
 - New files: `video/out/gpu_next/libmpv_gpu_next_common.{c,h}` (shared

@@ -45,11 +45,8 @@ extern "C" {
  * gets from submitting its own work on the same device before and after
  * calling mpv_render_context_render().
  *
- * This backend additionally requires that
- * MPV_LIBMPV_RENDER_BACKEND=gpu-next is set in the environment before
- * mpv_render_context_create() is called, same as the OpenGL and Vulkan
- * gpu-next backends -- it is opt-in and does not affect any other libmpv
- * embedder.
+ * Selecting this API type is enough to use the gpu-next renderer; unlike the
+ * OpenGL backend it does not need MPV_LIBMPV_RENDER_BACKEND.
  */
 
 /**
