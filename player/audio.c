@@ -16,6 +16,7 @@
  */
 
 #include <stddef.h>
+#include <string.h>
 #include <stdbool.h>
 #include <inttypes.h>
 #include <limits.h>
@@ -38,6 +39,10 @@
 #include "filters/filter_internal.h"
 
 #include "core.h"
+
+#if HAVE_ANDROID
+#include "misc/jni.h"
+#endif
 #include "command.h"
 
 enum {
@@ -85,12 +90,49 @@ static void update_speed_filters(struct MPContext *mpctx)
     mp_output_chain_set_audio_speed(ao_c->filter, speed, resample, drop);
 }
 
+static bool want_ac3_transcode(struct MPContext *mpctx)
+{
+    struct ao_chain *ao_c = mpctx->ao_chain;
+    const char *dec = ao_c->track && ao_c->track->stream ?
+                      ao_c->track->stream->codec->decoder : NULL;
+    if (dec && strncmp(dec, "spdif_", 6) == 0)
+        return false;
+
+    switch (mpctx->opts->audio_ac3_transcode) {
+    case 1:
+        return true;
+    case 2: {
+#if HAVE_ANDROID
+        struct mp_jni_audio_caps caps;
+        mp_jni_audio_caps(mpctx->log, &caps);
+        return caps.ac3 && caps.max_channels <= 2;
+#endif
+    }
+    }
+    return false;
+}
+
 static int recreate_audio_filters(struct MPContext *mpctx)
 {
     struct ao_chain *ao_c = mpctx->ao_chain;
     mp_assert(ao_c);
 
-    if (!mp_output_chain_update_filters(ao_c->filter, mpctx->opts->af_settings))
+    struct m_obj_settings *list = mpctx->opts->af_settings;
+    if (want_ac3_transcode(mpctx)) {
+        int num = 0;
+        while (list && list[num].name)
+            num++;
+        struct m_obj_settings *ext = talloc_zero_array(NULL, struct m_obj_settings, num + 2);
+        for (int n = 0; n < num; n++)
+            ext[n] = list[n];
+        ext[num] = (struct m_obj_settings){.name = "lavcac3enc", .enabled = true};
+        list = ext;
+        MP_VERBOSE(mpctx, "Transcoding multichannel audio to AC3.\n");
+    }
+    bool ok = mp_output_chain_update_filters(ao_c->filter, list);
+    if (list != mpctx->opts->af_settings)
+        talloc_free(list);
+    if (!ok)
         goto fail;
 
     update_speed_filters(mpctx);
@@ -472,6 +514,8 @@ static int reinit_audio_filters_and_output(struct MPContext *mpctx)
             ao_c->spdif_failed = true;
             mp_decoder_wrapper_set_spdif_flag(ao_c->track->dec, false);
             if (!mp_decoder_wrapper_reinit(ao_c->track->dec))
+                goto init_error;
+            if (recreate_audio_filters(mpctx) < 0)
                 goto init_error;
             reset_audio_state(mpctx);
             mp_output_chain_reset_harder(ao_c->filter);

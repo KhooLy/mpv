@@ -342,6 +342,7 @@ typedef struct MPOpts {
     bool pitch_correction;
     struct m_obj_settings *vf_settings;
     struct m_obj_settings *af_settings;
+    int audio_ac3_transcode;
     struct filter_opts *filter_opts;
     struct dec_wrapper_opts *dec_wrapper;
     char **sub_name;

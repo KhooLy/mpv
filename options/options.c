@@ -697,6 +697,8 @@ static const m_option_t mp_opts[] = {
 // ------------------------- codec/vfilter options --------------------
 
     {"af", OPT_SETTINGSLIST(af_settings, &af_obj_list)},
+    {"audio-ac3-transcode", OPT_CHOICE(audio_ac3_transcode,
+        {"no", 0}, {"yes", 1}, {"auto", 2}), .flags = UPDATE_AUDIO},
     {"vf", OPT_SETTINGSLIST(vf_settings, &vf_obj_list)},
 
     {"", OPT_SUBSTRUCT(filter_opts, filter_conf)},

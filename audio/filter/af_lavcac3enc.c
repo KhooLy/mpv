@@ -191,7 +191,8 @@ static void af_lavcac3enc_process(struct mp_filter *f)
         case MP_FRAME_AUDIO:
             TA_FREEP(&s->in_frame);
             s->in_frame = input.data;
-            if (mp_aframe_get_channels(s->in_frame) < s->opts->min_channel_num) {
+            if (af_fmt_is_spdif(mp_aframe_get_format(s->in_frame)) ||
+                mp_aframe_get_channels(s->in_frame) < s->opts->min_channel_num) {
                 // Just pass it through.
                 s->in_frame = NULL;
                 mp_pin_in_write(f->ppins[1], input);
