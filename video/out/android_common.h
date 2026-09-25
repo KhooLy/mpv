@@ -34,3 +34,4 @@ bool vo_android_surface_size(struct vo *vo, int *w, int *h);
 // provide it itself.
 void vo_android_set_buffers_dataspace(struct vo *vo,
                                       const struct mp_image_params *params);
+void vo_android_set_frame_rate(struct vo *vo, float fps);

@@ -33,6 +33,7 @@ struct vo_android_state {
     ANativeWindow *native_window;
     void *native_window_lib;
     int32_t (*set_buffers_dataspace)(ANativeWindow *, int32_t);
+    int32_t (*set_frame_rate)(ANativeWindow *, float, int8_t);
     int32_t last_dataspace;
 };
 
@@ -94,6 +95,9 @@ bool vo_android_init(struct vo *vo)
     if (!ctx->set_buffers_dataspace)
         ctx->set_buffers_dataspace = (void *)dlsym(
             RTLD_DEFAULT, "ANativeWindow_setBuffersDataSpace");
+    if (ctx->native_window_lib)
+        ctx->set_frame_rate = (void *)dlsym(ctx->native_window_lib,
+                                            "ANativeWindow_setFrameRate");
 
     JNIEnv *env = MP_JNI_GET_ENV(ctx);
     if (!env) {
@@ -189,4 +193,19 @@ void vo_android_set_buffers_dataspace(struct vo *vo,
                dataspace == ADATASPACE_BT2020_ITU_HLG ||
                        dataspace == ADATASPACE_BT2020_HLG ? "BT.2020/HLG" :
                dataspace == ADATASPACE_UNKNOWN ? "unknown" : "SDR");
+}
+
+void vo_android_set_frame_rate(struct vo *vo, float fps)
+{
+    struct vo_android_state *ctx = vo->android;
+    if (!ctx || !ctx->native_window || !ctx->set_frame_rate)
+        return;
+
+    int8_t compatibility = fps > 0 ? 1 : 0;
+    int32_t ret = ctx->set_frame_rate(ctx->native_window, fps, compatibility);
+    if (ret < 0) {
+        MP_VERBOSE(ctx, "Failed to set Android surface frame rate %.3f: %d\n", fps, ret);
+    } else {
+        MP_VERBOSE(ctx, "Android surface frame rate set to %.3f\n", fps);
+    }
 }
