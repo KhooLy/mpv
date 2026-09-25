@@ -15,11 +15,14 @@
  * License along with mpv.  If not, see <http://www.gnu.org/licenses/>.
  */
 
+#include <time.h>
+
 #include <libavcodec/mediacodec.h>
 #include <libavutil/hwcontext.h>
 #include <libavutil/hwcontext_mediacodec.h>
 
 #include "common/common.h"
+#include "osdep/timer.h"
 #include "vo.h"
 #include "video/mp_image.h"
 #include "video/hwdec.h"
@@ -89,14 +92,13 @@ static void flip_page(struct vo *vo)
     int err = 0;
     bool timed = false;
     if (p->next_image_pts > 0) {
-        // Match Media3's timed output release. mpv's VO pts is already in the
-        // monotonic clock domain used by MediaCodec's releaseOutputBuffer.
-        const int64_t now = mp_time_ns();
-        const int64_t delta = p->next_image_pts - now;
+        const int64_t delta = p->next_image_pts - mp_time_ns();
         if (delta > -MP_TIME_S_TO_NS(1) && delta < MP_TIME_S_TO_NS(1)) {
+            struct timespec ts;
+            clock_gettime(CLOCK_MONOTONIC, &ts);
+            int64_t target = MP_TIME_S_TO_NS(ts.tv_sec) + ts.tv_nsec + delta;
             timed = true;
-            err = av_mediacodec_render_buffer_at_time(buffer,
-                                                       p->next_image_pts);
+            err = av_mediacodec_render_buffer_at_time(buffer, target);
         }
     }
     if (!timed)
