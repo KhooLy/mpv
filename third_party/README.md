@@ -12,13 +12,18 @@ git apply /path/to/ffmpeg-mediacodec.patch
 It is generated against FFmpeg `bf1b838` and mirrors Media3's Android decoder
 behavior:
 
-- streams carrying `AV_PKT_DATA_DOVI_CONF` try `video/dolby-vision` first,
-  with the Android Dolby Vision profile and stream color information in the
-  `MediaFormat`, then retry with the compatible base-layer MIME
-  (`video/hevc`, `video/avc`, or `video/av01`) if the device cannot
-  initialize the Dolby Vision decoder;
-- `prefer_base_layer` skips the Dolby Vision decoder, for displays that do not
-  advertise Dolby Vision;
+- Dolby Vision decoder selection follows Media3's `MediaCodecVideoRenderer`
+  and `MediaCodecUtil.getAlternativeCodecMimeType()`: `video/dolby-vision`
+  is tried first, with the Android DV profile in the `MediaFormat`. Only
+  profiles 4 and 8 (HEVC), 9 (AVC) and 10 (AV1, except full-range PQ) have a
+  base-layer alternative. Profiles 5 and 7 never fall back, since their base
+  layer is not a displayable stream;
+- `prefer_base_layer` goes straight to that alternative decoder, as Media3
+  does when the display does not advertise Dolby Vision. mpv sets it
+  automatically on Android after querying the default display;
+- mastering display and content light level metadata are passed as
+  `hdr-static-info`, together with `frame-rate` and `priority=0`, like
+  Media3's `MediaFormatUtil.maybeSetColorInfo()`;
 - `tone_map_to_sdr` requests MediaCodec HDR-to-SDR output
   (`--vd-lavc-o=tone_map_to_sdr=1`);
 - codec selection also checks `VideoCapabilities.areSizeAndRateSupported()`;

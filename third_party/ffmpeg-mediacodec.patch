@@ -97,18 +97,19 @@ index 18d0796..fc90893 100644
  typedef struct FFAMediaFormat FFAMediaFormat;
  struct FFAMediaFormat {
 diff --git a/libavcodec/mediacodecdec.c b/libavcodec/mediacodecdec.c
-index bc176d8..b36f5b0 100644
+index bc176d8..06f260a 100644
 --- a/libavcodec/mediacodecdec.c
 +++ b/libavcodec/mediacodecdec.c
-@@ -32,6 +32,7 @@
+@@ -32,6 +32,8 @@
  #include "libavutil/intreadwrite.h"
  #include "libavutil/pixfmt.h"
  #include "libavutil/internal.h"
 +#include "libavutil/dovi_meta.h"
++#include "libavutil/mastering_display_metadata.h"
  
  #include "avcodec.h"
  #include "codec_internal.h"
-@@ -59,6 +60,11 @@ typedef struct MediaCodecH264DecContext {
+@@ -59,6 +61,11 @@ typedef struct MediaCodecH264DecContext {
      int use_ndk_codec;
      // Ref. MediaFormat KEY_OPERATING_RATE
      int operating_rate;
@@ -120,7 +121,7 @@ index bc176d8..b36f5b0 100644
  } MediaCodecH264DecContext;
  
  static av_cold int mediacodec_decode_close(AVCodecContext *avctx)
-@@ -139,6 +145,9 @@ static int h264_set_extradata(AVCodecContext *avctx, FFAMediaFormat *format)
+@@ -139,6 +146,9 @@ static int h264_set_extradata(AVCodecContext *avctx, FFAMediaFormat *format)
      int is_avc = 0;
      int nal_length_size = 0;
  
@@ -130,7 +131,7 @@ index bc176d8..b36f5b0 100644
      ret = ff_h264_decode_extradata(avctx->extradata, avctx->extradata_size,
                                     &ps, &is_avc, &nal_length_size, 0, avctx);
      if (ret < 0) {
-@@ -213,6 +222,9 @@ static int hevc_set_extradata(AVCodecContext *avctx, FFAMediaFormat *format)
+@@ -213,6 +223,9 @@ static int hevc_set_extradata(AVCodecContext *avctx, FFAMediaFormat *format)
      int sps_data_size = 0;
      int pps_data_size = 0;
  
@@ -140,7 +141,7 @@ index bc176d8..b36f5b0 100644
      ret = ff_hevc_decode_extradata(avctx->extradata, avctx->extradata_size,
                                     &ps, &sei, &is_nalff, &nal_length_size, 0, 1, avctx);
      if (ret < 0) {
-@@ -305,12 +317,64 @@ static int common_set_extradata(AVCodecContext *avctx, FFAMediaFormat *format)
+@@ -305,12 +318,131 @@ static int common_set_extradata(AVCodecContext *avctx, FFAMediaFormat *format)
  }
  #endif
  
@@ -167,6 +168,72 @@ index bc176d8..b36f5b0 100644
 +    default:
 +        return -1;
 +    }
++}
++
++static const char *mediacodec_dolby_vision_alternative_mime(
++    AVCodecContext *avctx, const AVPacketSideData *sd, const char *base_codec_mime)
++{
++    const AVDOVIDecoderConfigurationRecord *cfg =
++        (const AVDOVIDecoderConfigurationRecord *)sd->data;
++    const char *mime = NULL;
++    switch (cfg->dv_profile) {
++    case 4:
++    case 8:
++        mime = "video/hevc";
++        break;
++    case 9:
++        mime = "video/avc";
++        break;
++    case 10:
++        if (avctx->color_trc == AVCOL_TRC_SMPTE2084 &&
++            avctx->color_range == AVCOL_RANGE_JPEG)
++            return NULL;
++        mime = "video/av01";
++        break;
++    default:
++        return NULL;
++    }
++    return base_codec_mime && !strcmp(mime, base_codec_mime) ? mime : NULL;
++}
++
++static void mediacodec_set_hdr_static_info(AVCodecContext *avctx,
++                                           FFAMediaFormat *format)
++{
++    const AVPacketSideData *sd = ff_get_coded_side_data(
++        avctx, AV_PKT_DATA_MASTERING_DISPLAY_METADATA);
++    if (!sd || sd->size < sizeof(AVMasteringDisplayMetadata))
++        return;
++    const AVMasteringDisplayMetadata *mdm =
++        (const AVMasteringDisplayMetadata *)sd->data;
++    if (!mdm->has_primaries || !mdm->has_luminance)
++        return;
++
++    unsigned max_cll = 0, max_fall = 0;
++    sd = ff_get_coded_side_data(avctx, AV_PKT_DATA_CONTENT_LIGHT_LEVEL);
++    if (sd && sd->size >= sizeof(AVContentLightMetadata)) {
++        const AVContentLightMetadata *clm = (const AVContentLightMetadata *)sd->data;
++        max_cll = clm->MaxCLL;
++        max_fall = clm->MaxFALL;
++    }
++
++    uint16_t values[12] = {
++        av_rescale_q(1, mdm->display_primaries[0][0], (AVRational){1, 50000}),
++        av_rescale_q(1, mdm->display_primaries[0][1], (AVRational){1, 50000}),
++        av_rescale_q(1, mdm->display_primaries[1][0], (AVRational){1, 50000}),
++        av_rescale_q(1, mdm->display_primaries[1][1], (AVRational){1, 50000}),
++        av_rescale_q(1, mdm->display_primaries[2][0], (AVRational){1, 50000}),
++        av_rescale_q(1, mdm->display_primaries[2][1], (AVRational){1, 50000}),
++        av_rescale_q(1, mdm->white_point[0], (AVRational){1, 50000}),
++        av_rescale_q(1, mdm->white_point[1], (AVRational){1, 50000}),
++        av_rescale_q(1, mdm->max_luminance, (AVRational){1, 1}),
++        av_rescale_q(1, mdm->min_luminance, (AVRational){1, 10000}),
++        FFMIN(max_cll, UINT16_MAX),
++        FFMIN(max_fall, UINT16_MAX),
++    };
++    uint8_t info[25] = {0};
++    for (int i = 0; i < 12; i++)
++        AV_WL16(info + 1 + 2 * i, values[i]);
++    ff_AMediaFormat_setBuffer(format, "hdr-static-info", info, sizeof(info));
 +}
 +
 +static void mediacodec_set_color_info(AVCodecContext *avctx,
@@ -197,6 +264,7 @@ index bc176d8..b36f5b0 100644
  
      const char *codec_mime = NULL;
 +    const char *base_codec_mime = NULL;
++    const char *alternative_mime = NULL;
 +    const AVPacketSideData *dovi_sd =
 +        ff_get_coded_side_data(avctx, AV_PKT_DATA_DOVI_CONF);
 +    int dovi_profile = mediacodec_dolby_vision_profile(dovi_sd);
@@ -205,46 +273,54 @@ index bc176d8..b36f5b0 100644
  
      FFAMediaFormat *format = NULL;
      MediaCodecH264DecContext *s = avctx->priv_data;
-@@ -328,7 +392,10 @@ static av_cold int mediacodec_decode_init(AVCodecContext *avctx)
+@@ -328,6 +460,7 @@ static av_cold int mediacodec_decode_init(AVCodecContext *avctx)
      switch (avctx->codec_id) {
  #if CONFIG_AV1_MEDIACODEC_DECODER
      case AV_CODEC_ID_AV1:
 +        base_codec_mime = "video/av01";
          codec_mime = "video/av01";
-+        if (is_dolby_vision && !s->prefer_base_layer)
-+            codec_mime = "video/dolby-vision";
  
          ret = common_set_extradata(avctx, format);
-         if (ret < 0)
-@@ -337,7 +404,10 @@ static av_cold int mediacodec_decode_init(AVCodecContext *avctx)
+@@ -337,6 +470,7 @@ static av_cold int mediacodec_decode_init(AVCodecContext *avctx)
  #endif
  #if CONFIG_H264_MEDIACODEC_DECODER
      case AV_CODEC_ID_H264:
 +        base_codec_mime = "video/avc";
          codec_mime = "video/avc";
-+        if (is_dolby_vision && !s->prefer_base_layer)
-+            codec_mime = "video/dolby-vision";
  
          ret = h264_set_extradata(avctx, format);
-         if (ret < 0)
-@@ -346,7 +416,10 @@ static av_cold int mediacodec_decode_init(AVCodecContext *avctx)
+@@ -346,6 +480,7 @@ static av_cold int mediacodec_decode_init(AVCodecContext *avctx)
  #endif
  #if CONFIG_HEVC_MEDIACODEC_DECODER
      case AV_CODEC_ID_HEVC:
 +        base_codec_mime = "video/hevc";
          codec_mime = "video/hevc";
-+        if (is_dolby_vision && !s->prefer_base_layer)
-+            codec_mime = "video/dolby-vision";
  
          ret = hevc_set_extradata(avctx, format);
-         if (ret < 0)
-@@ -430,6 +503,20 @@ static av_cold int mediacodec_decode_init(AVCodecContext *avctx)
+@@ -429,7 +564,37 @@ static av_cold int mediacodec_decode_init(AVCodecContext *avctx)
+         av_assert0(0);
      }
  
++    if (is_dolby_vision) {
++        alternative_mime = mediacodec_dolby_vision_alternative_mime(
++            avctx, dovi_sd, base_codec_mime);
++        codec_mime = s->prefer_base_layer && alternative_mime
++                     ? alternative_mime : "video/dolby-vision";
++        av_log(avctx, AV_LOG_VERBOSE,
++               "Dolby Vision stream: using %s, alternative %s\n", codec_mime,
++               alternative_mime ? alternative_mime : "none");
++    }
++
      ff_AMediaFormat_setString(format, "mime", codec_mime);
-+    if (dovi_profile >= 0 && base_codec_mime && !s->prefer_base_layer)
++    if (dovi_profile >= 0 && !strcmp(codec_mime, "video/dolby-vision"))
 +        ff_AMediaFormat_setInt32(format, "profile", dovi_profile);
 +    mediacodec_set_color_info(avctx, format);
++    mediacodec_set_hdr_static_info(avctx, format);
++    if (avctx->codec_type == AVMEDIA_TYPE_VIDEO) {
++        if (avctx->framerate.num > 0 && avctx->framerate.den > 0)
++            ff_AMediaFormat_setFloat(format, "frame-rate", av_q2d(avctx->framerate));
++        ff_AMediaFormat_setInt32(format, "priority", 0);
++    }
 +    if (s->tone_map_to_sdr && avctx->codec_type == AVMEDIA_TYPE_VIDEO &&
 +        ff_Build_SDK_INT(avctx) >= 31) {
 +        // Android's public MediaFormat contract: when accepted by the
@@ -259,7 +335,7 @@ index bc176d8..b36f5b0 100644
  
      if (avctx->codec_type == AVMEDIA_TYPE_VIDEO) {
          ff_AMediaFormat_setInt32(format, "width", avctx->width);
-@@ -451,9 +538,32 @@ static av_cold int mediacodec_decode_init(AVCodecContext *avctx)
+@@ -451,9 +616,32 @@ static av_cold int mediacodec_decode_init(AVCodecContext *avctx)
      s->ctx->delay_flush = s->delay_flush;
      s->ctx->use_ndk_codec = s->use_ndk_codec;
  
@@ -268,11 +344,11 @@ index bc176d8..b36f5b0 100644
 +    if (ret < 0) {
          s->ctx = NULL;
 -        goto done;
-+        if (is_dolby_vision && base_codec_mime && !s->prefer_base_layer) {
++        if (alternative_mime && strcmp(codec_mime, alternative_mime)) {
 +            av_log(avctx, AV_LOG_INFO,
 +                   "Dolby Vision decoder unavailable for %s; trying %s\n",
-+                   codec_mime, base_codec_mime);
-+            ff_AMediaFormat_setString(format, "mime", base_codec_mime);
++                   codec_mime, alternative_mime);
++            ff_AMediaFormat_setString(format, "mime", alternative_mime);
 +            s->ctx = av_mallocz(sizeof(*s->ctx));
 +            if (!s->ctx) {
 +                ret = AVERROR(ENOMEM);
@@ -283,18 +359,18 @@ index bc176d8..b36f5b0 100644
 +            int base_profile = ff_AMediaCodecProfile_getProfileFromAVCodecContext(avctx);
 +            if (base_profile >= 0)
 +                ff_AMediaFormat_setInt32(format, "profile", base_profile);
-+            ret = ff_mediacodec_dec_init(avctx, s->ctx, base_codec_mime, format);
++            ret = ff_mediacodec_dec_init(avctx, s->ctx, alternative_mime, format);
 +            if (ret < 0)
 +                s->ctx = NULL;
 +            else
-+                codec_mime = base_codec_mime;
++                codec_mime = alternative_mime;
 +        }
 +        if (ret < 0)
 +            goto done;
      }
  
      av_log(avctx, AV_LOG_INFO,
-@@ -600,6 +710,10 @@ static const AVOption ff_mediacodec_vdec_options[] = {
+@@ -600,6 +788,10 @@ static const AVOption ff_mediacodec_vdec_options[] = {
                     OFFSET(use_ndk_codec), AV_OPT_TYPE_BOOL, {.i64 = -1}, -1, 1, VD },
      { "operating_rate", "The desired operating rate that the codec will need to operate at, zero for unspecified",
              OFFSET(operating_rate), AV_OPT_TYPE_INT, {.i64 = 0}, 0, INT_MAX, VD },
@@ -306,7 +382,7 @@ index bc176d8..b36f5b0 100644
  };
  
 diff --git a/libavcodec/mediacodecdec_common.c b/libavcodec/mediacodecdec_common.c
-index 9a627c0..e680675 100644
+index 9a627c0..0d38b99 100644
 --- a/libavcodec/mediacodecdec_common.c
 +++ b/libavcodec/mediacodecdec_common.c
 @@ -772,12 +772,13 @@ static int mediacodec_dec_get_video_codec(AVCodecContext *avctx, MediaCodecDecCo
@@ -326,3 +402,16 @@ index 9a627c0..e680675 100644
      if (!s->codec_name) {
          // getCodecNameByType() can fail due to missing JVM, while NDK
          // mediacodec can be used without JVM.
+@@ -847,6 +848,12 @@ int ff_mediacodec_dec_init(AVCodecContext *avctx, MediaCodecDecContext *s,
+     if (ret < 0)
+         goto fail;
+ 
++    {
++        char *desc = ff_AMediaFormat_toString(format);
++        av_log(avctx, AV_LOG_VERBOSE, "Configuring %s with format %s\n",
++               s->codec_name, desc ? desc : "?");
++        av_freep(&desc);
++    }
+     status = ff_AMediaCodec_configure(s->codec, format, s->surface, NULL, 0);
+     if (status < 0) {
+         char *desc = ff_AMediaFormat_toString(format);
