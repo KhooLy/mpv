@@ -357,6 +357,8 @@ static int mapper_map(struct ra_hwdec_mapper *mapper)
     mp_mutex_lock(&p->lock);
     if (!p->image_available) {
         mp_cond_timedwait(&p->cond, &p->lock, MP_TIME_MS_TO_NS(100));
+        if (!p->image_available)
+            MP_WARN(mapper, "Waiting for frame timed out!\n");
     }
     image_available = p->image_available;
     p->image_available = false;
