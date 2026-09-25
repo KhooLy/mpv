@@ -22,6 +22,7 @@
 #include <libavcodec/jni.h>
 #include <stdlib.h>
 
+#include "common/common.h"
 #include "jni.h"
 #include "mpv_talloc.h"
 #include "osdep/threads.h"
@@ -380,4 +381,91 @@ int mp_jni_reset_jfields(JNIEnv *env, void *jfields,
     }
 
     return 0;
+}
+
+static jobject get_app_context(JNIEnv *env)
+{
+    jobject ctx = av_jni_get_android_app_ctx();
+    if (ctx)
+        return (*env)->NewLocalRef(env, ctx);
+
+    jclass thread = (*env)->FindClass(env, "android/app/ActivityThread");
+    if (!thread) {
+        mp_jni_exception_check(env, 0, NULL);
+        return NULL;
+    }
+    jmethodID current = (*env)->GetStaticMethodID(env, thread, "currentApplication",
+                                                  "()Landroid/app/Application;");
+    jobject app = current ? (*env)->CallStaticObjectMethod(env, thread, current) : NULL;
+    mp_jni_exception_check(env, 0, NULL);
+    (*env)->DeleteLocalRef(env, thread);
+    return app;
+}
+
+bool mp_jni_display_supports_dolby_vision(struct mp_log *log)
+{
+    JNIEnv *env = mp_jni_get_env(log);
+    if (!env)
+        return false;
+
+    bool supported = false;
+    jobject ctx = get_app_context(env);
+    jobject manager = NULL, display = NULL, caps = NULL;
+    jintArray types = NULL;
+    jclass context_class = NULL, manager_class = NULL, display_class = NULL,
+           caps_class = NULL;
+    jstring service = NULL;
+    if (!ctx)
+        goto done;
+
+    context_class = (*env)->FindClass(env, "android/content/Context");
+    manager_class = (*env)->FindClass(env, "android/hardware/display/DisplayManager");
+    display_class = (*env)->FindClass(env, "android/view/Display");
+    caps_class = (*env)->FindClass(env, "android/view/Display$HdrCapabilities");
+    if (!context_class || !manager_class || !display_class || !caps_class)
+        goto done;
+
+    jmethodID get_service = (*env)->GetMethodID(env, context_class, "getSystemService",
+                                                "(Ljava/lang/String;)Ljava/lang/Object;");
+    jmethodID get_display = (*env)->GetMethodID(env, manager_class, "getDisplay",
+                                                "(I)Landroid/view/Display;");
+    jmethodID is_hdr = (*env)->GetMethodID(env, display_class, "isHdr", "()Z");
+    jmethodID get_caps = (*env)->GetMethodID(env, display_class, "getHdrCapabilities",
+                                             "()Landroid/view/Display$HdrCapabilities;");
+    jmethodID get_types = (*env)->GetMethodID(env, caps_class, "getSupportedHdrTypes", "()[I");
+    if (!get_service || !get_display || !is_hdr || !get_caps || !get_types)
+        goto done;
+
+    service = (*env)->NewStringUTF(env, "display");
+    manager = (*env)->CallObjectMethod(env, ctx, get_service, service);
+    if (mp_jni_exception_check(env, 0, NULL) < 0 || !manager)
+        goto done;
+    display = (*env)->CallObjectMethod(env, manager, get_display, 0);
+    if (mp_jni_exception_check(env, 0, NULL) < 0 || !display)
+        goto done;
+    if (!(*env)->CallBooleanMethod(env, display, is_hdr))
+        goto done;
+    caps = (*env)->CallObjectMethod(env, display, get_caps);
+    if (mp_jni_exception_check(env, 0, NULL) < 0 || !caps)
+        goto done;
+    types = (*env)->CallObjectMethod(env, caps, get_types);
+    if (mp_jni_exception_check(env, 0, NULL) < 0 || !types)
+        goto done;
+
+    jsize n = (*env)->GetArrayLength(env, types);
+    jint *values = (*env)->GetIntArrayElements(env, types, NULL);
+    for (jsize i = 0; values && i < n; i++)
+        supported |= values[i] == 1;
+    if (values)
+        (*env)->ReleaseIntArrayElements(env, types, values, JNI_ABORT);
+
+done:
+    mp_jni_exception_check(env, 0, NULL);
+    jobject refs[] = {ctx, manager, display, caps, types, context_class,
+                      manager_class, display_class, caps_class, service};
+    for (int i = 0; i < MP_ARRAY_SIZE(refs); i++) {
+        if (refs[i])
+            (*env)->DeleteLocalRef(env, refs[i]);
+    }
+    return supported;
 }

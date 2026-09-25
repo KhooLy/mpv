@@ -56,6 +56,10 @@
 
 #include "options/m_option.h"
 
+#if HAVE_ANDROID
+#include "misc/jni.h"
+#endif
+
 static void init_avctx(struct mp_filter *vd);
 static void uninit_avctx(struct mp_filter *vd);
 
@@ -761,6 +765,15 @@ static void init_avctx(struct mp_filter *vd)
         avctx->hwaccel_flags |= AV_HWACCEL_FLAG_IGNORE_LEVEL;
         if (!lavc_param->check_hw_profile)
             avctx->hwaccel_flags |= AV_HWACCEL_FLAG_ALLOW_PROFILE_MISMATCH;
+
+#if HAVE_ANDROID
+        if (ctx->hwdec.lavc_device == AV_HWDEVICE_TYPE_MEDIACODEC &&
+            ctx->codec->dovi && !mp_jni_display_supports_dolby_vision(vd->log))
+        {
+            MP_VERBOSE(vd, "Display lacks Dolby Vision; preferring base-layer decoder.\n");
+            av_opt_set(avctx, "prefer_base_layer", "1", AV_OPT_SEARCH_CHILDREN);
+        }
+#endif
 
 #ifdef AV_HWACCEL_FLAG_UNSAFE_OUTPUT
         /*
