@@ -812,19 +812,24 @@ void lgn_reset(struct render_backend *ctx)
     p->want_reset = true;
 }
 
+static void update_queue_params(struct gpu_next_priv *p)
+{
+    if (!p->vo)
+        return;
+    int req_frames = 2;
+    if (p->pars->params.frame_mixer) {
+        req_frames += ceilf(p->pars->params.frame_mixer->kernel->radius) *
+                      (p->pars->params.skip_anti_aliasing ? 1 : 2);
+    }
+    vo_set_queue_params(p->vo, 0, MPMIN(VO_MAX_REQ_FRAMES, req_frames));
+}
+
 void lgn_update_external(struct render_backend *ctx, struct vo *vo)
 {
     struct gpu_next_priv *p = ctx->priv;
     p->osd = vo ? vo->osd : NULL;
     p->vo = vo;
-    if (vo) {
-        int req_frames = 2;
-        if (p->pars->params.frame_mixer) {
-            req_frames += ceilf(p->pars->params.frame_mixer->kernel->radius) *
-                          (p->pars->params.skip_anti_aliasing ? 1 : 2);
-        }
-        vo_set_queue_params(vo, 0, MPMIN(VO_MAX_REQ_FRAMES, req_frames));
-    }
+    update_queue_params(p);
 }
 
 void lgn_resize(struct render_backend *ctx, struct mp_rect *src,
@@ -844,8 +849,10 @@ bool lgn_render_frame(struct render_backend *ctx, mpv_render_param *params,
 
     bool opts_changed = m_config_cache_update(p->opts_cache);
     opts_changed = m_config_cache_update(p->next_opts_cache) || opts_changed;
-    if (opts_changed)
+    if (opts_changed) {
         update_render_options(ctx);
+        update_queue_params(p);
+    }
 
     struct pl_frame target = {
         .repr = pl_color_repr_rgb,
