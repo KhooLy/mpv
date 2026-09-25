@@ -381,6 +381,10 @@ static int open_f(stream_t *stream)
 
     av_dict_set(&dict, "reconnect", "1", 0);
     av_dict_set(&dict, "reconnect_delay_max", "7", 0);
+    if (stream->sparse_reads) {
+        av_dict_set(&dict, "multiple_requests", "1", 0);
+        av_dict_set(&dict, "request_size", "262144", 0);
+    }
 
     mp_setup_av_network_options(&dict, NULL, stream->global, stream->log);
 
