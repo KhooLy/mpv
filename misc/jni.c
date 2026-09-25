@@ -19,6 +19,7 @@
  * License along with mpv.  If not, see <http://www.gnu.org/licenses/>.
  */
 
+#include <android/api-level.h>
 #include <libavcodec/jni.h>
 #include <stdlib.h>
 
@@ -468,4 +469,169 @@ done:
             (*env)->DeleteLocalRef(env, refs[i]);
     }
     return supported;
+}
+
+enum {
+    ENC_PCM_16 = 2,
+    ENC_AC3 = 5,
+    ENC_E_AC3 = 6,
+    ENC_DTS = 7,
+    ENC_DTS_HD = 8,
+    ENC_IEC61937 = 13,
+    ENC_TRUEHD = 14,
+    ENC_E_AC3_JOC = 18,
+    MASK_STEREO = 0xc,
+    MASK_7_1 = 0x18fc,
+};
+
+struct direct_probe {
+    jclass track, builder, attr_builder;
+    jmethodID supported, init, set_encoding, set_rate, set_mask, build;
+    jobject attrs;
+};
+
+static bool init_direct_probe(JNIEnv *env, struct direct_probe *d)
+{
+    d->track = (*env)->FindClass(env, "android/media/AudioTrack");
+    d->builder = (*env)->FindClass(env, "android/media/AudioFormat$Builder");
+    d->attr_builder = (*env)->FindClass(env, "android/media/AudioAttributes$Builder");
+    if (!d->track || !d->builder || !d->attr_builder)
+        return false;
+    d->supported = (*env)->GetStaticMethodID(env, d->track, "isDirectPlaybackSupported",
+        "(Landroid/media/AudioFormat;Landroid/media/AudioAttributes;)Z");
+    d->init = (*env)->GetMethodID(env, d->builder, "<init>", "()V");
+    d->set_encoding = (*env)->GetMethodID(env, d->builder, "setEncoding",
+        "(I)Landroid/media/AudioFormat$Builder;");
+    d->set_rate = (*env)->GetMethodID(env, d->builder, "setSampleRate",
+        "(I)Landroid/media/AudioFormat$Builder;");
+    d->set_mask = (*env)->GetMethodID(env, d->builder, "setChannelMask",
+        "(I)Landroid/media/AudioFormat$Builder;");
+    d->build = (*env)->GetMethodID(env, d->builder, "build", "()Landroid/media/AudioFormat;");
+    jmethodID ainit = (*env)->GetMethodID(env, d->attr_builder, "<init>", "()V");
+    jmethodID usage = (*env)->GetMethodID(env, d->attr_builder, "setUsage",
+        "(I)Landroid/media/AudioAttributes$Builder;");
+    jmethodID abuild = (*env)->GetMethodID(env, d->attr_builder, "build",
+        "()Landroid/media/AudioAttributes;");
+    if (!d->supported || !d->init || !d->set_encoding || !d->set_rate ||
+        !d->set_mask || !d->build || !ainit || !usage || !abuild)
+        return false;
+    jobject ab = (*env)->NewObject(env, d->attr_builder, ainit);
+    if (!ab)
+        return false;
+    (*env)->CallObjectMethod(env, ab, usage, 1);
+    d->attrs = (*env)->CallObjectMethod(env, ab, abuild);
+    return mp_jni_exception_check(env, 0, NULL) >= 0 && d->attrs;
+}
+
+static bool probe_direct(JNIEnv *env, struct direct_probe *d, int encoding,
+                         int rate, int mask)
+{
+    if ((*env)->PushLocalFrame(env, 8) < 0)
+        return false;
+    bool ok = false;
+    jobject b = (*env)->NewObject(env, d->builder, d->init);
+    if (b) {
+        (*env)->CallObjectMethod(env, b, d->set_encoding, encoding);
+        (*env)->CallObjectMethod(env, b, d->set_rate, rate);
+        (*env)->CallObjectMethod(env, b, d->set_mask, mask);
+        jobject fmt = (*env)->CallObjectMethod(env, b, d->build);
+        if (mp_jni_exception_check(env, 0, NULL) >= 0 && fmt) {
+            ok = (*env)->CallStaticBooleanMethod(env, d->track, d->supported,
+                                                 fmt, d->attrs);
+        }
+    }
+    if (mp_jni_exception_check(env, 0, NULL) < 0)
+        ok = false;
+    (*env)->PopLocalFrame(env, NULL);
+    return ok;
+}
+
+static void hdmi_plug_intent(JNIEnv *env, struct mp_jni_audio_caps *caps)
+{
+    jobject ctx = get_app_context(env);
+    if (!ctx)
+        return;
+    jclass ctx_class = (*env)->FindClass(env, "android/content/Context");
+    jclass filter_class = (*env)->FindClass(env, "android/content/IntentFilter");
+    jclass intent_class = (*env)->FindClass(env, "android/content/Intent");
+    if (!ctx_class || !filter_class || !intent_class)
+        return;
+    jmethodID filter_init = (*env)->GetMethodID(env, filter_class, "<init>",
+                                                "(Ljava/lang/String;)V");
+    jmethodID get_int = (*env)->GetMethodID(env, intent_class, "getIntExtra",
+                                            "(Ljava/lang/String;I)I");
+    jmethodID get_arr = (*env)->GetMethodID(env, intent_class, "getIntArrayExtra",
+                                            "(Ljava/lang/String;)[I");
+    if (!filter_init || !get_int || !get_arr)
+        return;
+    jobject filter = (*env)->NewObject(env, filter_class, filter_init,
+        (*env)->NewStringUTF(env, "android.media.action.HDMI_AUDIO_PLUG"));
+    if (!filter)
+        return;
+    jobject intent;
+    if (android_get_device_api_level() >= 33) {
+        jmethodID reg = (*env)->GetMethodID(env, ctx_class, "registerReceiver",
+            "(Landroid/content/BroadcastReceiver;Landroid/content/IntentFilter;I)Landroid/content/Intent;");
+        intent = reg ? (*env)->CallObjectMethod(env, ctx, reg, NULL, filter, 4) : NULL;
+    } else {
+        jmethodID reg = (*env)->GetMethodID(env, ctx_class, "registerReceiver",
+            "(Landroid/content/BroadcastReceiver;Landroid/content/IntentFilter;)Landroid/content/Intent;");
+        intent = reg ? (*env)->CallObjectMethod(env, ctx, reg, NULL, filter) : NULL;
+    }
+    if (mp_jni_exception_check(env, 0, NULL) < 0 || !intent)
+        return;
+    jint state = (*env)->CallIntMethod(env, intent, get_int,
+        (*env)->NewStringUTF(env, "android.media.extra.AUDIO_PLUG_STATE"), 0);
+    if (state != 1)
+        return;
+    jint ch = (*env)->CallIntMethod(env, intent, get_int,
+        (*env)->NewStringUTF(env, "android.media.extra.MAX_CHANNEL_COUNT"), 2);
+    caps->max_channels = MPMAX(caps->max_channels, ch);
+    jintArray enc = (*env)->CallObjectMethod(env, intent, get_arr,
+        (*env)->NewStringUTF(env, "android.media.extra.ENCODINGS"));
+    if (mp_jni_exception_check(env, 0, NULL) < 0 || !enc)
+        return;
+    jsize n = (*env)->GetArrayLength(env, enc);
+    jint *v = (*env)->GetIntArrayElements(env, enc, NULL);
+    for (jsize i = 0; v && i < n; i++) {
+        caps->ac3 |= v[i] == ENC_AC3;
+        caps->eac3 |= v[i] == ENC_E_AC3 || v[i] == ENC_E_AC3_JOC;
+        caps->dts |= v[i] == ENC_DTS;
+        caps->dtshd |= v[i] == ENC_DTS_HD;
+        caps->truehd |= v[i] == ENC_TRUEHD;
+    }
+    if (v)
+        (*env)->ReleaseIntArrayElements(env, enc, v, JNI_ABORT);
+}
+
+void mp_jni_audio_caps(struct mp_log *log, struct mp_jni_audio_caps *caps)
+{
+    *caps = (struct mp_jni_audio_caps){.max_channels = 2};
+    JNIEnv *env = mp_jni_get_env(log);
+    if (!env || (*env)->PushLocalFrame(env, 64) < 0)
+        return;
+
+    hdmi_plug_intent(env, caps);
+    mp_jni_exception_check(env, 0, NULL);
+
+    struct direct_probe d = {0};
+    if (android_get_device_api_level() >= 29 && init_direct_probe(env, &d)) {
+        caps->ac3 |= probe_direct(env, &d, ENC_AC3, 48000, MASK_STEREO);
+        caps->eac3 |= probe_direct(env, &d, ENC_E_AC3, 48000, MASK_STEREO);
+        caps->dts |= probe_direct(env, &d, ENC_DTS, 48000, MASK_STEREO);
+        caps->dtshd |= probe_direct(env, &d, ENC_DTS_HD, 48000, MASK_STEREO);
+        caps->truehd |= probe_direct(env, &d, ENC_TRUEHD, 48000, MASK_STEREO);
+        if (!probe_direct(env, &d, ENC_IEC61937, 192000, MASK_7_1))
+            caps->dtshd = caps->truehd = false;
+        if (!probe_direct(env, &d, ENC_IEC61937, 192000, MASK_STEREO))
+            caps->eac3 = false;
+        if (probe_direct(env, &d, ENC_PCM_16, 48000, MASK_7_1))
+            caps->max_channels = 8;
+    }
+    mp_jni_exception_check(env, 0, NULL);
+    (*env)->PopLocalFrame(env, NULL);
+
+    mp_verbose(log, "Audio output caps: ac3=%d eac3=%d dts=%d dts-hd=%d truehd=%d channels=%d\n",
+               caps->ac3, caps->eac3, caps->dts, caps->dtshd, caps->truehd,
+               caps->max_channels);
 }
