@@ -4965,6 +4965,26 @@ OSD
 Screenshot
 ----------
 
+``--thumbnails=<yes|no>``
+    Generate seekbar thumbnails in the background after a file is opened
+    (default: no). Keyframes are decoded by a separate demuxer and decoder,
+    coarse positions first. Use the ``thumbnail`` command and the
+    ``thumbnail-info`` property to access them.
+
+``--thumbnail-width=<16-1920>``
+    Width of generated thumbnails (default: 240).
+
+``--thumbnail-interval=<seconds>``
+    Distance between thumbnails (default: 10). Raised if the file would
+    need more than ``--thumbnail-max`` thumbnails.
+
+``--thumbnail-max=<count>``
+    Maximum number of thumbnails per file (default: 1000).
+
+``--thumbnail-cache-dir=<path>``
+    Store generated thumbnails here and reuse them when the same file is
+    opened again. Disabled if unset.
+
 ``--screenshot-format=<type>``
     Set the image file type used for saving screenshots.
 

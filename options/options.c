@@ -701,6 +701,12 @@ static const m_option_t mp_opts[] = {
         {"no", 0}, {"yes", 1}, {"auto", 2}), .flags = UPDATE_AUDIO},
     {"vf", OPT_SETTINGSLIST(vf_settings, &vf_obj_list)},
 
+    {"thumbnails", OPT_BOOL(thumbnails)},
+    {"thumbnail-width", OPT_INT(thumbnail_width), M_RANGE(16, 1920)},
+    {"thumbnail-interval", OPT_DOUBLE(thumbnail_interval), M_RANGE(1, 3600)},
+    {"thumbnail-max", OPT_INT(thumbnail_max), M_RANGE(1, 100000)},
+    {"thumbnail-cache-dir", OPT_STRING(thumbnail_cache_dir), .flags = M_OPT_FILE},
+
     {"", OPT_SUBSTRUCT(filter_opts, filter_conf)},
 
     {"", OPT_SUBSTRUCT(dec_wrapper, dec_wrapper_conf)},
@@ -1084,6 +1090,9 @@ static const struct MPOpts mp_default_opts = {
     .audiofile_auto = -1,
     .osd_bar_visible = true,
     .screenshot_template = "mpv-shot%n",
+    .thumbnail_width = 240,
+    .thumbnail_interval = 10,
+    .thumbnail_max = 1000,
     .play_dir = 1,
     .media_controls = true,
     .builtin_dnd = true,
