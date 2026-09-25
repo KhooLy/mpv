@@ -23,6 +23,8 @@
 #include <math.h>
 #include <assert.h>
 
+#include <libavcodec/avcodec.h>
+
 #include "mpv_talloc.h"
 
 #include "common/msg.h"
@@ -97,6 +99,11 @@ static bool want_ac3_transcode(struct MPContext *mpctx)
                       ao_c->track->stream->codec->decoder : NULL;
     if (dec && strncmp(dec, "spdif_", 6) == 0)
         return false;
+    if (!avcodec_find_encoder(AV_CODEC_ID_AC3)) {
+        if (mpctx->opts->audio_ac3_transcode == 1)
+            MP_WARN(mpctx, "No AC3 encoder available, not transcoding.\n");
+        return false;
+    }
 
     switch (mpctx->opts->audio_ac3_transcode) {
     case 1:
