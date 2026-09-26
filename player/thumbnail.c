@@ -447,6 +447,7 @@ static MP_THREAD_VOID thumbnail_thread(void *arg)
     double last_wakeup = mp_time_sec();
     int64_t eager_at = mp_time_ns() + MP_TIME_S_TO_NS(5);
     bool pending = false;
+    bool primed = false;
     while (!t->quit) {
         int i = next_index(t);
         if (i < 0) {
@@ -465,16 +466,34 @@ static MP_THREAD_VOID thumbnail_thread(void *arg)
             }
             continue;
         }
+        if (!primed && t->state[0] != SLOT_EMPTY) {
+            mp_mutex_unlock(&t->lock);
+            talloc_free(grab(t, d, sh, avctx, sws, pkt, frame, 0));
+            mp_mutex_lock(&t->lock);
+            primed = true;
+            continue;
+        }
+        if (!primed)
+            i = 0;
+        primed = true;
         mp_mutex_unlock(&t->lock);
         uint8_t *buf = grab(t, d, sh, avctx, sws, pkt, frame, i * t->step);
         if (!buf && hwdec && !hw_ok && !mp_cancel_test(t->cancel)) {
             AVCodecContext *sw = open_decoder(t, sh, 0);
+            uint8_t *sw_buf = NULL;
             if (sw) {
+                if (i)
+                    talloc_free(grab(t, d, sh, sw, sws, pkt, frame, 0));
+                sw_buf = grab(t, d, sh, sw, sws, pkt, frame, i * t->step);
+            }
+            if (sw_buf) {
                 MP_VERBOSE(t, "Hardware decoding failed, using software.\n");
                 avcodec_free_context(&avctx);
                 avctx = sw;
                 hwdec = 0;
-                buf = grab(t, d, sh, avctx, sws, pkt, frame, i * t->step);
+                buf = sw_buf;
+            } else {
+                avcodec_free_context(&sw);
             }
         }
         hw_ok |= !!buf;
