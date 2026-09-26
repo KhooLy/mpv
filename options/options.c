@@ -699,7 +699,7 @@ static const m_option_t mp_opts[] = {
     {"af", OPT_SETTINGSLIST(af_settings, &af_obj_list)},
     {"vf", OPT_SETTINGSLIST(vf_settings, &vf_obj_list)},
 
-    {"thumbnails", OPT_BOOL(thumbnails)},
+    {"thumbnails", OPT_BOOL(thumbnails), .flags = UPDATE_BUILTIN_SCRIPTS},
     {"thumbnail-width", OPT_INT(thumbnail_width), M_RANGE(16, 1920)},
     {"thumbnail-interval", OPT_DOUBLE(thumbnail_interval), M_RANGE(1, 3600)},
     {"thumbnail-max", OPT_INT(thumbnail_max), M_RANGE(1, 100000)},
