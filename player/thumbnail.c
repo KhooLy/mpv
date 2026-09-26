@@ -287,15 +287,28 @@ got:;
     return buf;
 }
 
-static struct sh_stream *pick_video(struct demuxer *d)
+static struct sh_stream *pick_video(struct demuxer *d, int width)
 {
+    struct sh_stream *best = NULL;
     for (int n = 0; n < demux_get_num_stream(d); n++) {
         struct sh_stream *sh = demux_get_stream(d, n);
-        if (sh->type == STREAM_VIDEO && !sh->attached_picture &&
-            sh->codec->disp_w > 0 && sh->codec->disp_h > 0)
-            return sh;
+        if (sh->type != STREAM_VIDEO || sh->attached_picture ||
+            sh->codec->disp_w <= 0 || sh->codec->disp_h <= 0)
+            continue;
+        if (!best) {
+            best = sh;
+            continue;
+        }
+        if (sh->hls_bitrate <= 0 || best->hls_bitrate <= 0)
+            continue;
+        bool fits = sh->codec->disp_w >= width;
+        bool best_fits = best->codec->disp_w >= width;
+        if ((fits && !best_fits) ||
+            (fits == best_fits && fits && sh->hls_bitrate < best->hls_bitrate) ||
+            (!fits && !best_fits && sh->hls_bitrate > best->hls_bitrate))
+            best = sh;
     }
-    return NULL;
+    return best;
 }
 
 static void setup(struct thumbnailer *t, struct demuxer *d, struct sh_stream *sh)
@@ -329,7 +342,7 @@ static MP_THREAD_VOID thumbnail_thread(void *arg)
     }
     if (t->rebase)
         demux_set_ts_offset(d, -d->start_time);
-    struct sh_stream *sh = pick_video(d);
+    struct sh_stream *sh = pick_video(d, t->width);
     if (!sh || !d->seekable || !(d->duration > 0)) {
         MP_VERBOSE(t, "Nothing to thumbnail.\n");
         goto out;
