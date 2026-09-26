@@ -446,6 +446,8 @@ typedef struct MPContext {
 
     struct screenshot_ctx *screenshot_ctx;
     struct thumbnailer *thumbnailer;
+    struct thumbnailer **old_thumbnailers;
+    int num_old_thumbnailers;
     struct command_ctx *command_ctx;
     struct encode_lavc_context *encode_lavc_ctx;
 

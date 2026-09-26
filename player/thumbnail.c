@@ -17,6 +17,7 @@
 
 #include <math.h>
 #include <string.h>
+#include <sys/resource.h>
 
 #include <libavcodec/avcodec.h>
 
@@ -74,6 +75,7 @@ struct thumbnailer {
     mp_cond cond;
 
     bool quit;
+    bool finished;
     bool hold;
     int want;
     bool ready;
@@ -308,6 +310,9 @@ static MP_THREAD_VOID thumbnail_thread(void *arg)
 {
     struct thumbnailer *t = arg;
     mp_thread_set_name("thumbnail");
+#ifdef __linux__
+    setpriority(PRIO_PROCESS, 0, 10);
+#endif
 
     struct demuxer_params params = {.stream_flags = t->stream_flags | STREAM_SPARSE_READS};
     struct demuxer *d = demux_open_url(t->url, &params, t->cancel, t->global);
@@ -398,6 +403,10 @@ done:
     talloc_free(sws);
 out:
     demux_free(d);
+    mp_mutex_lock(&t->lock);
+    t->finished = true;
+    mp_mutex_unlock(&t->lock);
+    t->wakeup(t->wakeup_ctx);
     MP_THREAD_RETURN();
 }
 
@@ -437,6 +446,25 @@ void mp_thumbnails_start(struct MPContext *mpctx)
     mp_notify_property(mpctx, "thumbnail-info");
 }
 
+static void reap(struct MPContext *mpctx, bool wait)
+{
+    for (int n = mpctx->num_old_thumbnailers - 1; n >= 0; n--) {
+        struct thumbnailer *t = mpctx->old_thumbnailers[n];
+        mp_mutex_lock(&t->lock);
+        bool finished = t->finished;
+        mp_mutex_unlock(&t->lock);
+        if (!finished && !wait)
+            continue;
+        mp_thread_join(t->thread);
+        if (t->cache)
+            fclose(t->cache);
+        mp_mutex_destroy(&t->lock);
+        mp_cond_destroy(&t->cond);
+        talloc_free(t);
+        MP_TARRAY_REMOVE_AT(mpctx->old_thumbnailers, mpctx->num_old_thumbnailers, n);
+    }
+}
+
 void mp_thumbnails_stop(struct MPContext *mpctx)
 {
     struct thumbnailer *t = mpctx->thumbnailer;
@@ -447,18 +475,20 @@ void mp_thumbnails_stop(struct MPContext *mpctx)
     mp_cond_signal(&t->cond);
     mp_mutex_unlock(&t->lock);
     mp_cancel_trigger(t->cancel);
-    mp_thread_join(t->thread);
-    if (t->cache)
-        fclose(t->cache);
-    mp_mutex_destroy(&t->lock);
-    mp_cond_destroy(&t->cond);
-    talloc_free(t);
+    MP_TARRAY_APPEND(mpctx, mpctx->old_thumbnailers, mpctx->num_old_thumbnailers, t);
     mpctx->thumbnailer = NULL;
     mp_notify_property(mpctx, "thumbnail-info");
 }
 
+void mp_thumbnails_uninit(struct MPContext *mpctx)
+{
+    mp_thumbnails_stop(mpctx);
+    reap(mpctx, true);
+}
+
 void mp_thumbnails_update(struct MPContext *mpctx)
 {
+    reap(mpctx, false);
     struct thumbnailer *t = mpctx->thumbnailer;
     if (!t)
         return;
