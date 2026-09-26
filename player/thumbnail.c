@@ -330,10 +330,8 @@ static MP_THREAD_VOID thumbnail_thread(void *arg)
     AVPacket *pkt = av_packet_alloc();
     AVFrame *frame = av_frame_alloc();
 
-    mp_mutex_lock(&t->lock);
     setup(t, d, sh);
     open_cache(t, d);
-    mp_mutex_unlock(&t->lock);
 
     avctx = open_decoder(t, sh);
     if (!avctx) {
@@ -347,9 +345,15 @@ static MP_THREAD_VOID thumbnail_thread(void *arg)
     t->changed = true;
     MP_VERBOSE(t, "%dx%d, %d thumbnails every %.1fs\n", t->w, t->h, t->count, t->step);
     t->wakeup(t->wakeup_ctx);
+    double last_wakeup = mp_time_sec();
+    bool pending = false;
     while (!t->quit) {
         int i = next_index(t);
         if (i < 0) {
+            if (pending) {
+                t->wakeup(t->wakeup_ctx);
+                pending = false;
+            }
             if (t->done == t->count) {
                 MP_VERBOSE(t, "Done in %.2fs\n", mp_time_sec() - start);
                 break;
@@ -366,13 +370,24 @@ static MP_THREAD_VOID thumbnail_thread(void *arg)
         }
         t->state[i] = buf ? SLOT_DONE : SLOT_FAILED;
         t->slots[i] = buf;
-        if (t->want == i)
+        bool wanted = t->want == i;
+        if (wanted)
             t->want = -1;
         t->done++;
-        if (buf)
-            store_cache(t, i);
         t->changed = true;
-        t->wakeup(t->wakeup_ctx);
+        double now = mp_time_sec();
+        if (wanted || now - last_wakeup >= 0.1) {
+            t->wakeup(t->wakeup_ctx);
+            last_wakeup = now;
+            pending = false;
+        } else {
+            pending = true;
+        }
+        if (buf) {
+            mp_mutex_unlock(&t->lock);
+            store_cache(t, i);
+            mp_mutex_lock(&t->lock);
+        }
     }
     mp_mutex_unlock(&t->lock);
 
