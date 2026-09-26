@@ -734,6 +734,15 @@ Available video output drivers are:
     To use hardware decoding with ``--vo=gpu`` instead, use ``--hwdec=mediacodec``
     or ``mediacodec-copy`` along with ``--gpu-context=android``.
 
+``apple_native`` (macOS, iOS, tvOS)
+    Hands compressed H.264, HEVC and AV1 samples to an
+    ``AVSampleBufferDisplayLayer`` so the system decodes and presents them,
+    including HDR10, HDR10+ and Dolby Vision profiles 5, 8 and the base layer
+    of profile 7. Requires ``--wid=(intptr_t)(AVSampleBufferDisplayLayer *)``.
+    Streams the layer cannot decode fall back to ``--hwdec=videotoolbox``.
+
+    Subtitles, OSD and video filters are not available with this driver.
+
 ``wlshm`` (Wayland only)
     Shared memory video output driver without hardware acceleration that works
     whenever Wayland is present.
