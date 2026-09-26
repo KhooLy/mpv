@@ -50,7 +50,7 @@ static const int speaker_map[][2] = {
     { kAudioChannelLabel_LeftWide,             MP_SPEAKER_ID_WL   },
     { kAudioChannelLabel_RightWide,            MP_SPEAKER_ID_WR   },
     { kAudioChannelLabel_LFE2,                 MP_SPEAKER_ID_LFE2 },
-#if __MAC_OS_X_VERSION_MAX_ALLOWED >= 130000
+#if defined(__MAC_OS_X_VERSION_MAX_ALLOWED) && __MAC_OS_X_VERSION_MAX_ALLOWED >= 130000
     { kAudioChannelLabel_LeftTopSurround,      MP_SPEAKER_ID_TSL  },
     { kAudioChannelLabel_RightTopSurround,     MP_SPEAKER_ID_TSR  },
     { kAudioChannelLabel_CenterBottom,         MP_SPEAKER_ID_BFC  },
