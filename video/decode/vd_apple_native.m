@@ -20,6 +20,8 @@
 
 #include <libavcodec/avcodec.h>
 #include <libavutil/dovi_meta.h>
+#include <libavutil/intreadwrite.h>
+#include <libavutil/mastering_display_metadata.h>
 #include <libplacebo/utils/libav.h>
 
 #import <AVFoundation/AVFoundation.h>
@@ -129,6 +131,113 @@ static NSData *content_light(const struct pl_hdr_metadata *hdr)
     return [NSData dataWithBytes:b length:sizeof(b)];
 }
 
+static void fill_from_codecpar(struct pl_color_space *color, struct pl_color_repr *repr,
+                               const AVCodecParameters *par)
+{
+    if (!par)
+        return;
+    if (!color->primaries)
+        color->primaries = pl_primaries_from_av(par->color_primaries);
+    if (!color->transfer)
+        color->transfer = pl_transfer_from_av(par->color_trc);
+    if (!repr->sys)
+        repr->sys = pl_system_from_av(par->color_space);
+    if (!repr->levels)
+        repr->levels = pl_levels_from_av(par->color_range);
+
+    const AVPacketSideData *sd = par->coded_side_data;
+    int n = par->nb_coded_side_data;
+    const AVPacketSideData *mdm =
+        av_packet_side_data_get(sd, n, AV_PKT_DATA_MASTERING_DISPLAY_METADATA);
+    const AVPacketSideData *clm =
+        av_packet_side_data_get(sd, n, AV_PKT_DATA_CONTENT_LIGHT_LEVEL);
+    if (!pl_hdr_metadata_equal(&color->hdr, &pl_hdr_metadata_empty))
+        return;
+    pl_map_hdr_metadata(&color->hdr, &(struct pl_av_hdr_metadata){
+        .mdm = mdm ? (const AVMasteringDisplayMetadata *)mdm->data : NULL,
+        .clm = clm ? (const AVContentLightMetadata *)clm->data : NULL,
+    });
+}
+
+static void fill_from_parameter_sets(struct pl_color_space *color,
+                                     struct pl_color_repr *repr,
+                                     CMVideoCodecType type,
+                                     const uint8_t *d, int size)
+{
+    const uint8_t *sets[16];
+    size_t sizes[16];
+    int count = 0, nal_len, pos;
+
+    if (type == kCMVideoCodecType_H264) {
+        if (size < 7)
+            return;
+        nal_len = (d[4] & 3) + 1;
+        pos = 5;
+        for (int list = 0; list < 2 && pos < size; list++) {
+            int num = list ? d[pos] : d[pos] & 0x1f;
+            pos++;
+            for (int i = 0; i < num && pos + 2 <= size && count < 16; i++) {
+                int len = AV_RB16(d + pos);
+                if (pos + 2 + len > size)
+                    return;
+                sets[count] = d + pos + 2;
+                sizes[count++] = len;
+                pos += 2 + len;
+            }
+        }
+    } else {
+        if (size < 23)
+            return;
+        nal_len = (d[21] & 3) + 1;
+        int arrays = d[22];
+        pos = 23;
+        for (int a = 0; a < arrays && pos + 3 <= size; a++) {
+            int nal_type = d[pos] & 0x3f;
+            int num = AV_RB16(d + pos + 1);
+            pos += 3;
+            for (int i = 0; i < num && pos + 2 <= size; i++) {
+                int len = AV_RB16(d + pos);
+                if (pos + 2 + len > size)
+                    return;
+                if (nal_type >= 32 && nal_type <= 34 && count < 16) {
+                    sets[count] = d + pos + 2;
+                    sizes[count++] = len;
+                }
+                pos += 2 + len;
+            }
+        }
+    }
+    if (!count)
+        return;
+
+    CMFormatDescriptionRef fd = NULL;
+    OSStatus err = type == kCMVideoCodecType_H264 ?
+        CMVideoFormatDescriptionCreateFromH264ParameterSets(NULL, count, sets, sizes,
+                                                            nal_len, &fd) :
+        CMVideoFormatDescriptionCreateFromHEVCParameterSets(NULL, count, sets, sizes,
+                                                            nal_len, NULL, &fd);
+    if (err != noErr)
+        return;
+
+    CFStringRef prim = CMFormatDescriptionGetExtension(fd,
+        kCMFormatDescriptionExtension_ColorPrimaries);
+    CFStringRef trc = CMFormatDescriptionGetExtension(fd,
+        kCMFormatDescriptionExtension_TransferFunction);
+    CFStringRef matrix = CMFormatDescriptionGetExtension(fd,
+        kCMFormatDescriptionExtension_YCbCrMatrix);
+    CFBooleanRef full = CMFormatDescriptionGetExtension(fd,
+        kCMFormatDescriptionExtension_FullRangeVideo);
+    if (!color->primaries && prim)
+        color->primaries = pl_primaries_from_av(CVColorPrimariesGetIntegerCodePointForString(prim));
+    if (!color->transfer && trc)
+        color->transfer = pl_transfer_from_av(CVTransferFunctionGetIntegerCodePointForString(trc));
+    if (!repr->sys && matrix)
+        repr->sys = pl_system_from_av(CVYCbCrMatrixGetIntegerCodePointForString(matrix));
+    if (!repr->levels && full)
+        repr->levels = CFBooleanGetValue(full) ? PL_COLOR_LEVELS_FULL : PL_COLOR_LEVELS_LIMITED;
+    CFRelease(fd);
+}
+
 static bool init_format(struct priv *p)
 {
     struct mp_codec_params *c = p->codec;
@@ -185,22 +294,31 @@ static bool init_format(struct priv *p)
         }
     }
 
+    struct pl_color_space color = c->color;
+    struct pl_color_repr repr = c->repr;
+    fill_from_codecpar(&color, &repr, c->lav_codecpar);
+    if (type == kCMVideoCodecType_H264 || type == kCMVideoCodecType_HEVC || type == 'dvh1') {
+        fill_from_parameter_sets(&color, &repr, type == kCMVideoCodecType_H264 ?
+                                 type : kCMVideoCodecType_HEVC,
+                                 extradata, extradata_size);
+    }
+
     NSMutableDictionary *ext = [NSMutableDictionary dictionary];
     ext[(id)kCMFormatDescriptionExtension_SampleDescriptionExtensionAtoms] = atoms;
 
     CFStringRef prim = CVColorPrimariesGetStringForIntegerCodePoint(
-        pl_primaries_to_av(c->color.primaries));
+        pl_primaries_to_av(color.primaries));
     CFStringRef trc = CVTransferFunctionGetStringForIntegerCodePoint(
-        pl_transfer_to_av(c->color.transfer));
+        pl_transfer_to_av(color.transfer));
     CFStringRef matrix = CVYCbCrMatrixGetStringForIntegerCodePoint(
-        pl_system_to_av(c->repr.sys));
+        pl_system_to_av(repr.sys));
     if (prim)
         ext[(id)kCMFormatDescriptionExtension_ColorPrimaries] = (id)prim;
     if (trc)
         ext[(id)kCMFormatDescriptionExtension_TransferFunction] = (id)trc;
     if (matrix)
         ext[(id)kCMFormatDescriptionExtension_YCbCrMatrix] = (id)matrix;
-    if (c->repr.levels == PL_COLOR_LEVELS_FULL)
+    if (repr.levels == PL_COLOR_LEVELS_FULL)
         ext[(id)kCMFormatDescriptionExtension_FullRangeVideo] = @YES;
 
     if (c->par_w > 0 && c->par_h > 0) {
@@ -210,10 +328,10 @@ static bool init_format(struct priv *p)
         };
     }
 
-    NSData *mdcv = mastering_display(&c->color.hdr);
+    NSData *mdcv = mastering_display(&color.hdr);
     if (mdcv)
         ext[(id)kCMFormatDescriptionExtension_MasteringDisplayColorVolume] = mdcv;
-    NSData *clli = content_light(&c->color.hdr);
+    NSData *clli = content_light(&color.hdr);
     if (clli)
         ext[(id)kCMFormatDescriptionExtension_ContentLightLevelInfo] = clli;
 
@@ -235,8 +353,8 @@ static bool init_format(struct priv *p)
         .h = c->disp_h > 0 ? c->disp_h : h,
         .p_w = c->par_w > 0 ? c->par_w : 1,
         .p_h = c->par_h > 0 ? c->par_h : 1,
-        .color = c->color,
-        .repr = c->repr,
+        .color = color,
+        .repr = repr,
         .chroma_location = c->chroma_location,
         .rotate = c->rotate,
     };
