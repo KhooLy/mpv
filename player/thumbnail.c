@@ -84,7 +84,9 @@ struct thumbnailer {
     bool quit;
     bool finished;
     bool hold;
+    bool eager;
     int want;
+    int near;
     bool ready;
     bool changed;
     int w, h, count;
@@ -185,8 +187,14 @@ static int next_index(struct thumbnailer *t)
 {
     if (t->want >= 0 && t->state[t->want] == SLOT_EMPTY)
         return t->want;
-    if (t->hold)
+    if (t->hold || !t->eager)
         return -1;
+    for (int d = 1; t->near >= 0 && d <= 16; d++) {
+        if (t->near - d >= 0 && t->state[t->near - d] == SLOT_EMPTY)
+            return t->near - d;
+        if (t->near + d < t->count && t->state[t->near + d] == SLOT_EMPTY)
+            return t->near + d;
+    }
     for (int stride = 8; stride >= 1; stride /= 2) {
         for (int i = 0; i < t->count; i += stride) {
             if (t->state[i] == SLOT_EMPTY)
@@ -367,6 +375,7 @@ static MP_THREAD_VOID thumbnail_thread(void *arg)
     MP_VERBOSE(t, "%dx%d, %d thumbnails every %.1fs\n", t->w, t->h, t->count, t->step);
     t->wakeup(t->wakeup_ctx);
     double last_wakeup = mp_time_sec();
+    int64_t eager_at = mp_time_ns() + MP_TIME_S_TO_NS(5);
     bool pending = false;
     while (!t->quit) {
         int i = next_index(t);
@@ -379,7 +388,11 @@ static MP_THREAD_VOID thumbnail_thread(void *arg)
                 MP_VERBOSE(t, "Done in %.2fs\n", mp_time_sec() - start);
                 break;
             }
-            mp_cond_wait(&t->cond, &t->lock);
+            if (t->eager) {
+                mp_cond_wait(&t->cond, &t->lock);
+            } else if (mp_cond_timedwait_until(&t->cond, &t->lock, eager_at)) {
+                t->eager = true;
+            }
             continue;
         }
         mp_mutex_unlock(&t->lock);
@@ -448,6 +461,7 @@ void mp_thumbnails_start(struct MPContext *mpctx)
     t->wakeup_ctx = mpctx;
     t->cancel = mp_cancel_new(t);
     t->want = -1;
+    t->near = -1;
     t->out_sws = mp_sws_alloc(t);
     t->out_sws->flags = mp_sws_fast_flags;
     mp_mutex_init(&t->lock);
@@ -555,6 +569,11 @@ void cmd_thumbnail(void *p)
         return;
     }
     int want = MPCLAMP((int)lrint(cmd->args[0].v.d / t->step), 0, t->count - 1);
+    t->near = want;
+    if (!t->eager) {
+        t->eager = true;
+        mp_cond_signal(&t->cond);
+    }
     if (t->state[want] == SLOT_EMPTY && t->want != want) {
         t->want = want;
         mp_cond_signal(&t->cond);
