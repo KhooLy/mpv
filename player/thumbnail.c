@@ -20,6 +20,7 @@
 #include <sys/resource.h>
 
 #include <libavcodec/avcodec.h>
+#include <libavutil/hwcontext.h>
 
 #include "osdep/io.h"
 #include "osdep/threads.h"
@@ -66,6 +67,7 @@ struct thumbnailer {
     double interval;
     int max_count;
     char *cache_dir;
+    int hwdec;
     void (*wakeup)(void *ctx);
     void *wakeup_ctx;
 
@@ -197,10 +199,31 @@ static int next_index(struct thumbnailer *t)
     return -1;
 }
 
-static AVCodecContext *open_decoder(struct thumbnailer *t, struct sh_stream *sh)
+static enum AVHWDeviceType auto_hwdec(void)
 {
-    const AVCodec *codec =
-        avcodec_find_decoder(mp_codec_to_av_codec_id(sh->codec->codec));
+#if defined(__APPLE__)
+    return AV_HWDEVICE_TYPE_VIDEOTOOLBOX;
+#elif defined(_WIN32)
+    return AV_HWDEVICE_TYPE_D3D11VA;
+#elif defined(__linux__) && !defined(__ANDROID__)
+    return AV_HWDEVICE_TYPE_VAAPI;
+#else
+    return AV_HWDEVICE_TYPE_NONE;
+#endif
+}
+
+static AVCodecContext *open_decoder(struct thumbnailer *t, struct sh_stream *sh,
+                                    int hwdec)
+{
+    enum AVCodecID id = mp_codec_to_av_codec_id(sh->codec->codec);
+    const AVCodec *codec = NULL;
+    if (hwdec == 2) {
+        const AVCodec *sw = avcodec_find_decoder(id);
+        if (sw)
+            codec = avcodec_find_decoder_by_name(mp_tprintf(64, "%s_mediacodec", sw->name));
+    } else {
+        codec = avcodec_find_decoder(id);
+    }
     if (!codec)
         return NULL;
     AVCodecContext *avctx = avcodec_alloc_context3(codec);
@@ -213,10 +236,17 @@ static AVCodecContext *open_decoder(struct thumbnailer *t, struct sh_stream *sh)
     avctx->skip_loop_filter = AVDISCARD_ALL;
     avctx->flags2 |= AV_CODEC_FLAG2_FAST;
     avctx->thread_count = 1;
-    int lowres = 0;
-    while (lowres < codec->max_lowres && (sh->codec->disp_w >> (lowres + 1)) >= t->w * 2)
-        lowres++;
-    avctx->lowres = lowres;
+    if (hwdec == 1) {
+        enum AVHWDeviceType type = auto_hwdec();
+        if (type == AV_HWDEVICE_TYPE_NONE ||
+            av_hwdevice_ctx_create(&avctx->hw_device_ctx, type, NULL, NULL, 0) < 0)
+            goto fail;
+    } else if (!hwdec) {
+        int lowres = 0;
+        while (lowres < codec->max_lowres && (sh->codec->disp_w >> (lowres + 1)) >= t->w * 2)
+            lowres++;
+        avctx->lowres = lowres;
+    }
     if (avcodec_open2(avctx, codec, NULL) < 0)
         goto fail;
     return avctx;
@@ -282,7 +312,18 @@ static uint8_t *grab(struct thumbnailer *t, struct demuxer *d,
     if (avcodec_receive_frame(avctx, frame) < 0)
         return NULL;
 got:;
-    uint8_t *buf = scale_frame(t, sws, frame);
+    AVFrame *src = frame;
+    if (frame->hw_frames_ctx) {
+        src = av_frame_alloc();
+        if (!src || av_hwframe_transfer_data(src, frame, 0) < 0) {
+            av_frame_free(&src);
+            av_frame_unref(frame);
+            return NULL;
+        }
+    }
+    uint8_t *buf = scale_frame(t, sws, src);
+    if (src != frame)
+        av_frame_free(&src);
     av_frame_unref(frame);
     return buf;
 }
@@ -358,7 +399,15 @@ static MP_THREAD_VOID thumbnail_thread(void *arg)
     setup(t, d, sh);
     open_cache(t, d);
 
-    avctx = open_decoder(t, sh);
+    int hwdec = t->hwdec;
+    avctx = hwdec ? open_decoder(t, sh, hwdec) : NULL;
+    if (!avctx && hwdec) {
+        MP_VERBOSE(t, "Hardware decoding unavailable, using software.\n");
+        hwdec = 0;
+    }
+    if (!avctx)
+        avctx = open_decoder(t, sh, 0);
+    bool hw_ok = false;
     if (!avctx) {
         MP_WARN(t, "Could not open decoder for %s\n", sh->codec->codec);
         goto done;
@@ -393,6 +442,17 @@ static MP_THREAD_VOID thumbnail_thread(void *arg)
         }
         mp_mutex_unlock(&t->lock);
         uint8_t *buf = grab(t, d, sh, avctx, sws, pkt, frame, i * t->step);
+        if (!buf && hwdec && !hw_ok && !mp_cancel_test(t->cancel)) {
+            AVCodecContext *sw = open_decoder(t, sh, 0);
+            if (sw) {
+                MP_VERBOSE(t, "Hardware decoding failed, using software.\n");
+                avcodec_free_context(&avctx);
+                avctx = sw;
+                hwdec = 0;
+                buf = grab(t, d, sh, avctx, sws, pkt, frame, i * t->step);
+            }
+        }
+        hw_ok |= !!buf;
         mp_mutex_lock(&t->lock);
         if (mp_cancel_test(t->cancel)) {
             talloc_free(buf);
@@ -453,6 +513,7 @@ void mp_thumbnails_start(struct MPContext *mpctx)
     t->interval = opts->thumbnail_interval;
     t->max_count = opts->thumbnail_max;
     t->cache_dir = talloc_strdup(t, opts->thumbnail_cache_dir);
+    t->hwdec = opts->thumbnail_hwdec;
     t->wakeup = mp_wakeup_core_cb;
     t->wakeup_ctx = mpctx;
     t->cancel = mp_cancel_new(t);

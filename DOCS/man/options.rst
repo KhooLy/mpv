@@ -4985,6 +4985,14 @@ Screenshot
     Store generated thumbnails here and reuse them when the same file is
     opened again. Disabled if unset.
 
+``--thumbnail-hwdec=<no|auto|mediacodec>``
+    Decode thumbnails in hardware. ``auto`` uses VideoToolbox on Apple
+    platforms, D3D11VA on Windows and VAAPI on Linux, and never MediaCodec.
+    ``mediacodec`` is Android only and is off by default because some devices,
+    notably TVs, have very few decoder instances and playback may fail to get
+    one. Falls back to software if the hardware decoder can't be opened or
+    fails on the first thumbnail. (Default: ``no``)
+
 ``--screenshot-format=<type>``
     Set the image file type used for saving screenshots.
 
