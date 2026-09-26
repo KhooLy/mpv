@@ -34,3 +34,6 @@ jobs:
 
       - name: List video outputs
         run: ./build/mpv --no-config --vo=help | grep apple_native
+
+      - name: Playback tests
+        run: ci/apple-native/run.sh build

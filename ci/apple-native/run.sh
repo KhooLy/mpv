@@ -1,0 +1,44 @@
+#!/bin/sh
+set -u
+
+dir=$(mktemp -d)
+build=${1:-build}
+cc -o "$dir/harness" ci/apple-native/harness.m -Iinclude -L"$build" -lmpv \
+    -framework Foundation -framework AVFoundation -framework QuartzCore -framework CoreMedia || exit 1
+
+video="-f lavfi -i testsrc2=size=1280x720:rate=24 -t 5"
+audio="-f lavfi -i sine=frequency=440:sample_rate=48000 -t 5"
+hdr="hdr10=1:colorprim=bt2020:transfer=smpte2084:colormatrix=bt2020nc:master-display=G(13250,34500)B(7500,3000)R(34000,16000)WP(15635,16450)L(10000000,1):max-cll=1000,400"
+ff="ffmpeg -loglevel error -y"
+
+$ff $video -c:v libx264 -pix_fmt yuv420p "$dir/h264.mkv"
+$ff $video -c:v libx265 -pix_fmt yuv420p10le -x265-params "$hdr:log-level=error" "$dir/hdr10.mkv"
+$ff -i "$dir/hdr10.mkv" -c copy -tag:v hvc1 "$dir/hdr10.mp4"
+$ff $video -c:v libsvtav1 -pix_fmt yuv420p10le "$dir/av1.mkv"
+$ff $video $audio -filter_complex "[1:a]pan=5.1|c0=c0|c1=c0|c2=c0|c3=c0|c4=c0|c5=c0[a]" \
+    -map 0:v -map "[a]" -c:v libx264 -pix_fmt yuv420p -c:a eac3 "$dir/eac3.mkv"
+printf '[Script Info]\nScriptType: v4.00+\nPlayResX: 1280\nPlayResY: 720\n\n[V4+ Styles]\nFormat: Name, Fontsize, PrimaryColour\nStyle: Default,48,&H00FFFFFF\n\n[Events]\nFormat: Layer, Start, End, Style, Text\nDialogue: 0,0:00:00.00,0:00:05.00,Default,subtitle test\n' > "$dir/sub.ass"
+
+status=0
+run() {
+    name=$1; shift
+    echo "::group::$name"
+    DYLD_LIBRARY_PATH="$build" "$dir/harness" "$@"
+    rc=$?
+    echo "::endgroup::"
+    if [ $rc -ne 0 ]; then
+        echo "::error::$name failed"
+        status=1
+    fi
+}
+
+run "H.264 MKV" "$dir/h264.mkv"
+run "HEVC HDR10 MKV" "$dir/hdr10.mkv"
+run "HEVC HDR10 MP4" "$dir/hdr10.mp4"
+run "AV1 MKV" "$dir/av1.mkv"
+run "E-AC3 5.1 PCM" "$dir/eac3.mkv"
+run "E-AC3 5.1 passthrough" "$dir/eac3.mkv" audio-spdif=eac3
+run "ASS subtitles" "$dir/h264.mkv" sub-files="$dir/sub.ass"
+run "Seek and pause" "$dir/hdr10.mkv" start=2 pause=no
+
+exit $status
