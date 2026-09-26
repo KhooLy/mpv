@@ -219,8 +219,7 @@ static AVCodecContext *open_decoder(struct thumbnailer *t, struct sh_stream *sh)
     avctx->skip_frame = AVDISCARD_NONKEY;
     avctx->skip_loop_filter = AVDISCARD_ALL;
     avctx->flags2 |= AV_CODEC_FLAG2_FAST;
-    avctx->thread_count = 2;
-    avctx->thread_type = FF_THREAD_SLICE;
+    avctx->thread_count = 1;
     int lowres = 0;
     while (lowres < codec->max_lowres && (sh->codec->disp_w >> (lowres + 1)) >= t->w * 2)
         lowres++;
