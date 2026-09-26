@@ -42,7 +42,12 @@ int main(int argc, char **argv)
     int64_t wid = (int64_t)(intptr_t)layer;
     mpv_set_option(mpv, "wid", MPV_FORMAT_INT64, &wid);
     bool expect_overlay = false;
+    const char *expect_gamma = NULL;
     for (int i = 2; i < argc; i++) {
+        if (strncmp(argv[i], "expect-gamma=", 13) == 0) {
+            expect_gamma = argv[i] + 13;
+            continue;
+        }
         if (strcmp(argv[i], "expect-overlay=yes") == 0) {
             expect_overlay = true;
             continue;
@@ -62,6 +67,7 @@ int main(int argc, char **argv)
 
     double start = 0, deadline = now() + 60, duration = 0, start_pos = 0;
     bool sampled = false, eof = false, overlay_used = false, native = false;
+    char *gamma = NULL;
     int end_error = 0;
     while (now() < deadline) {
         mpv_event *ev = mpv_wait_event(mpv, 0.005);
@@ -95,6 +101,7 @@ int main(int argc, char **argv)
             char *desc = mpv_get_property_string(mpv, "current-tracks/video/decoder-desc");
             native = desc && strcmp(desc, "AVSampleBufferDisplayLayer") == 0;
             mpv_free(desc);
+            gamma = mpv_get_property_string(mpv, "video-params/gamma");
             print_prop(mpv, "current-tracks/video/codec");
             print_prop(mpv, "video-params/pixelformat");
             print_prop(mpv, "video-params/gamma");
@@ -131,6 +138,11 @@ int main(int argc, char **argv)
         printf("FAIL: video did not use the native decoder\n");
         fail = 1;
     }
+    if (expect_gamma && (!gamma || strcmp(gamma, expect_gamma) != 0)) {
+        printf("FAIL: expected gamma %s\n", expect_gamma);
+        fail = 1;
+    }
+    mpv_free(gamma);
     if (expect_overlay && !overlay_used) {
         printf("FAIL: subtitles were not drawn into the overlay\n");
         fail = 1;
