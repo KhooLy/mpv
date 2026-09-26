@@ -4,6 +4,7 @@
             amf                              |
            argb    Zin   Zout  SWSin  SWSout |
            ayuv    Zin   Zout  SWSin  SWSout |
+   apple_native                              |
          ayuv64    Zin   Zout  SWSin  SWSout |
        ayuv64be    Zin   Zout  SWSin  SWSout |
    bayer_bggr16                SWSin         |

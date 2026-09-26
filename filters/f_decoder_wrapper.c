@@ -15,6 +15,8 @@
  * License along with mpv.  If not, see <http://www.gnu.org/licenses/>.
  */
 
+#include "config.h"
+
 #include <float.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -459,6 +461,19 @@ static bool reinit_decoder(struct priv *p)
 
     if (!driver)
         return false;
+
+#if HAVE_AVFOUNDATION
+    if (p->codec->type == STREAM_VIDEO && !list) {
+        p->decoder = vd_apple_native.create(p->decf, p->codec, "apple_native");
+        if (p->decoder) {
+            p->codec->decoder = talloc_strdup(p->codec, "apple_native");
+            p->codec->decoder_desc = talloc_strdup(p->codec, "AVSampleBufferDisplayLayer");
+            MP_VERBOSE(p, "Selected decoder: apple_native\n");
+            update_cached_values(p);
+            return true;
+        }
+    }
+#endif
 
     if (!list) {
         struct mp_decoder_list *full = talloc_zero(NULL, struct mp_decoder_list);

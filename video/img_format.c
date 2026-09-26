@@ -118,6 +118,12 @@ static const struct mp_imgfmt_entry mp_imgfmt_list[] = {
     [IMGFMT_VAAPI - IMGFMT_CUST_BASE] = {
         .name = "vaapi",
     },
+    [IMGFMT_APPLE_NATIVE - IMGFMT_CUST_BASE] = {
+        .name = "apple_native",
+        .desc = {
+            .flags = MP_IMGFLAG_HWACCEL,
+        },
+    },
 };
 
 static const struct mp_imgfmt_entry *get_mp_desc(int imgfmt)

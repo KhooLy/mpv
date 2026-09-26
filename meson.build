@@ -834,12 +834,15 @@ if features['audiounit']
     sources += files('audio/out/ao_audiounit.m')
 endif
 
-avfoundation = dependency('appleframeworks', modules: ['CoreMedia', 'AVFoundation'],
+avfoundation = dependency('appleframeworks',
+                          modules: ['CoreMedia', 'CoreVideo', 'AVFoundation', 'VideoToolbox'],
                           required: get_option('avfoundation'))
 features += {'avfoundation': avfoundation.found()}
 if features['avfoundation']
     dependencies += avfoundation
-    sources += files('audio/out/ao_avfoundation.m')
+    sources += files('audio/out/ao_avfoundation.m',
+                     'video/decode/vd_apple_native.m',
+                     'video/out/vo_apple_native.m')
 endif
 
 coreaudio = dependency('appleframeworks', modules: ['CoreFoundation', 'CoreAudio',
