@@ -50,14 +50,19 @@ mp.observe_property("user-data/osc/draw-preview", "native", function(_, value)
     end
     req = value
     if value.ass then
-        local dim = mp.get_property_native("osd-dimensions")
-        osd.res_x = dim.w
-        osd.res_y = dim.h
         osd.data = value.ass
         osd:update()
     end
     dirty = true
     request()
+end)
+
+mp.observe_property("osd-dimensions", "native", function(_, dim)
+    osd.res_x = dim.w
+    osd.res_y = dim.h
+    if req and req.ass then
+        osd:update()
+    end
 end)
 
 mp.observe_property("thumbnail-info", "native", function(_, value)
