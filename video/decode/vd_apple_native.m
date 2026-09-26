@@ -73,10 +73,9 @@ static CMTime to_cmtime(double s)
     return CMTimeMake(llrint(s * 1e6), 1000000);
 }
 
-static bool has_iso_config(const struct mp_codec_params *c)
+static bool has_iso_config(const uint8_t *d, int size)
 {
-    const uint8_t *d = c->extradata;
-    if (!d || c->extradata_size < 4)
+    if (!d || size < 4)
         return false;
     return !(d[0] == 0 && d[1] == 0 && (d[2] == 1 || (d[2] == 0 && d[3] == 1)));
 }
@@ -134,7 +133,13 @@ static bool init_format(struct priv *p)
 {
     struct mp_codec_params *c = p->codec;
     const char *codec = c->codec;
-    if (!codec || !has_iso_config(c)) {
+    const uint8_t *extradata = c->extradata;
+    int extradata_size = c->extradata_size;
+    if (!extradata_size && c->lav_codecpar) {
+        extradata = c->lav_codecpar->extradata;
+        extradata_size = c->lav_codecpar->extradata_size;
+    }
+    if (!codec || !has_iso_config(extradata, extradata_size)) {
         MP_VERBOSE(p, "No ISO codec configuration record, not using native decoding\n");
         return false;
     }
@@ -160,7 +165,7 @@ static bool init_format(struct priv *p)
     }
 
     NSMutableDictionary *atoms = [NSMutableDictionary dictionary];
-    atoms[atom] = [NSData dataWithBytes:c->extradata length:c->extradata_size];
+    atoms[atom] = [NSData dataWithBytes:extradata length:extradata_size];
 
     const AVDOVIDecoderConfigurationRecord *dovi = get_dovi(c);
     if (dovi && type == kCMVideoCodecType_HEVC) {
