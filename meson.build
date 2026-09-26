@@ -860,7 +860,9 @@ if features['audiounit'] or features['coreaudio'] or features['avfoundation']
                      'audio/out/ao_coreaudio_utils.c')
 endif
 
-if features['avfoundation']
+features += {'coreaudio-hal': features['coreaudio'] or
+             (features['avfoundation'] and host_machine.subsystem() == 'macos')}
+if features['avfoundation'] and features['coreaudio-hal']
     sources += files('audio/out/ao_coreaudio_properties.c')
 endif
 

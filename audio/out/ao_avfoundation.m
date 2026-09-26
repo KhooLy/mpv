@@ -363,9 +363,11 @@ static int init(struct ao *ao)
         goto error;
     }
 
+#if HAVE_COREAUDIO_HAL
     if (ao->device && ao->device[0]) {
         [p->renderer setAudioOutputDeviceUniqueID:(NSString*)cfstr_from_cstr(ao->device)];
     }
+#endif
 
     [p->synchronizer addRenderer:p->renderer];
 #if HAVE_MACOS_11_3_FEATURES
@@ -480,6 +482,8 @@ const struct ao_driver audio_out_avfoundation = {
     .reset          = stop,
     .start          = start,
     .set_pause      = set_pause,
+#if HAVE_COREAUDIO_HAL
     .list_devs      = ca_get_device_list,
+#endif
     .priv_size      = sizeof(struct priv),
 };

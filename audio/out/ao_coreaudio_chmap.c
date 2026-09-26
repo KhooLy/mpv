@@ -339,6 +339,9 @@ AudioChannelLayout *ca_get_acl(struct ao *ao, size_t *out_layout_size)
 }
 
 
+#endif
+
+#if HAVE_COREAUDIO_HAL
 #define CHMAP(n, ...) &(struct mp_chmap) MP_CONCAT(MP_CHMAP, n) (__VA_ARGS__)
 
 // Replace each channel in a with b (a->num == b->num)
