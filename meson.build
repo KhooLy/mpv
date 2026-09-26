@@ -418,6 +418,7 @@ add_project_link_arguments(link_flags, language: ['c', 'cpp', 'objc'])
 if darwin
     path_source = files('osdep/path-darwin.c')
     timer_source = files('osdep/timer-darwin.c')
+    sources += files('osdep/utils-mac.c')
 endif
 
 cocoa = dependency('appleframeworks', modules: ['Cocoa', 'IOKit', 'QuartzCore'],
@@ -427,7 +428,6 @@ if features['cocoa']
     dependencies += cocoa
     path_source += files('osdep/path-mac.m')
     sources += files('osdep/language-mac.c',
-                     'osdep/utils-mac.c',
                      'osdep/mac/app_bridge.m',
                      'player/clipboard/clipboard-mac.m')
     main_fn_source = files('osdep/main-fn-mac.c')
@@ -835,7 +835,8 @@ if features['audiounit']
 endif
 
 avfoundation = dependency('appleframeworks',
-                          modules: ['CoreMedia', 'CoreVideo', 'AVFoundation', 'VideoToolbox'],
+                          modules: ['CoreMedia', 'CoreVideo', 'CoreGraphics', 'QuartzCore',
+                                   'AVFoundation', 'VideoToolbox'],
                           required: get_option('avfoundation'))
 features += {'avfoundation': avfoundation.found()}
 if features['avfoundation']
@@ -1458,6 +1459,7 @@ ios_gl = cc.has_header_symbol('OpenGLES/ES3/glext.h', 'GL_RGB32F', required:
     get_option('ios-gl').require(darwin))
 features += {'ios-gl': ios_gl}
 if features['ios-gl']
+    dependencies += dependency('appleframeworks', modules: ['OpenGLES'])
     sources += files('video/out/hwdec/hwdec_ios_gl.m')
 endif
 
