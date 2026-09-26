@@ -5404,6 +5404,14 @@ static void replace_overlay(struct MPContext *mpctx, int id, struct overlay *new
     recreate_overlays(mpctx);
 }
 
+void mp_set_overlay(struct MPContext *mpctx, int id, struct mp_image *img,
+                    int x, int y, int dw, int dh)
+{
+    replace_overlay(mpctx, id, &(struct overlay){
+        .source = img, .x = x, .y = y, .dw = dw, .dh = dh,
+    });
+}
+
 static bool
 fread_pic(FILE *fp, mp_image_t *dst, size_t bytesPerLine, size_t h, size_t stride, size_t offset)
 {
@@ -7739,7 +7747,16 @@ const struct mp_cmd_def mp_cmds[] = {
                 OPTDEF_INT(0)},
         },
     },
-    { "thumbnail", cmd_thumbnail, { {"time", OPT_TIME(v.d)} } },
+    { "thumbnail", cmd_thumbnail,
+        {
+            {"time", OPT_TIME(v.d)},
+            {"overlay-id", OPT_INT(v.i), OPTDEF_INT(-1)},
+            {"x", OPT_INT(v.i), OPTDEF_INT(0)},
+            {"y", OPT_INT(v.i), OPTDEF_INT(0)},
+            {"w", OPT_INT(v.i), OPTDEF_INT(0)},
+            {"h", OPT_INT(v.i), OPTDEF_INT(0)},
+        },
+    },
     { "loadfile", cmd_loadfile,
         {
             {"url", OPT_STRING(v.s)},

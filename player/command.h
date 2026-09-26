@@ -24,6 +24,7 @@
 #include "osdep/compiler.h"
 
 struct MPContext;
+struct mp_image;
 struct mp_cmd;
 struct mp_log;
 struct mpv_node;
@@ -90,6 +91,8 @@ void mp_option_change_callback(void *ctx, struct m_config_option *co, uint64_t f
 void mp_option_run_callback(struct MPContext *mpctx, struct mp_option_callback *callback);
 
 void mp_notify(struct MPContext *mpctx, int event, void *arg);
+void mp_set_overlay(struct MPContext *mpctx, int id, struct mp_image *img,
+                    int x, int y, int dw, int dh);
 void mp_notify_property(struct MPContext *mpctx, const char *property);
 
 void handle_command_updates(struct MPContext *mpctx);

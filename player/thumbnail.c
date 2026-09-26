@@ -576,6 +576,7 @@ void cmd_thumbnail(void *p)
         return;
     }
 
+    int id = cmd->args[1].v.i;
     struct mpv_node *res = &cmd->result;
     node_init(res, MPV_FORMAT_NODE_MAP, NULL);
     node_map_add_int64(res, "w", img->w);
@@ -584,6 +585,13 @@ void cmd_thumbnail(void *p)
     node_map_add_string(res, "format", "bgra");
     node_map_add_double(res, "time", pts);
     node_map_add_flag(res, "exact", best == want);
+    if (id >= 0 && id < 64) {
+        int dw = cmd->args[4].v.i > 0 ? cmd->args[4].v.i : img->w;
+        int dh = cmd->args[5].v.i > 0 ? cmd->args[5].v.i : img->h;
+        mp_set_overlay(mpctx, id, img, cmd->args[2].v.i, cmd->args[3].v.i, dw, dh);
+        cmd->success = true;
+        return;
+    }
     struct mpv_byte_array *ba = node_map_add(res, "data", MPV_FORMAT_BYTE_ARRAY)->u.ba;
     *ba = (struct mpv_byte_array){
         .data = img->planes[0],
