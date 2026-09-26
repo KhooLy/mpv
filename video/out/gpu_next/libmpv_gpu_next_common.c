@@ -968,7 +968,9 @@ bool lgn_render_frame(struct render_backend *ctx, mpv_render_param *params,
 
     if (ok && p->vo) {
         mp_mutex_lock(&p->vo->params_mutex);
+        pl_tex tex = target.planes[0].texture;
         p->target_params = (struct mp_image_params){
+            .imgfmt_name = tex ? tex->params.format->name : NULL,
             .w = w,
             .h = h,
             .color = target.color,
