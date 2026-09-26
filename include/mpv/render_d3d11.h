@@ -46,7 +46,7 @@ extern "C" {
  * calling mpv_render_context_render().
  *
  * Selecting this API type is enough to use the gpu-next renderer; unlike the
- * OpenGL backend it does not need MPV_LIBMPV_RENDER_BACKEND.
+ * OpenGL backend it does not need vo=gpu-next.
  */
 
 /**

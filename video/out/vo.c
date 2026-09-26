@@ -37,6 +37,7 @@
 #include "dr_helper.h"
 #include "input/input.h"
 #include "options/m_config.h"
+#include "player/client.h"
 #include "common/msg.h"
 #include "common/global.h"
 #include "common/stats.h"
@@ -338,7 +339,11 @@ struct vo *init_best_video_out(struct mpv_global *global, struct vo_extra *ex)
             if (strlen(vo_list[n].name) == 0)
                 goto autoprobe;
             bool p = !!vo_list[n + 1].name;
-            vo = vo_create(p, global, ex, vo_list[n].name);
+            char *name = vo_list[n].name;
+            if ((!strcmp(name, "gpu") || !strcmp(name, "gpu-next")) &&
+                mp_client_api_has_render_context(global->client_api))
+                name = "libmpv";
+            vo = vo_create(p, global, ex, name);
             if (vo)
                 goto done;
         }

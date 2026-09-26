@@ -18,6 +18,8 @@
 #include <libplacebo/opengl.h>
 
 #include "common/common.h"
+#include "options/m_config.h"
+#include "video/out/vo.h"
 #include "video/out/gpu/libmpv_gpu.h"
 #include "video/out/opengl/ra_gl.h"
 #include "video/out/placebo/utils.h"
@@ -75,8 +77,11 @@ static int init(struct render_backend *ctx, mpv_render_param *params)
     p->release_hwdec_planes = release_hwdec_planes;
     p->pre_render = pre_render;
 
-    const char *backend = getenv("MPV_LIBMPV_RENDER_BACKEND");
-    if (!backend || strcmp(backend, "gpu-next") != 0)
+    struct mp_vo_opts *vo_opts = mp_get_config_group(NULL, ctx->global, &vo_sub_opts);
+    struct m_obj_settings *vos = vo_opts->video_driver_list;
+    bool want = vos && vos[0].name && !strcmp(vos[0].name, "gpu-next");
+    talloc_free(vo_opts);
+    if (!want)
         return MPV_ERROR_NOT_IMPLEMENTED;
 
     char *api = get_mpv_render_param(params, MPV_RENDER_PARAM_API_TYPE, NULL);
