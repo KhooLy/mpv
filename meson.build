@@ -1531,8 +1531,8 @@ if features['vdpau'] and features['vdpau-gl-x11']
 endif
 
 videotoolbox_gl = get_option('videotoolbox-gl').require(
-    features['gl-cocoa'] or features['ios-gl'],
-    error_message: 'gl-cocoa nor ios-gl could be found!',
+    features['gl-cocoa'],
+    error_message: 'gl-cocoa could not be found!',
 )
 features += {'videotoolbox-gl': videotoolbox_gl.allowed()}
 corevideo = dependency('appleframeworks', modules: ['CoreVideo'], required:
