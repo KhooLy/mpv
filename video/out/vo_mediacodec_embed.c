@@ -404,11 +404,10 @@ static void draw_osd(struct vo *vo, int64_t present_ns)
 {
     struct priv *p = vo->priv;
     struct osd_layer *o = &p->osd;
-    int w, h;
-    if (!o->sc || !vo->osd || o->buf_w <= 0 || !vo_android_surface_size(vo, &w, &h))
+    if (!o->sc || !vo->osd || o->buf_w <= 0)
         return;
 
-    struct mp_osd_res res = {.w = w, .h = h, .display_par = 1};
+    struct mp_osd_res res = {.w = o->buf_w, .h = o->buf_h, .display_par = 1};
     if (!osd_res_equals(res, o->res)) {
         o->res = res;
         o->change_id = -1;
@@ -425,7 +424,7 @@ static void draw_osd(struct vo *vo, int64_t present_ns)
     }
     o->change_id = list->change_id;
 
-    struct mp_rect box = {w, h, 0, 0};
+    struct mp_rect box = {res.w, res.h, 0, 0};
     for (int n = 0; n < list->num_items; n++) {
         struct sub_bitmaps *imgs = list->items[n];
         for (int i = 0; i < imgs->num_parts; i++) {
@@ -440,8 +439,8 @@ static void draw_osd(struct vo *vo, int64_t present_ns)
     }
     box.x0 = MPMAX(box.x0, 0);
     box.y0 = MPMAX(box.y0, 0);
-    box.x1 = MPMIN(box.x1, w);
-    box.y1 = MPMIN(box.y1, h);
+    box.x1 = MPMIN(box.x1, res.w);
+    box.y1 = MPMIN(box.y1, res.h);
 
     AHardwareBuffer *buf = NULL;
     if (box.x1 > box.x0 && box.y1 > box.y0) {
@@ -499,10 +498,7 @@ static void draw_osd(struct vo *vo, int64_t present_ns)
     ASurfaceTransaction *t = o->txn_create();
     if (buf) {
         ARect src = {0, 0, box.x1 - box.x0, box.y1 - box.y0};
-        ARect dst = {
-            lrint((double)box.x0 * o->buf_w / w), lrint((double)box.y0 * o->buf_h / h),
-            lrint((double)box.x1 * o->buf_w / w), lrint((double)box.y1 * o->buf_h / h),
-        };
+        ARect dst = {box.x0, box.y0, box.x1, box.y1};
         o->set_buffer(t, o->sc, buf, -1);
         o->set_geometry(t, o->sc, &src, &dst, 0);
     }
