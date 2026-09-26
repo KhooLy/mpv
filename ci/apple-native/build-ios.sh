@@ -99,7 +99,7 @@ meson setup "$work/mpv" "$src" --cross-file "$work/cross.txt" --prefix "$prefix"
     --libdir lib --buildtype release --default-library static --werror \
     -Dlibmpv=true -Dcplayer=false -Dlua=disabled -Djavascript=disabled \
     -Dcocoa=disabled -Dswift-build=disabled -Dmacos-cocoa-cb=disabled \
-    -Dcoreaudio=disabled -Dgl=disabled -Dvulkan=disabled -Dmanpage-build=disabled \
+    -Dcoreaudio=disabled -Dvulkan=disabled -Dmanpage-build=disabled \
     -Davfoundation=enabled -Daudiounit=enabled
 meson compile -C "$work/mpv"
 meson install -C "$work/mpv"
