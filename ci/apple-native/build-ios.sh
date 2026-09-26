@@ -29,7 +29,7 @@ c_args = [$flags]
 c_link_args = [$flags]
 cpp_args = [$flags]
 cpp_link_args = [$flags]
-objc_args = [$flags]
+objc_args = [$flags, '-Wno-error=deprecated', '-Wno-error=deprecated-declarations']
 objc_link_args = [$flags]
 
 [properties]
@@ -97,7 +97,6 @@ meson_dep libplacebo -Dvulkan=disabled -Dopengl=disabled -Dd3d11=disabled \
 
 meson setup "$work/mpv" "$src" --cross-file "$work/cross.txt" --prefix "$prefix" \
     --libdir lib --buildtype release --default-library static --werror \
-    -Dobjc_args="-Wno-error=deprecated -Wno-error=deprecated-declarations" \
     -Dlibmpv=true -Dcplayer=false -Dlua=disabled -Djavascript=disabled \
     -Dcocoa=disabled -Dswift-build=disabled -Dmacos-cocoa-cb=disabled \
     -Dcoreaudio=disabled -Dgl=disabled -Dvulkan=disabled -Dmanpage-build=disabled \
