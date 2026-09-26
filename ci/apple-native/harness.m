@@ -41,7 +41,12 @@ int main(int argc, char **argv)
     mpv_set_option_string(mpv, "ao", "avfoundation,null");
     int64_t wid = (int64_t)(intptr_t)layer;
     mpv_set_option(mpv, "wid", MPV_FORMAT_INT64, &wid);
+    bool expect_overlay = false;
     for (int i = 2; i < argc; i++) {
+        if (strcmp(argv[i], "expect-overlay=yes") == 0) {
+            expect_overlay = true;
+            continue;
+        }
         char *eq = strchr(argv[i], '=');
         if (!eq)
             continue;
@@ -55,14 +60,15 @@ int main(int argc, char **argv)
     const char *cmd[] = {"loadfile", argv[1], NULL};
     mpv_command(mpv, cmd);
 
-    double start = 0, deadline = now() + 60, duration = 0;
-    bool sampled = false, eof = false, overlay_used = false;
+    double start = 0, deadline = now() + 60, duration = 0, start_pos = 0;
+    bool sampled = false, eof = false, overlay_used = false, native = false;
     int end_error = 0;
     while (now() < deadline) {
         mpv_event *ev = mpv_wait_event(mpv, 0.005);
         if (ev->event_id == MPV_EVENT_PLAYBACK_RESTART && !start) {
             start = now();
             mpv_get_property(mpv, "duration", MPV_FORMAT_DOUBLE, &duration);
+            mpv_get_property(mpv, "time-pos", MPV_FORMAT_DOUBLE, &start_pos);
         }
         if (ev->event_id == MPV_EVENT_END_FILE) {
             mpv_event_end_file *ef = ev->data;
@@ -72,9 +78,10 @@ int main(int argc, char **argv)
         }
         CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0.005, true);
 
-        CALayer *overlay = layer.sublayers.firstObject;
-        if (overlay.sublayers.count)
-            overlay_used = true;
+        for (CALayer *sub in layer.sublayers) {
+            if (sub.zPosition == 1 && sub.sublayers.count)
+                overlay_used = true;
+        }
 
         double pos = 0;
         if (!sampled && start &&
@@ -85,6 +92,9 @@ int main(int argc, char **argv)
             printf("properties at %.2fs:\n", pos);
             print_prop(mpv, "current-vo");
             print_prop(mpv, "current-tracks/video/decoder-desc");
+            char *desc = mpv_get_property_string(mpv, "current-tracks/video/decoder-desc");
+            native = desc && strcmp(desc, "AVSampleBufferDisplayLayer") == 0;
+            mpv_free(desc);
             print_prop(mpv, "current-tracks/video/codec");
             print_prop(mpv, "video-params/pixelformat");
             print_prop(mpv, "video-params/gamma");
@@ -101,22 +111,31 @@ int main(int argc, char **argv)
     double wall = start ? now() - start : 0;
 
     CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0.1, true);
-    printf("layer status: %ld%s%s\n", (long)layer.status,
-           layer.error ? " error: " : "",
-           layer.error ? layer.error.description.UTF8String : "");
+    NSError *error = layer.sampleBufferRenderer.error;
+    printf("layer status: %ld%s%s\n", (long)layer.sampleBufferRenderer.status,
+           error ? " error: " : "", error ? error.description.UTF8String : "");
     printf("overlay drew: %s\n", overlay_used ? "yes" : "no");
-    printf("duration %.2fs, wall %.2fs\n", duration, wall);
+    double expected = duration - start_pos;
+    printf("played %.2fs of media in %.2fs\n", expected, wall);
 
     int fail = 0;
     if (!eof) {
         printf("FAIL: playback did not reach EOF (%s)\n", mpv_error_string(end_error));
         fail = 1;
     }
-    if (layer.status == AVQueuedSampleBufferRenderingStatusFailed) {
+    if (layer.sampleBufferRenderer.status == AVQueuedSampleBufferRenderingStatusFailed) {
         printf("FAIL: display layer failed\n");
         fail = 1;
     }
-    if (duration > 0 && fabs(wall - duration) > duration * 0.2 + 0.5) {
+    if (!native) {
+        printf("FAIL: video did not use the native decoder\n");
+        fail = 1;
+    }
+    if (expect_overlay && !overlay_used) {
+        printf("FAIL: subtitles were not drawn into the overlay\n");
+        fail = 1;
+    }
+    if (expected > 0 && fabs(wall - expected) > expected * 0.2 + 0.5) {
         printf("FAIL: wall time does not match media duration\n");
         fail = 1;
     }

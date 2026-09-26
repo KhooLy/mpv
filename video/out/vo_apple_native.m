@@ -225,9 +225,12 @@ static bool draw_frame(struct vo *vo, struct vo_frame *frame)
     if (!mpi)
         return true;
 
-    int w = vo->dwidth, h = vo->dheight;
-    update_size(vo);
-    if (w != vo->dwidth || h != vo->dheight) {
+    CGSize size = p->layer.bounds.size;
+    CGFloat scale = p->layer.contentsScale > 0 ? p->layer.contentsScale : 1;
+    if (lrint(size.width * scale) != vo->dwidth ||
+        lrint(size.height * scale) != vo->dheight)
+    {
+        update_size(vo);
         p->osd_change_id = -1;
         vo_event(vo, VO_EVENT_RESIZE);
     }
