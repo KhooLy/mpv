@@ -741,7 +741,8 @@ Available video output drivers are:
     of profile 7. Requires ``--wid=(intptr_t)(AVSampleBufferDisplayLayer *)``.
     Streams the layer cannot decode fall back to ``--hwdec=videotoolbox``.
 
-    Subtitles, OSD and video filters are not available with this driver.
+    Subtitles and OSD are drawn into a ``CALayer`` added above the video.
+    Video filters are not available with this driver.
 
 ``wlshm`` (Wayland only)
     Shared memory video output driver without hardware acceleration that works

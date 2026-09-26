@@ -16,16 +16,20 @@
  */
 
 #include <math.h>
+#include <stdlib.h>
+#include <string.h>
 
 #include <libavutil/hwcontext.h>
 
 #import <AVFoundation/AVFoundation.h>
 #import <CoreMedia/CoreMedia.h>
 #import <CoreVideo/CoreVideo.h>
+#import <QuartzCore/QuartzCore.h>
 
 #include "common/common.h"
 #include "common/msg.h"
 #include "osdep/timer.h"
+#include "sub/osd.h"
 #include "video/hwdec.h"
 #include "video/mp_image.h"
 #include "apple_native.h"
@@ -39,6 +43,9 @@ struct priv {
     struct mp_hwdec_ctx vt;
     AVSampleBufferDisplayLayer *layer;
     CMTimebaseRef timebase;
+    CALayer *overlay;
+    struct mp_osd_res osd_res;
+    int64_t osd_change_id;
     bool pixel_buffers;
     bool paused;
     bool synced;
@@ -128,12 +135,107 @@ static void update_size(struct vo *vo)
     CGFloat scale = p->layer.contentsScale > 0 ? p->layer.contentsScale : 1;
     vo->dwidth = MPMAX(1, lrint(size.width * scale));
     vo->dheight = MPMAX(1, lrint(size.height * scale));
+
+    struct mp_rect src, dst;
+    vo_get_src_dst_rects(vo, &src, &dst, &p->osd_res);
+}
+
+static void free_bitmap(void *info, const void *data, size_t size)
+{
+    free((void *)data);
+}
+
+static CGImageRef create_bitmap_image(struct sub_bitmap *b)
+{
+    size_t stride = (size_t)b->w * 4;
+    uint8_t *data = malloc(stride * b->h);
+    if (!data)
+        return NULL;
+    for (int y = 0; y < b->h; y++)
+        memcpy(data + y * stride, (uint8_t *)b->bitmap + y * b->stride, stride);
+
+    CGDataProviderRef provider =
+        CGDataProviderCreateWithData(NULL, data, stride * b->h, free_bitmap);
+    CGColorSpaceRef cs = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
+    CGImageRef image = CGImageCreate(b->w, b->h, 8, 32, stride, cs,
+                                     kCGBitmapByteOrder32Little |
+                                     kCGImageAlphaPremultipliedFirst,
+                                     provider, NULL, false,
+                                     kCGRenderingIntentDefault);
+    CGColorSpaceRelease(cs);
+    CGDataProviderRelease(provider);
+    return image;
+}
+
+static void draw_osd(struct vo *vo, double pts, int64_t target)
+{
+    struct priv *p = vo->priv;
+    if (p->osd_res.w <= 0 || p->osd_res.h <= 0)
+        return;
+
+    static const bool formats[SUBBITMAP_COUNT] = {[SUBBITMAP_BGRA] = true};
+    struct sub_bitmap_list *list = osd_render(vo->osd, p->osd_res, pts, 0, formats);
+    if (list->change_id == p->osd_change_id) {
+        talloc_free(list);
+        return;
+    }
+    p->osd_change_id = list->change_id;
+
+    CGRect bounds = p->layer.bounds;
+    CGFloat scale = bounds.size.width / p->osd_res.w;
+    NSMutableArray *layers = [[NSMutableArray alloc] init];
+    for (int n = 0; n < list->num_items; n++) {
+        struct sub_bitmaps *imgs = list->items[n];
+        for (int i = 0; i < imgs->num_parts; i++) {
+            struct sub_bitmap *b = &imgs->parts[i];
+            if (b->w <= 0 || b->h <= 0 || b->dw <= 0 || b->dh <= 0)
+                continue;
+            CGImageRef image = create_bitmap_image(b);
+            if (!image)
+                continue;
+            CALayer *layer = [[CALayer alloc] init];
+            layer.frame = CGRectMake(b->x * scale, b->y * scale,
+                                     b->dw * scale, b->dh * scale);
+            layer.contents = (id)image;
+            layer.contentsGravity = kCAGravityResize;
+            [layers addObject:layer];
+            [layer release];
+            CGImageRelease(image);
+        }
+    }
+    talloc_free(list);
+
+    CALayer *overlay = [p->overlay retain];
+    int64_t delay = target > 0 ? MPMAX(0, target - mp_time_ns()) : 0;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, delay), dispatch_get_main_queue(), ^{
+        [CATransaction begin];
+        [CATransaction setDisableActions:YES];
+        overlay.frame = overlay.superlayer.bounds;
+        overlay.sublayers = layers;
+        [CATransaction commit];
+        [layers release];
+        [overlay release];
+    });
 }
 
 static bool draw_frame(struct vo *vo, struct vo_frame *frame)
 {
+    struct priv *p = vo->priv;
     struct mp_image *mpi = frame->current;
-    if (!mpi || frame->redraw || frame->repeat)
+    if (!mpi)
+        return true;
+
+    int w = vo->dwidth, h = vo->dheight;
+    update_size(vo);
+    if (w != vo->dwidth || h != vo->dheight) {
+        p->osd_change_id = -1;
+        vo_event(vo, VO_EVENT_RESIZE);
+    }
+
+    @autoreleasepool {
+        draw_osd(vo, mpi->pts, frame->redraw ? 0 : frame->pts);
+    }
+    if (frame->redraw || frame->repeat)
         return true;
 
     @autoreleasepool {
@@ -156,7 +258,9 @@ static int query_format(struct vo *vo, int format)
 
 static int reconfig(struct vo *vo, struct mp_image_params *params)
 {
+    struct priv *p = vo->priv;
     update_size(vo);
+    p->osd_change_id = -1;
     return 0;
 }
 
@@ -165,6 +269,9 @@ static int control(struct vo *vo, uint32_t request, void *data)
     struct priv *p = vo->priv;
 
     switch (request) {
+    case VOCTRL_SET_PANSCAN:
+        update_size(vo);
+        return VO_TRUE;
     case VOCTRL_RESET:
         if (p->pixel_buffers)
             [p->layer flush];
@@ -216,11 +323,18 @@ static int preinit(struct vo *vo)
     p->rate = 1;
     p->layer = [object retain];
 
+    p->overlay = [[CALayer alloc] init];
+    p->overlay.zPosition = 1;
+
     AVSampleBufferDisplayLayer *layer = [p->layer retain];
+    CALayer *overlay = [p->overlay retain];
     CMTimebaseRef timebase = (CMTimebaseRef)CFRetain(p->timebase);
     on_main(^{
         layer.videoGravity = AVLayerVideoGravityResizeAspect;
         layer.controlTimebase = timebase;
+        overlay.frame = layer.bounds;
+        [layer addSublayer:overlay];
+        [overlay release];
         CFRelease(timebase);
         [layer release];
     });
@@ -260,7 +374,10 @@ static void uninit(struct vo *vo)
     av_buffer_unref(&p->vt.av_device_ref);
 
     AVSampleBufferDisplayLayer *layer = p->layer;
+    CALayer *overlay = p->overlay;
     on_main(^{
+        [overlay removeFromSuperlayer];
+        [overlay release];
         [layer flushAndRemoveImage];
         layer.controlTimebase = nil;
         [layer release];
