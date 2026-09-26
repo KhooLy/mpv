@@ -54,7 +54,7 @@
 
 enum { SLOT_EMPTY, SLOT_DONE, SLOT_FAILED };
 
-static const char magic[8] = "mpvthmb1";
+static const char magic[] = "mpvthmb1";
 
 struct cache_header {
     char magic[8];
@@ -116,7 +116,7 @@ static void open_cache(struct thumbnailer *t, struct demuxer *d)
     struct cache_header hdr = {
         .w = t->w, .h = t->h, .count = t->count, .step = t->step,
     };
-    memcpy(hdr.magic, magic, sizeof(magic));
+    memcpy(hdr.magic, magic, sizeof(hdr.magic));
     uint64_t key = 0xcbf29ce484222325ULL;
     key = fnv(key, t->url, strlen(t->url));
     key = fnv(key, &d->filesize, sizeof(d->filesize));
