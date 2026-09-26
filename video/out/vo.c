@@ -1081,7 +1081,7 @@ static void do_redraw(struct vo *vo)
     mp_mutex_lock(&in->lock);
     in->request_redraw = false;
 
-    if (vo->driver->caps & (VO_CAP_NORETAIN | VO_CAP_UNTIMED)) {
+    if (vo->driver->caps & VO_CAP_UNTIMED) {
         mp_mutex_unlock(&in->lock);
         return;
     }

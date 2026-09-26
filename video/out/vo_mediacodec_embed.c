@@ -19,15 +19,18 @@
 #include <math.h>
 #include <stdatomic.h>
 #include <stdlib.h>
+#include <string.h>
 #include <time.h>
 
 #include <android/choreographer.h>
+#include <android/hardware_buffer.h>
 #include <android/looper.h>
 #include <libavcodec/mediacodec.h>
 #include <libavutil/hwcontext.h>
 #include <libavutil/hwcontext_mediacodec.h>
 
 #include "common/common.h"
+#include "sub/osd.h"
 #include "osdep/threads.h"
 #include "osdep/timer.h"
 #include "vo.h"
@@ -60,6 +63,33 @@ struct vsync_sampler {
     AChoreographer *choreographer;
 };
 
+typedef struct ASurfaceControl ASurfaceControl;
+typedef struct ASurfaceTransaction ASurfaceTransaction;
+
+struct osd_layer {
+    ASurfaceControl *(*create)(ANativeWindow *, const char *);
+    void (*release)(ASurfaceControl *);
+    ASurfaceTransaction *(*txn_create)(void);
+    void (*txn_delete)(ASurfaceTransaction *);
+    void (*txn_apply)(ASurfaceTransaction *);
+    void (*set_buffer)(ASurfaceTransaction *, ASurfaceControl *, AHardwareBuffer *, int);
+    void (*set_geometry)(ASurfaceTransaction *, ASurfaceControl *, const ARect *,
+                         const ARect *, int32_t);
+    void (*set_visibility)(ASurfaceTransaction *, ASurfaceControl *, int8_t);
+    void (*set_z_order)(ASurfaceTransaction *, ASurfaceControl *, int32_t);
+    void (*set_transparency)(ASurfaceTransaction *, ASurfaceControl *, int8_t);
+    void (*set_present_time)(ASurfaceTransaction *, int64_t);
+    void (*reparent)(ASurfaceTransaction *, ASurfaceControl *, ASurfaceControl *);
+
+    ASurfaceControl *sc;
+    struct mp_osd_res res;
+    int buf_w, buf_h;
+    uint8_t *scratch;
+    int64_t change_id;
+    bool visible;
+    double pts;
+};
+
 struct release_helper {
     int64_t last_frame_index;
     int64_t last_release_ns;
@@ -84,6 +114,7 @@ struct priv {
     bool started;
     float media_frame_rate;
     float surface_frame_rate;
+    struct osd_layer osd;
 };
 
 static int64_t monotonic_ns(void)
@@ -264,6 +295,228 @@ static void update_surface_frame_rate(struct vo *vo, bool force)
     vo_android_set_frame_rate(vo, rate);
 }
 
+static void osd_init(struct vo *vo)
+{
+    struct osd_layer *o = &((struct priv *)vo->priv)->osd;
+    void *lib = dlopen("libandroid.so", RTLD_NOW);
+    if (!lib)
+        return;
+    o->create = dlsym(lib, "ASurfaceControl_createFromWindow");
+    o->release = dlsym(lib, "ASurfaceControl_release");
+    o->txn_create = dlsym(lib, "ASurfaceTransaction_create");
+    o->txn_delete = dlsym(lib, "ASurfaceTransaction_delete");
+    o->txn_apply = dlsym(lib, "ASurfaceTransaction_apply");
+    o->set_buffer = dlsym(lib, "ASurfaceTransaction_setBuffer");
+    o->set_geometry = dlsym(lib, "ASurfaceTransaction_setGeometry");
+    o->set_visibility = dlsym(lib, "ASurfaceTransaction_setVisibility");
+    o->set_z_order = dlsym(lib, "ASurfaceTransaction_setZOrder");
+    o->set_transparency = dlsym(lib, "ASurfaceTransaction_setBufferTransparency");
+    o->set_present_time = dlsym(lib, "ASurfaceTransaction_setDesiredPresentTime");
+    o->reparent = dlsym(lib, "ASurfaceTransaction_reparent");
+    dlclose(lib);
+    if (!o->create || !o->release || !o->txn_create || !o->txn_delete ||
+        !o->txn_apply || !o->set_buffer || !o->set_geometry || !o->set_visibility ||
+        !o->set_z_order || !o->set_transparency || !o->set_present_time || !o->reparent)
+    {
+        MP_WARN(vo, "ASurfaceControl unavailable (Android 10+ required); "
+                "subtitles and OSD will not be shown\n");
+        return;
+    }
+
+    o->sc = o->create(vo_android_native_window(vo), "mpv-osd");
+    if (!o->sc) {
+        MP_WARN(vo, "Failed to create subtitle surface\n");
+        return;
+    }
+    o->change_id = -1;
+    ASurfaceTransaction *t = o->txn_create();
+    o->set_z_order(t, o->sc, 1);
+    o->set_transparency(t, o->sc, 1);
+    o->set_visibility(t, o->sc, 0);
+    o->txn_apply(t);
+    o->txn_delete(t);
+}
+
+static void osd_uninit(struct osd_layer *o)
+{
+    if (!o->sc)
+        return;
+    ASurfaceTransaction *t = o->txn_create();
+    o->reparent(t, o->sc, NULL);
+    o->txn_apply(t);
+    o->txn_delete(t);
+    o->release(o->sc);
+    o->sc = NULL;
+}
+
+static void blend_part(uint8_t *dst, int dst_stride, struct mp_rect box,
+                       const struct sub_bitmap *b)
+{
+    int x0 = MPMAX(b->x, box.x0), x1 = MPMIN(b->x + b->dw, box.x1);
+    int y0 = MPMAX(b->y, box.y0), y1 = MPMIN(b->y + b->dh, box.y1);
+    for (int y = y0; y < y1; y++) {
+        const uint32_t *src = (const uint32_t *)((const uint8_t *)b->bitmap +
+                              (size_t)((y - b->y) * b->h / b->dh) * b->stride);
+        uint8_t *d = dst + (size_t)(y - box.y0) * dst_stride + (size_t)(x0 - box.x0) * 4;
+        for (int x = x0; x < x1; x++, d += 4) {
+            uint32_t c = src[(x - b->x) * b->w / b->dw];
+            unsigned a = c >> 24;
+            if (!a)
+                continue;
+            unsigned inv = 255 - a;
+            d[0] = ((c >> 16) & 0xff) + (d[0] * inv + 127) / 255;
+            d[1] = ((c >> 8) & 0xff) + (d[1] * inv + 127) / 255;
+            d[2] = (c & 0xff) + (d[2] * inv + 127) / 255;
+            d[3] = a + (d[3] * inv + 127) / 255;
+        }
+    }
+}
+
+static void blend_ass(uint8_t *dst, int dst_stride, struct mp_rect box,
+                      const struct sub_bitmap *b)
+{
+    unsigned a = 255 - (b->libass.color & 0xff);
+    if (!a)
+        return;
+    unsigned r = (b->libass.color >> 24) & 0xff;
+    unsigned g = (b->libass.color >> 16) & 0xff;
+    unsigned bl = (b->libass.color >> 8) & 0xff;
+    int x0 = MPMAX(b->x, box.x0), x1 = MPMIN(b->x + b->w, box.x1);
+    int y0 = MPMAX(b->y, box.y0), y1 = MPMIN(b->y + b->h, box.y1);
+    for (int y = y0; y < y1; y++) {
+        const uint8_t *m = (const uint8_t *)b->bitmap + (size_t)(y - b->y) * b->stride +
+                           (x0 - b->x);
+        uint8_t *d = dst + (size_t)(y - box.y0) * dst_stride + (size_t)(x0 - box.x0) * 4;
+        for (int x = x0; x < x1; x++, d += 4, m++) {
+            unsigned k = *m * a;
+            if (!k)
+                continue;
+            unsigned inv = 255 * 255 - k;
+            d[0] = (r * k + d[0] * inv) / (255 * 255);
+            d[1] = (g * k + d[1] * inv) / (255 * 255);
+            d[2] = (bl * k + d[2] * inv) / (255 * 255);
+            d[3] = (k * 255 + d[3] * inv) / (255 * 255);
+        }
+    }
+}
+
+static void draw_osd(struct vo *vo, int64_t present_ns)
+{
+    struct priv *p = vo->priv;
+    struct osd_layer *o = &p->osd;
+    int w, h;
+    if (!o->sc || !vo->osd || o->buf_w <= 0 || !vo_android_surface_size(vo, &w, &h))
+        return;
+
+    struct mp_osd_res res = {.w = w, .h = h, .display_par = 1};
+    if (!osd_res_equals(res, o->res)) {
+        o->res = res;
+        o->change_id = -1;
+    }
+
+    static const bool formats[SUBBITMAP_COUNT] = {
+        [SUBBITMAP_LIBASS] = true,
+        [SUBBITMAP_BGRA] = true,
+    };
+    struct sub_bitmap_list *list = osd_render(vo->osd, res, o->pts, 0, formats);
+    if (list->change_id == o->change_id) {
+        talloc_free(list);
+        return;
+    }
+    o->change_id = list->change_id;
+
+    struct mp_rect box = {w, h, 0, 0};
+    for (int n = 0; n < list->num_items; n++) {
+        struct sub_bitmaps *imgs = list->items[n];
+        for (int i = 0; i < imgs->num_parts; i++) {
+            struct sub_bitmap *b = &imgs->parts[i];
+            if (b->dw <= 0 || b->dh <= 0)
+                continue;
+            box.x0 = MPMIN(box.x0, b->x);
+            box.y0 = MPMIN(box.y0, b->y);
+            box.x1 = MPMAX(box.x1, b->x + b->dw);
+            box.y1 = MPMAX(box.y1, b->y + b->dh);
+        }
+    }
+    box.x0 = MPMAX(box.x0, 0);
+    box.y0 = MPMAX(box.y0, 0);
+    box.x1 = MPMIN(box.x1, w);
+    box.y1 = MPMIN(box.y1, h);
+
+    AHardwareBuffer *buf = NULL;
+    if (box.x1 > box.x0 && box.y1 > box.y0) {
+        AHardwareBuffer_Desc desc = {
+            .width = box.x1 - box.x0,
+            .height = box.y1 - box.y0,
+            .layers = 1,
+            .format = AHARDWAREBUFFER_FORMAT_R8G8B8A8_UNORM,
+            .usage = AHARDWAREBUFFER_USAGE_CPU_WRITE_OFTEN |
+                     AHARDWAREBUFFER_USAGE_GPU_SAMPLED_IMAGE |
+                     AHARDWAREBUFFER_USAGE_COMPOSER_OVERLAY,
+        };
+        int stride = desc.width * 4;
+        size_t size = (size_t)stride * desc.height;
+        if (talloc_get_size(o->scratch) < size) {
+            talloc_free(o->scratch);
+            o->scratch = talloc_size(p, size);
+        }
+        memset(o->scratch, 0, size);
+        for (int n = 0; n < list->num_items; n++) {
+            struct sub_bitmaps *imgs = list->items[n];
+            for (int i = 0; i < imgs->num_parts; i++) {
+                struct sub_bitmap *b = &imgs->parts[i];
+                if (imgs->format == SUBBITMAP_LIBASS)
+                    blend_ass(o->scratch, stride, box, b);
+                else if (b->dw > 0 && b->dh > 0)
+                    blend_part(o->scratch, stride, box, b);
+            }
+        }
+
+        void *data = NULL;
+        if (AHardwareBuffer_allocate(&desc, &buf) == 0) {
+            AHardwareBuffer_describe(buf, &desc);
+            if (AHardwareBuffer_lock(buf, AHARDWAREBUFFER_USAGE_CPU_WRITE_OFTEN,
+                                     -1, NULL, &data) != 0)
+                data = NULL;
+        }
+        if (data) {
+            for (uint32_t y = 0; y < desc.height; y++) {
+                memcpy((uint8_t *)data + (size_t)y * desc.stride * 4,
+                       o->scratch + (size_t)y * stride, stride);
+            }
+            AHardwareBuffer_unlock(buf, NULL);
+        } else if (buf) {
+            MP_WARN(vo, "Failed to map subtitle buffer\n");
+            AHardwareBuffer_release(buf);
+            buf = NULL;
+        }
+    }
+    talloc_free(list);
+
+    if (!buf && !o->visible)
+        return;
+
+    ASurfaceTransaction *t = o->txn_create();
+    if (buf) {
+        ARect src = {0, 0, box.x1 - box.x0, box.y1 - box.y0};
+        ARect dst = {
+            lrint((double)box.x0 * o->buf_w / w), lrint((double)box.y0 * o->buf_h / h),
+            lrint((double)box.x1 * o->buf_w / w), lrint((double)box.y1 * o->buf_h / h),
+        };
+        o->set_buffer(t, o->sc, buf, -1);
+        o->set_geometry(t, o->sc, &src, &dst, 0);
+    }
+    if (o->visible != !!buf)
+        o->set_visibility(t, o->sc, !!buf);
+    o->visible = !!buf;
+    if (present_ns > 0)
+        o->set_present_time(t, present_ns);
+    o->txn_apply(t);
+    o->txn_delete(t);
+    if (buf)
+        AHardwareBuffer_release(buf);
+}
+
 static AVBufferRef *create_mediacodec_device_ref(struct vo *vo)
 {
     AVBufferRef *device_ref = av_hwdevice_ctx_alloc(AV_HWDEVICE_TYPE_MEDIACODEC);
@@ -304,6 +557,7 @@ static int preinit(struct vo *vo)
     release_reset(&p->release);
     p->started = true;
     vsync_start(vo, &p->vsync);
+    osd_init(vo);
     vo_set_queue_params(vo, EARLY_SCHEDULING_THRESHOLD_NS, 1);
     return 0;
 }
@@ -311,19 +565,23 @@ static int preinit(struct vo *vo)
 static void flip_page(struct vo *vo)
 {
     struct priv *p = vo->priv;
-    if (!p->next_image)
+    if (!p->next_image) {
+        draw_osd(vo, 0);
         return;
+    }
 
     if (p->next_image->imgfmt != IMGFMT_MEDIACODEC ||
         !p->next_image->planes[3]) {
         MP_ERR(vo, "Invalid MediaCodec output frame\n");
         p->next_image_pts = 0;
         mp_image_unrefp(&p->next_image);
+        draw_osd(vo, 0);
         return;
     }
 
     AVMediaCodecBuffer *buffer = (AVMediaCodecBuffer *)p->next_image->planes[3];
     int err;
+    int64_t present_ns = 0;
     if (p->next_image_pts <= 0 || !p->first_frame_rendered) {
         err = av_mediacodec_release_buffer(buffer, 1);
     } else {
@@ -339,6 +597,7 @@ static void flip_page(struct vo *vo)
             vo_increment_drop_count(vo, 1);
         } else {
             err = av_mediacodec_render_buffer_at_time(buffer, release);
+            present_ns = release;
         }
     }
     if (err < 0)
@@ -348,6 +607,7 @@ static void flip_page(struct vo *vo)
     p->frame_index++;
     p->next_image_pts = 0;
     mp_image_unrefp(&p->next_image);
+    draw_osd(vo, present_ns);
 }
 
 static bool draw_frame(struct vo *vo, struct vo_frame *frame)
@@ -355,12 +615,14 @@ static bool draw_frame(struct vo *vo, struct vo_frame *frame)
     struct priv *p = vo->priv;
 
     mp_image_t *mpi = NULL;
-    if (!frame->redraw && !frame->repeat)
+    if (!frame->redraw && !frame->repeat && frame->current)
         mpi = mp_image_new_ref(frame->current);
 
     talloc_free(p->next_image);
     p->next_image = mpi;
     p->next_image_pts = mpi ? frame->pts : 0;
+    if (frame->current)
+        p->osd.pts = frame->current->pts;
     p->next_frame_duration_ns = frame->duration > 0 ? llrint(frame->duration) : -1;
     if (mpi) {
         vo_android_set_buffers_dataspace(vo, &mpi->params);
@@ -406,6 +668,10 @@ static int control(struct vo *vo, uint32_t request, void *data)
 
 static int reconfig(struct vo *vo, struct mp_image_params *params)
 {
+    struct priv *p = vo->priv;
+    p->osd.buf_w = params->w;
+    p->osd.buf_h = params->h;
+    p->osd.change_id = -1;
     vo_android_set_buffers_dataspace(vo, params);
     return 0;
 }
@@ -415,6 +681,7 @@ static void uninit(struct vo *vo)
     struct priv *p = vo->priv;
     mp_image_unrefp(&p->next_image);
 
+    osd_uninit(&p->osd);
     vsync_stop(&p->vsync);
     p->started = false;
     update_surface_frame_rate(vo, true);
