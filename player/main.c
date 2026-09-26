@@ -69,6 +69,7 @@
 #include "client.h"
 #include "command.h"
 #include "screenshot.h"
+#include "thumbnail.h"
 
 #include "stream/stream_curl.h"
 
@@ -181,6 +182,8 @@ void mp_destroy(struct MPContext *mpctx)
 
     mp_uninit_ipc(mpctx->ipc_ctx);
     mpctx->ipc_ctx = NULL;
+
+    mp_thumbnails_uninit(mpctx);
 
     uninit_audio_out(mpctx);
     uninit_video_out(mpctx);
