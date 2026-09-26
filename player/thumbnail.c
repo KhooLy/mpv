@@ -239,6 +239,8 @@ static AVCodecContext *open_decoder(struct thumbnailer *t, struct sh_stream *sh,
     if (mp_set_avctx_codec_headers(avctx, sh->codec) < 0)
         goto fail;
     avctx->pkt_timebase = mp_get_codec_timebase(sh->codec);
+    avctx->width = sh->codec->disp_w;
+    avctx->height = sh->codec->disp_h;
     avctx->skip_frame = AVDISCARD_NONKEY;
     avctx->skip_loop_filter = AVDISCARD_ALL;
     avctx->flags2 |= AV_CODEC_FLAG2_FAST;
@@ -316,7 +318,14 @@ static uint8_t *grab(struct thumbnailer *t, struct demuxer *d,
     if (avcodec_receive_frame(avctx, frame) >= 0)
         goto got;
     avcodec_send_packet(avctx, NULL);
-    if (avcodec_receive_frame(avctx, frame) < 0)
+    int r;
+    for (int n = 0; n < 200; n++) {
+        r = avcodec_receive_frame(avctx, frame);
+        if (r != AVERROR(EAGAIN) || mp_cancel_test(t->cancel))
+            break;
+        mp_sleep_ns(MP_TIME_MS_TO_NS(5));
+    }
+    if (r < 0)
         return NULL;
 got:;
     AVFrame *src = frame;
