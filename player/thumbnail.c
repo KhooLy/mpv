@@ -17,7 +17,14 @@
 
 #include <math.h>
 #include <string.h>
+
+#ifdef __linux__
 #include <sys/resource.h>
+#elif defined(__APPLE__)
+#include <pthread.h>
+#elif defined(_WIN32)
+#include <windows.h>
+#endif
 
 #include <libavcodec/avcodec.h>
 #include <libavutil/hwcontext.h>
@@ -376,13 +383,22 @@ static void setup(struct thumbnailer *t, struct demuxer *d, struct sh_stream *sh
     t->slots = talloc_zero_array(t, uint8_t *, t->count);
 }
 
+static void lower_priority(void)
+{
+#ifdef __linux__
+    setpriority(PRIO_PROCESS, 0, 10);
+#elif defined(__APPLE__)
+    pthread_set_qos_class_self_np(QOS_CLASS_UTILITY, 0);
+#elif defined(_WIN32)
+    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
+#endif
+}
+
 static MP_THREAD_VOID thumbnail_thread(void *arg)
 {
     struct thumbnailer *t = arg;
     mp_thread_set_name("thumbnail");
-#ifdef __linux__
-    setpriority(PRIO_PROCESS, 0, 10);
-#endif
+    lower_priority();
 
     struct demuxer_params params = {.stream_flags = t->stream_flags | STREAM_SPARSE_READS};
     struct demuxer *d = demux_open_url(t->url, &params, t->cancel, t->global);
