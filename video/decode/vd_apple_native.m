@@ -347,16 +347,19 @@ static void attach_hdr10plus(CFMutableDictionaryRef dict, struct demux_packet *p
         av_packet_get_side_data(pkt->avpacket, AV_PKT_DATA_DYNAMIC_HDR10_PLUS, NULL);
     if (!hdr)
         return;
-    uint8_t *t35 = NULL;
+    static const uint8_t header[] = {0xB5, 0x00, 0x3C, 0x00, 0x01, 0x04};
+    uint8_t *payload = NULL;
     size_t size = 0;
-    if (av_dynamic_hdr_plus_to_t35(hdr, &t35, &size) < 0)
+    if (av_dynamic_hdr_plus_to_t35(hdr, &payload, &size) < 0)
         return;
     if (@available(macOS 14.0, iOS 17.0, tvOS 17.0, *)) {
-        CFDataRef data = CFDataCreate(kCFAllocatorDefault, t35, size);
+        CFMutableDataRef data = CFDataCreateMutable(kCFAllocatorDefault, 0);
+        CFDataAppendBytes(data, header, sizeof(header));
+        CFDataAppendBytes(data, payload, size);
         CFDictionarySetValue(dict, kCMSampleAttachmentKey_HDR10PlusPerFrameData, data);
         CFRelease(data);
     }
-    av_free(t35);
+    av_free(payload);
 }
 
 static CMSampleBufferRef create_sample(struct priv *p, struct demux_packet *pkt)
