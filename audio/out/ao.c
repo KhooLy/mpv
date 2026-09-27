@@ -215,6 +215,8 @@ static struct ao *ao_init(bool probing, struct mpv_global *global,
     ao->init_flags = flags;
     if (ao->driver->encode != !!ao->encode_lavc_ctx)
         goto fail;
+    if (af_fmt_is_raw_compressed(format) && !ao->driver->raw_compressed)
+        goto fail;
 
     MP_VERBOSE(ao, "requested format: %d Hz, %s channels, %s\n",
                ao->samplerate, mp_chmap_to_str(&ao->channels),

@@ -137,6 +137,8 @@ struct ao_driver {
     // If true, write units of entire frames. The write() call is modified to
     // use data==mp_aframe. Useful for encoding AO only.
     bool write_frames;
+    // If true, accepts AF_FORMAT_S_*_RAW.
+    bool raw_compressed;
     // Init the device using ao->format/ao->channels/ao->samplerate. If the
     // device doesn't accept these parameters, you can attempt to negotiate
     // fallback parameters, and set the ao format fields accordingly.

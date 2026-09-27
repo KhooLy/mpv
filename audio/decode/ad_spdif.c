@@ -22,7 +22,9 @@
 
 #include <libavformat/avformat.h>
 #include <libavcodec/avcodec.h>
+#include <libavutil/intreadwrite.h>
 #include <libavutil/opt.h>
+#include <math.h>
 
 #include "audio/aframe.h"
 #include "audio/chmap_avchannel.h"
@@ -48,6 +50,10 @@ struct spdifContext {
     uint8_t          out_buffer[OUTBUF_SIZE];
     bool             need_close;
     bool             use_dts_hd;
+    bool             raw;
+    int              raw_rate;
+    uint8_t          adts[7];
+    bool             have_adts;
     struct mp_aframe *fmt;
     int              sstride;
     struct mp_aframe_pool *pool;
@@ -163,6 +169,89 @@ done:
 
     if (profile == AV_PROFILE_UNKNOWN)
         MP_WARN(da, "Failed to parse codec profile.\n");
+}
+
+static bool make_adts(struct spdifContext *ctx)
+{
+    struct mp_codec_params *c = ctx->codec;
+    if (c->extradata_size < 2)
+        return false;
+    uint8_t *e = c->extradata;
+    int type = e[0] >> 3;
+    int freq = ((e[0] & 7) << 1) | (e[1] >> 7);
+    int chans = (e[1] >> 3) & 15;
+    if (type == 31 || freq == 15)
+        return false;
+    if (type == 5 || type == 29)
+        type = 2;
+    uint8_t *h = ctx->adts;
+    h[0] = 0xFF;
+    h[1] = 0xF1;
+    h[2] = ((type - 1) << 6) | (freq << 2) | (chans >> 2);
+    h[3] = (chans & 3) << 6;
+    h[4] = 0;
+    h[5] = 0x1F;
+    h[6] = 0xFC;
+    return true;
+}
+
+static struct mp_aframe *pack_raw(struct mp_filter *da, struct demux_packet *mpkt)
+{
+    struct spdifContext *ctx = da->priv;
+
+    if (!ctx->fmt) {
+        ctx->raw_rate = ctx->codec->samplerate > 0 ? ctx->codec->samplerate : 48000;
+        ctx->fmt = mp_aframe_create();
+        talloc_steal(ctx, ctx->fmt);
+        struct mp_chmap chmap;
+        mp_chmap_from_channels(&chmap, 2);
+        mp_aframe_set_chmap(ctx->fmt, &chmap);
+        mp_aframe_set_format(ctx->fmt, ctx->codec_id == AV_CODEC_ID_AAC ?
+                             AF_FORMAT_S_AAC_RAW : AF_FORMAT_S_MP3_RAW);
+        mp_aframe_set_rate(ctx->fmt, ctx->raw_rate);
+        ctx->sstride = mp_aframe_get_sstride(ctx->fmt);
+        if (ctx->codec_id == AV_CODEC_ID_AAC)
+            ctx->have_adts = make_adts(ctx);
+    }
+
+    int align = af_format_sample_alignment(mp_aframe_get_format(ctx->fmt));
+    int samples = ctx->codec_id == AV_CODEC_ID_AAC ? 1024 : 1152;
+    if (mpkt->duration > 0)
+        samples = lrint(mpkt->duration * ctx->raw_rate);
+    samples = MPMAX((samples + align - 1) / align * align, align);
+
+    bool adts = ctx->have_adts &&
+                !(mpkt->len >= 2 && mpkt->buffer[0] == 0xFF &&
+                  (mpkt->buffer[1] & 0xF0) == 0xF0);
+    int size = mpkt->len + (adts ? 7 : 0);
+    while (size + 8 > samples * ctx->sstride)
+        samples += align;
+
+    struct mp_aframe *out = mp_aframe_new_ref(ctx->fmt);
+    if (mp_aframe_pool_allocate(ctx->pool, out, samples) < 0) {
+        talloc_free(out);
+        return NULL;
+    }
+    uint8_t **data = mp_aframe_get_data_rw(out);
+    if (!data) {
+        talloc_free(out);
+        return NULL;
+    }
+    uint8_t *d = data[0];
+    memset(d, 0, samples * ctx->sstride);
+    AV_WL32(d, size);
+    AV_WL32(d + 4, samples);
+    d += 8;
+    if (adts) {
+        memcpy(d, ctx->adts, 7);
+        d[3] |= size >> 11;
+        d[4] = (size >> 3) & 0xFF;
+        d[5] |= (size & 7) << 5;
+        d += 7;
+    }
+    memcpy(d, mpkt->buffer, mpkt->len);
+    mp_aframe_set_pts(out, mpkt->pts);
+    return out;
 }
 
 static int init_filter(struct mp_filter *da)
@@ -319,6 +408,11 @@ static void ad_spdif_process(struct mp_filter *da)
     struct mp_aframe *out = NULL;
     double pts = mpkt->pts;
 
+    if (spdif_ctx->raw) {
+        out = pack_raw(da, mpkt);
+        goto done;
+    }
+
     if (!spdif_ctx->avpkt) {
         spdif_ctx->avpkt = av_packet_alloc();
         MP_HANDLE_OOM(spdif_ctx->avpkt);
@@ -395,7 +489,7 @@ struct mp_decoder_list *select_spdif_codec(const char *codec, const char *pref)
     if (!find_codec(codec))
         return list;
 
-    bool spdif_allowed = false, dts_hd_allowed = false;
+    bool spdif_allowed = false, dts_hd_allowed = false, offload = false;
     bstr sel = bstr0(pref);
     while (sel.len) {
         bstr decoder;
@@ -405,7 +499,16 @@ struct mp_decoder_list *select_spdif_codec(const char *codec, const char *pref)
                 spdif_allowed = true;
             if (bstr_equals0(decoder, "dts-hd") && strcmp(codec, "dts") == 0)
                 spdif_allowed = dts_hd_allowed = true;
+            if (bstr_equals0(decoder, "offload"))
+                offload = true;
         }
+    }
+
+    if (offload && (strcmp(codec, "aac") == 0 || strcmp(codec, "mp3") == 0)) {
+        char name[80];
+        snprintf(name, sizeof(name), "spdif_raw_%s", codec);
+        mp_add_decoder(list, codec, name, "compressed offload pass-through");
+        return list;
     }
 
     if (!spdif_allowed)
@@ -447,6 +550,8 @@ static struct mp_decoder *create(struct mp_filter *parent,
 
     if (strcmp(decoder, "spdif_dts_hd") == 0)
         spdif_ctx->use_dts_hd = true;
+    if (strncmp(decoder, "spdif_raw_", 10) == 0)
+        spdif_ctx->raw = true;
 
     spdif_ctx->codec_id = mp_codec_to_av_codec_id(codec->codec);
 

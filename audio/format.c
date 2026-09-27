@@ -135,6 +135,8 @@ const char *af_fmt_to_str(int format)
     case AF_FORMAT_S_EAC3:      return "spdif-eac3";
     case AF_FORMAT_S_MP3:       return "spdif-mp3";
     case AF_FORMAT_S_TRUEHD:    return "spdif-truehd";
+    case AF_FORMAT_S_AAC_RAW:   return "raw-aac";
+    case AF_FORMAT_S_MP3_RAW:   return "raw-mp3";
     }
     return "??";
 }
@@ -252,6 +254,11 @@ int af_select_best_samplerate(int src_samplerate, const int *available)
 
 // Return the number of samples that make up one frame in this format.
 // You get the byte size by multiplying them with sample size and channel count.
+bool af_fmt_is_raw_compressed(int format)
+{
+    return format == AF_FORMAT_S_AAC_RAW || format == AF_FORMAT_S_MP3_RAW;
+}
+
 int af_format_sample_alignment(int format)
 {
     switch (format) {
@@ -262,6 +269,8 @@ int af_format_sample_alignment(int format)
     case AF_FORMAT_S_EAC3:      return 24576 / 4;
     case AF_FORMAT_S_MP3:       return 4608 / 4;
     case AF_FORMAT_S_TRUEHD:    return 61440 / 16;
+    case AF_FORMAT_S_AAC_RAW:   return 1024;
+    case AF_FORMAT_S_MP3_RAW:   return 576;
     default:                    return 1;
     }
 }

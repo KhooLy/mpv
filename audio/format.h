@@ -48,6 +48,11 @@ enum af_format {
     AF_FORMAT_S_MP3,
     AF_FORMAT_S_TRUEHD,
 
+    // Length-prefixed compressed packets padded to their duration, for
+    // AOs that take the codec directly (compressed offload).
+    AF_FORMAT_S_AAC_RAW,
+    AF_FORMAT_S_MP3_RAW,
+
     AF_FORMAT_COUNT
 };
 
@@ -58,6 +63,7 @@ int af_fmt_to_bytes(int format);
 bool af_fmt_is_valid(int format);
 bool af_fmt_is_unsigned(int format);
 bool af_fmt_is_float(int format);
+bool af_fmt_is_raw_compressed(int format);
 bool af_fmt_is_int(int format);
 bool af_fmt_is_planar(int format);
 bool af_fmt_is_spdif(int format);

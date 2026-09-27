@@ -24,6 +24,8 @@
 #include "ao.h"
 #include "internal.h"
 #include "common/msg.h"
+#include <libavutil/intreadwrite.h>
+
 #include "audio/format.h"
 #include "options/m_option.h"
 #include "osdep/threads.h"
@@ -61,6 +63,9 @@ struct priv {
     int cfg_session_id;
     bool cfg_offload;
     bool offload;
+    bool raw;
+    int burst_left;
+    int payload_left;
 
     bool thread_terminate;
     bool thread_created;
@@ -219,6 +224,8 @@ static struct JNIAudioFormat {
     jint ENCODING_PCM_16BIT;
     jint ENCODING_PCM_FLOAT;
     jint ENCODING_IEC61937;
+    jint ENCODING_AAC_LC;
+    jint ENCODING_MP3;
     jint CHANNEL_OUT_MONO;
     jint CHANNEL_OUT_STEREO;
     jint CHANNEL_OUT_FRONT_CENTER;
@@ -234,6 +241,8 @@ static const struct MPJniField AudioFormat_mapping[] = {
     {"ENCODING_PCM_16BIT", "I", MP_JNI_STATIC_FIELD_AS_INT, OFFSET(ENCODING_PCM_16BIT), 1},
     {"ENCODING_PCM_FLOAT", "I", MP_JNI_STATIC_FIELD_AS_INT, OFFSET(ENCODING_PCM_FLOAT), 1},
     {"ENCODING_IEC61937", "I", MP_JNI_STATIC_FIELD_AS_INT, OFFSET(ENCODING_IEC61937), 0},
+    {"ENCODING_AAC_LC", "I", MP_JNI_STATIC_FIELD_AS_INT, OFFSET(ENCODING_AAC_LC), 0},
+    {"ENCODING_MP3", "I", MP_JNI_STATIC_FIELD_AS_INT, OFFSET(ENCODING_MP3), 0},
     {"CHANNEL_OUT_MONO", "I", MP_JNI_STATIC_FIELD_AS_INT, OFFSET(CHANNEL_OUT_MONO), 1},
     {"CHANNEL_OUT_STEREO", "I", MP_JNI_STATIC_FIELD_AS_INT, OFFSET(CHANNEL_OUT_STEREO), 1},
     {"CHANNEL_OUT_FRONT_CENTER", "I", MP_JNI_STATIC_FIELD_AS_INT, OFFSET(CHANNEL_OUT_FRONT_CENTER), 1},
@@ -410,7 +419,7 @@ static int AudioTrack_New(struct ao *ao)
     JNIEnv *env = MP_JNI_GET_ENV(ao);
     jobject audiotrack = NULL;
 
-    if (p->cfg_offload && AudioTrackBuilder.build) {
+    if ((p->cfg_offload || p->raw) && AudioTrackBuilder.build) {
         MP_VERBOSE(ao, "Using AudioTrack.Builder (%s)\n",
                    p->offload ? "offload" : "power saving");
         jobject format = new_format(ao, p->format);
@@ -462,7 +471,7 @@ static int AudioTrack_New(struct ao *ao)
         return -1;
     }
 
-    if (AudioTrack.getBufferSizeInFramesV23) {
+    if (AudioTrack.getBufferSizeInFramesV23 && !p->raw) {
         int bufferSize = MP_JNI_CALL_INT(audiotrack, AudioTrack.getBufferSizeInFramesV23);
         if (bufferSize > 0) {
             MP_VERBOSE(ao, "AudioTrack.getBufferSizeInFrames = %d\n", bufferSize);
@@ -590,12 +599,46 @@ static double AudioTrack_getLatency(struct ao *ao)
     if (!p->timestamp_set &&
         p->format != AudioFormat.ENCODING_IEC61937)
         delay += (double)MP_JNI_CALL_INT(p->audiotrack, AudioTrack.getLatency)/1000.0;
-    if (delay > 2.0) {
+    double limit = p->raw ? 10.0 : 2.0;
+    if (delay > limit) {
         //MP_WARN(ao, "getLatency: written=%u playhead=%u diff=%u delay=%f\n", p->written_frames, playhead, diff, delay);
         p->timestamp_fetched = 0;
         return 0;
     }
-    return MPCLAMP(delay, 0.0, 2.0);
+    return MPCLAMP(delay, 0.0, limit);
+}
+
+static int unpack_raw(struct ao *ao, int len)
+{
+    struct priv *p = ao->priv;
+    uint8_t *buf = p->chunk;
+    int out = 0;
+    int pos = 0;
+    while (pos < len) {
+        if (!p->burst_left) {
+            if (len - pos < 8) {
+                pos = len;
+                break;
+            }
+            int size = AV_RL32(buf + pos);
+            int samples = AV_RL32(buf + pos + 4);
+            if (!samples || size + 8 > samples * ao->sstride) {
+                pos += ao->sstride;
+                continue;
+            }
+            p->burst_left = samples * ao->sstride - 8;
+            p->payload_left = size;
+            pos += 8;
+        }
+        int n = MPMIN(p->burst_left, len - pos);
+        int copy = MPMIN(p->payload_left, n);
+        memmove(buf + out, buf + pos, copy);
+        out += copy;
+        p->payload_left -= copy;
+        p->burst_left -= n;
+        pos += n;
+    }
+    return out;
 }
 
 static int AudioTrack_write(struct ao *ao, int len)
@@ -696,7 +739,15 @@ static MP_THREAD_VOID ao_thread(void *arg)
             ts += MP_TIME_S_TO_NS(read_samples / (double)(ao->samplerate));
             ts += MP_TIME_S_TO_NS(AudioTrack_getLatency(ao));
             int samples = ao_read_data(ao, &p->chunk, read_samples, ts, NULL, false, false);
-            int ret = AudioTrack_write(ao, samples * ao->sstride);
+            int ret;
+            if (p->raw) {
+                int bytes = unpack_raw(ao, samples * ao->sstride);
+                ret = bytes ? AudioTrack_write(ao, bytes) : 0;
+                if (ret >= 0)
+                    ret = samples * ao->sstride;
+            } else {
+                ret = AudioTrack_write(ao, samples * ao->sstride);
+            }
             if (ret >= 0) {
                 p->written_frames += ret / ao->sstride;
             } else if (ret == AudioManager.ERROR_DEAD_OBJECT) {
@@ -769,7 +820,13 @@ static int init(struct ao *ao)
     if (init_jni(ao) < 0)
         return -1;
 
-    if (af_fmt_is_spdif(ao->format)) {
+    if (af_fmt_is_raw_compressed(ao->format)) {
+        p->raw = true;
+        p->format = ao->format == AF_FORMAT_S_AAC_RAW ?
+                    AudioFormat.ENCODING_AAC_LC : AudioFormat.ENCODING_MP3;
+        if (!p->format || !AudioTrack.writeBufferV21)
+            return -1;
+    } else if (af_fmt_is_spdif(ao->format)) {
         p->format = AudioFormat.ENCODING_IEC61937;
         if (!p->format || !AudioTrack.writeShortV23) {
             MP_ERR(ao, "spdif passthrough not supported by API\n");
@@ -785,7 +842,9 @@ static int init(struct ao *ao)
         p->format = AudioFormat.ENCODING_PCM_16BIT;
     }
 
-    if (p->format != AudioFormat.ENCODING_IEC61937 && AudioTrack.getNativeOutputSampleRate) {
+    if (p->format != AudioFormat.ENCODING_IEC61937 && !p->raw &&
+        AudioTrack.getNativeOutputSampleRate)
+    {
         jint samplerate = MP_JNI_CALL_STATIC_INT(
             AudioTrack.clazz,
             AudioTrack.getNativeOutputSampleRate,
@@ -822,7 +881,10 @@ static int init(struct ao *ao)
         AudioFormat.CHANNEL_OUT_7POINT1_SURROUND,
     };
     static_assert(MP_ARRAY_SIZE(layout_map) == MP_ARRAY_SIZE(layouts), "");
-    if (p->format == AudioFormat.ENCODING_IEC61937) {
+    if (p->raw) {
+        p->channel_config = AudioFormat.CHANNEL_OUT_STEREO;
+        mp_chmap_from_channels(&ao->channels, 2);
+    } else if (p->format == AudioFormat.ENCODING_IEC61937) {
         if (ao->channels.num == 8 && AudioFormat.CHANNEL_OUT_7POINT1_SURROUND) {
             p->channel_config = AudioFormat.CHANNEL_OUT_7POINT1_SURROUND;
         } else {
@@ -841,7 +903,14 @@ static int init(struct ao *ao)
         mp_assert(p->channel_config);
     }
 
-    if (p->cfg_offload && p->format != AudioFormat.ENCODING_IEC61937) {
+    if (p->raw) {
+        p->offload = offload_supported(ao, p->format);
+        if (!p->offload) {
+            MP_VERBOSE(ao, "Compressed offload of %s not supported\n",
+                       af_fmt_to_str(ao->format));
+            goto error;
+        }
+    } else if (p->cfg_offload && p->format != AudioFormat.ENCODING_IEC61937) {
         p->offload = offload_supported(ao, p->format);
         if (!p->offload && p->format == AudioFormat.ENCODING_PCM_FLOAT &&
             offload_supported(ao, AudioFormat.ENCODING_PCM_16BIT))
@@ -853,31 +922,36 @@ static int init(struct ao *ao)
         MP_VERBOSE(ao, "Offloaded playback %s\n", p->offload ? "supported" : "not supported");
     }
 
-    jint buffer_size = MP_JNI_CALL_STATIC_INT(
-        AudioTrack.clazz,
-        AudioTrack.getMinBufferSize,
-        p->samplerate,
-        p->channel_config,
-        p->format
-    );
-    if (MP_JNI_EXCEPTION_LOG(ao) < 0 || buffer_size <= 0) {
-        MP_FATAL(ao, "AudioTrack.getMinBufferSize returned an invalid size: %d", buffer_size);
-        return -1;
-    }
+    if (p->raw) {
+        p->size = (int)(0.5 * p->samplerate) * 4;
+        ao->device_buffer = p->size / 4;
+    } else {
+        jint buffer_size = MP_JNI_CALL_STATIC_INT(
+            AudioTrack.clazz,
+            AudioTrack.getMinBufferSize,
+            p->samplerate,
+            p->channel_config,
+            p->format
+        );
+        if (MP_JNI_EXCEPTION_LOG(ao) < 0 || buffer_size <= 0) {
+            MP_FATAL(ao, "AudioTrack.getMinBufferSize returned an invalid size: %d", buffer_size);
+            return -1;
+        }
 
-    // Choose double of the minimum buffer size suggested by the driver, but not
-    // less than 75ms or more than 150ms.
-    const int bps = af_fmt_to_bytes(ao->format);
-    int min = 0.075 * p->samplerate * bps * ao->channels.num;
-    int max = min * 2;
-    min = MP_ALIGN_UP(min, bps);
-    max = MP_ALIGN_UP(max, bps);
-    p->size = MPCLAMP(buffer_size * 2, min, max);
-    if (p->cfg_offload)
-        p->size = MP_ALIGN_UP((int)(0.5 * p->samplerate) * bps * ao->channels.num, bps);
-    MP_VERBOSE(ao, "Setting bufferSize = %d (driver=%d, min=%d, max=%d)\n", p->size, buffer_size, min, max);
-    mp_assert(p->size % bps == 0);
-    ao->device_buffer = p->size / bps;
+        // Choose double of the minimum buffer size suggested by the driver, but not
+        // less than 75ms or more than 150ms.
+        const int bps = af_fmt_to_bytes(ao->format);
+        int min = 0.075 * p->samplerate * bps * ao->channels.num;
+        int max = min * 2;
+        min = MP_ALIGN_UP(min, bps);
+        max = MP_ALIGN_UP(max, bps);
+        p->size = MPCLAMP(buffer_size * 2, min, max);
+        if (p->cfg_offload)
+            p->size = MP_ALIGN_UP((int)(0.5 * p->samplerate) * bps * ao->channels.num, bps);
+        MP_VERBOSE(ao, "Setting bufferSize = %d (driver=%d, min=%d, max=%d)\n", p->size, buffer_size, min, max);
+        mp_assert(p->size % bps == 0);
+        ao->device_buffer = p->size / bps;
+    }
 
     p->chunksize = p->size;
     p->chunk = talloc_size(ao, p->size);
@@ -946,6 +1020,7 @@ static void stop(struct ao *ao)
     p->playhead_offset = 0;
     p->reset_pending = true;
     p->written_frames = 0;
+    p->burst_left = p->payload_left = 0;
     p->timestamp_fetched = 0;
     p->timestamp_set = false;
 }
@@ -970,6 +1045,7 @@ static void start(struct ao *ao)
 const struct ao_driver audio_out_audiotrack = {
     .description = "Android AudioTrack audio output",
     .name      = "audiotrack",
+    .raw_compressed = true,
     .init      = init,
     .uninit    = uninit,
     .reset     = stop,
