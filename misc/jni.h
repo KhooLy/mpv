@@ -170,6 +170,7 @@ int mp_jni_init_jfields(JNIEnv *env, void *jfields, const struct MPJniField *jfi
 int mp_jni_reset_jfields(JNIEnv *env, void *jfields, const struct MPJniField *jfields_mapping, int global, struct mp_log *log);
 
 bool mp_jni_display_supports_dolby_vision(struct mp_log *log);
+const char *mp_jni_ca_bundle(struct mp_log *log);
 
 struct mp_jni_audio_caps {
     bool ac3, eac3, dts, dtshd, truehd;

@@ -21,6 +21,8 @@
 
 #include <android/api-level.h>
 #include <libavcodec/jni.h>
+#include <dirent.h>
+#include <stdio.h>
 #include <stdlib.h>
 
 #include "common/common.h"
@@ -401,6 +403,87 @@ static jobject get_app_context(JNIEnv *env)
     mp_jni_exception_check(env, 0, NULL);
     (*env)->DeleteLocalRef(env, thread);
     return app;
+}
+
+static char *cache_dir(JNIEnv *env)
+{
+    jobject ctx = get_app_context(env);
+    if (!ctx)
+        return NULL;
+    char *res = NULL;
+    jclass ctx_class = (*env)->GetObjectClass(env, ctx);
+    jclass file_class = (*env)->FindClass(env, "java/io/File");
+    jmethodID get_dir = (*env)->GetMethodID(env, ctx_class, "getCacheDir", "()Ljava/io/File;");
+    jmethodID get_path = file_class ? (*env)->GetMethodID(env, file_class,
+        "getAbsolutePath", "()Ljava/lang/String;") : NULL;
+    jobject dir = get_dir ? (*env)->CallObjectMethod(env, ctx, get_dir) : NULL;
+    jstring path = dir && get_path ? (*env)->CallObjectMethod(env, dir, get_path) : NULL;
+    if (mp_jni_exception_check(env, 0, NULL) >= 0 && path) {
+        const char *s = (*env)->GetStringUTFChars(env, path, NULL);
+        if (s) {
+            res = talloc_strdup(NULL, s);
+            (*env)->ReleaseStringUTFChars(env, path, s);
+        }
+    }
+    (*env)->DeleteLocalRef(env, ctx);
+    return res;
+}
+
+static bool write_ca_bundle(const char *dir, const char *out)
+{
+    DIR *d = opendir(dir);
+    if (!d)
+        return false;
+    char *tmp = talloc_asprintf(NULL, "%s.tmp", out);
+    FILE *f = fopen(tmp, "wb");
+    int count = 0;
+    struct dirent *e;
+    while (f && (e = readdir(d))) {
+        if (e->d_name[0] == '.')
+            continue;
+        char *name = talloc_asprintf(tmp, "%s/%s", dir, e->d_name);
+        FILE *in = fopen(name, "rb");
+        if (!in)
+            continue;
+        char buf[4096];
+        size_t n;
+        while ((n = fread(buf, 1, sizeof(buf), in)) > 0)
+            fwrite(buf, 1, n, f);
+        fputc('\n', f);
+        fclose(in);
+        count++;
+    }
+    closedir(d);
+    bool ok = f && fclose(f) == 0 && count && rename(tmp, out) == 0;
+    talloc_free(tmp);
+    return ok;
+}
+
+const char *mp_jni_ca_bundle(struct mp_log *log)
+{
+    static mp_static_mutex ca_lock = MP_STATIC_MUTEX_INITIALIZER;
+    static char *bundle;
+    static bool tried;
+    mp_mutex_lock(&ca_lock);
+    if (!tried) {
+        tried = true;
+        JNIEnv *env = mp_jni_get_env(log);
+        char *dir = env ? cache_dir(env) : NULL;
+        if (dir) {
+            char *out = talloc_asprintf(dir, "%s/mpv-cacerts.pem", dir);
+            if (write_ca_bundle("/apex/com.android.conscrypt/cacerts", out) ||
+                write_ca_bundle("/system/etc/security/cacerts", out))
+                bundle = talloc_strdup(NULL, out);
+        }
+        talloc_free(dir);
+        if (bundle) {
+            mp_verbose(log, "Using system CA certificates from %s\n", bundle);
+        } else {
+            mp_warn(log, "Could not build a CA bundle from the system store.\n");
+        }
+    }
+    mp_mutex_unlock(&ca_lock);
+    return bundle;
 }
 
 bool mp_jni_display_supports_dolby_vision(struct mp_log *log)

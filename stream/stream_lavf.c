@@ -33,6 +33,9 @@
 #include "options/m_option.h"
 
 #include "cookies.h"
+#if HAVE_ANDROID
+#include "misc/jni.h"
+#endif
 
 #include "misc/bstr.h"
 #include "mpv_talloc.h"
@@ -175,10 +178,15 @@ void mp_setup_av_network_options(AVDictionary **dict, const char *target_fmt,
             av_dict_set(dict, "cookies", cookies, 0);
     }
     av_dict_set(dict, "tls_verify", opts->tls_verify ? "1" : "0", 0);
-    if (opts->tls_ca_file) {
-        char *file = mp_get_user_path(temp, global, opts->tls_ca_file);
-        av_dict_set(dict, "ca_file", file, 0);
-    }
+    const char *ca_file = NULL;
+    if (opts->tls_ca_file)
+        ca_file = mp_get_user_path(temp, global, opts->tls_ca_file);
+#if HAVE_ANDROID
+    else if (opts->tls_verify)
+        ca_file = mp_jni_ca_bundle(log);
+#endif
+    if (ca_file)
+        av_dict_set(dict, "ca_file", ca_file, 0);
     if (opts->tls_cert_file) {
         char *file = mp_get_user_path(temp, global, opts->tls_cert_file);
         av_dict_set(dict, "cert_file", file, 0);
