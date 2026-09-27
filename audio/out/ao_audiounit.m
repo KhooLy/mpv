@@ -33,6 +33,7 @@
 struct priv {
     AudioUnit audio_unit;
     double device_latency;
+    id route_observer;
 };
 
 static OSStatus au_get_ary(AudioUnit unit, AudioUnitPropertyID inID, AudioUnitScope inScope, AudioUnitElement inElement, void **data, UInt32 *outDataSize)
@@ -232,6 +233,10 @@ static void start(struct ao *ao)
 static void uninit(struct ao *ao)
 {
     struct priv *p = ao->priv;
+    if (p->route_observer) {
+        [NSNotificationCenter.defaultCenter removeObserver:p->route_observer];
+        [p->route_observer release];
+    }
     AudioOutputUnitStop(p->audio_unit);
     AudioUnitUninitialize(p->audio_unit);
     AudioComponentInstanceDispose(p->audio_unit);
@@ -244,8 +249,23 @@ static void uninit(struct ao *ao)
 
 static int init(struct ao *ao)
 {
+    struct priv *p = ao->priv;
     if (!init_audiounit(ao))
         goto coreaudio_error;
+
+    p->route_observer = [[NSNotificationCenter.defaultCenter
+        addObserverForName:AVAudioSessionRouteChangeNotification
+        object:nil
+        queue:nil
+        usingBlock:^(NSNotification *n) {
+            NSNumber *reason = n.userInfo[AVAudioSessionRouteChangeReasonKey];
+            if (reason.unsignedIntegerValue == AVAudioSessionRouteChangeReasonOldDeviceUnavailable ||
+                reason.unsignedIntegerValue == AVAudioSessionRouteChangeReasonNewDeviceAvailable)
+            {
+                MP_VERBOSE(ao, "Audio route changed, reloading output\n");
+                ao_request_reload(ao);
+            }
+        }] retain];
 
     return CONTROL_OK;
 
