@@ -72,6 +72,7 @@ enum dec_ctrl {
     VDCTRL_FORCE_HWDEC_FALLBACK, // force software decoding fallback
     VDCTRL_GET_HWDEC,
     VDCTRL_GET_HWDEC_CODEC,
+    VDCTRL_GET_DOVI_PATH,
     VDCTRL_REINIT,
     VDCTRL_GET_BFRAMES,
     // framedrop mode: 0=none, 1=standard, 2=hrseek

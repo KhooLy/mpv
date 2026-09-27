@@ -22,8 +22,10 @@
 #include <stdbool.h>
 
 #include <libavcodec/avcodec.h>
+#include <libavcodec/bsf.h>
 #include <libavformat/version.h>
 #include <libavutil/common.h>
+#include <libavutil/dovi_meta.h>
 #include <libavutil/hwcontext.h>
 #include <libavutil/opt.h>
 #include <libavutil/intreadwrite.h>
@@ -107,6 +109,7 @@ static void add_container_hdr_metadata(AVCodecContext *avctx,
 #endif
 
 static void init_avctx(struct mp_filter *vd);
+static int init_dovi_bsf(struct mp_filter *vd);
 static void uninit_avctx(struct mp_filter *vd);
 
 static int get_buffer2_direct(AVCodecContext *avctx, AVFrame *pic, int flags);
@@ -192,6 +195,7 @@ struct hwdec_opts {
     int hwdec_image_format;
     int hwdec_extra_frames;
     int hwdec_threads;
+    int dolby_vision;
 };
 
 const struct m_sub_options hwdec_conf = {
@@ -209,6 +213,9 @@ const struct m_sub_options hwdec_conf = {
             {"no", INT_MAX}, {"yes", 1}), M_RANGE(1, INT_MAX),
             .flags = UPDATE_HWDEC},
         {"hwdec-threads", OPT_INT(hwdec_threads), M_RANGE(0, DBL_MAX)},
+        {"hwdec-dolby-vision", OPT_CHOICE(dolby_vision,
+            {"auto", 0}, {"native", 1}, {"convert", 2}, {"base-layer", 3}),
+            .flags = UPDATE_HWDEC},
         {"vd-lavc-software-fallback", OPT_REPLACED("hwdec-software-fallback")},
         {0}
     },
@@ -264,6 +271,10 @@ typedef struct lavc_ctx {
     bool hwdec_failed;
     bool hwdec_notified;
     char *hwdec_codec;
+    char *dovi_path;
+    AVBSFContext *bsf;
+    AVPacket *bsf_pkt;
+    bool bsf_eof;
     bool force_eof;
     int wait_for_keyframe; // max number of frames to wait for keyframe after reset
 
@@ -813,15 +824,6 @@ static void init_avctx(struct mp_filter *vd)
         if (!lavc_param->check_hw_profile)
             avctx->hwaccel_flags |= AV_HWACCEL_FLAG_ALLOW_PROFILE_MISMATCH;
 
-#if HAVE_ANDROID
-        if (ctx->hwdec.lavc_device == AV_HWDEVICE_TYPE_MEDIACODEC &&
-            ctx->codec->dovi && !mp_jni_display_supports_dolby_vision(vd->log))
-        {
-            MP_VERBOSE(vd, "Display lacks Dolby Vision; preferring base-layer decoder.\n");
-            av_opt_set(avctx, "prefer_base_layer", "1", AV_OPT_SEARCH_CHILDREN);
-        }
-#endif
-
 #ifdef AV_HWACCEL_FLAG_UNSAFE_OUTPUT
         /*
          * This flag primarily exists for nvdec which has a very limited
@@ -915,6 +917,9 @@ static void init_avctx(struct mp_filter *vd)
         goto error;
     }
 
+    if (init_dovi_bsf(vd) < 0)
+        goto error;
+
 #if HAVE_ANDROID
     if (ctx->hwdec.lavc_device == AV_HWDEVICE_TYPE_MEDIACODEC)
         add_container_hdr_metadata(avctx, &c->color.hdr);
@@ -930,6 +935,13 @@ static void init_avctx(struct mp_filter *vd)
     /* open it */
     if (avcodec_open2(avctx, lavc_codec, NULL) < 0)
         goto error;
+
+    uint8_t *path = NULL;
+    if (av_opt_get(avctx, "dovi_path", AV_OPT_SEARCH_CHILDREN, &path) >= 0 && path && *path) {
+        ctx->dovi_path = talloc_strdup(ctx, path);
+        MP_VERBOSE(vd, "Dolby Vision path: %s\n", ctx->dovi_path);
+    }
+    av_free(path);
 
     // Sometimes, the first packet contains information required for correct
     // decoding of the rest of the stream. The only currently known case is the
@@ -950,12 +962,135 @@ error:
     uninit_avctx(vd);
 }
 
+static int dovi_profile(AVCodecContext *avctx)
+{
+    const AVPacketSideData *sd =
+        av_packet_side_data_get(avctx->coded_side_data, avctx->nb_coded_side_data,
+                                AV_PKT_DATA_DOVI_CONF);
+    return sd ? ((AVDOVIDecoderConfigurationRecord *)sd->data)->dv_profile : -1;
+}
+
+static int resolve_dovi_mode(struct mp_filter *vd, int profile)
+{
+    vd_ffmpeg_ctx *ctx = vd->priv;
+    int mode = ctx->hwdec_opts->dolby_vision;
+    if (mode)
+        return mode;
+#if HAVE_ANDROID
+    if (!mp_jni_display_supports_dolby_vision(vd->log)) {
+        MP_VERBOSE(vd, "Display lacks Dolby Vision; using the base layer.\n");
+        return 3;
+    }
+    struct mp_jni_video_caps caps;
+    mp_jni_video_caps(vd->log, &caps);
+    if (profile == 7 && !(caps.dv_profiles & 0x80) && (caps.dv_profiles & 0x100)) {
+        MP_VERBOSE(vd, "No profile 7 decoder; converting to profile 8.1.\n");
+        return 2;
+    }
+#endif
+    return 1;
+}
+
+static int init_dovi_bsf(struct mp_filter *vd)
+{
+    vd_ffmpeg_ctx *ctx = vd->priv;
+    AVCodecContext *avctx = ctx->avctx;
+
+    if (!ctx->codec->dovi || !ctx->use_hwdec ||
+        ctx->hwdec.lavc_device != AV_HWDEVICE_TYPE_MEDIACODEC)
+        return 0;
+
+    static const char *const modes[] = {"auto", "native", "p81", "base_layer"};
+    int profile = dovi_profile(avctx);
+    int mode = resolve_dovi_mode(vd, profile);
+    av_opt_set(avctx, "dovi_mode", modes[mode], AV_OPT_SEARCH_CHILDREN);
+
+    const char *filter = NULL, *opts = NULL;
+    if (mode == 2 && profile == 7) {
+        filter = "dovi_rpu";
+        opts = "p81=1:compression=none";
+    } else if (mode == 3 && avctx->codec_id == AV_CODEC_ID_HEVC &&
+               (profile == 7 || profile == 8)) {
+        filter = "filter_units";
+        opts = "remove_types=62|63";
+    }
+    if (!filter)
+        return 0;
+
+    const AVBitStreamFilter *f = av_bsf_get_by_name(filter);
+    if (!f || av_bsf_alloc(f, &ctx->bsf) < 0 ||
+        av_set_options_string(ctx->bsf->priv_data, opts, "=", ":") < 0 ||
+        avcodec_parameters_from_context(ctx->bsf->par_in, avctx) < 0)
+        goto error;
+    ctx->bsf->time_base_in = ctx->codec_timebase;
+    if (av_bsf_init(ctx->bsf) < 0 ||
+        avcodec_parameters_to_context(avctx, ctx->bsf->par_out) < 0)
+        goto error;
+    ctx->bsf_pkt = av_packet_alloc();
+    if (!ctx->bsf_pkt)
+        goto error;
+    return 0;
+
+error:
+    MP_ERR(vd, "Could not set up the %s bitstream filter.\n", filter);
+    return -1;
+}
+
+static int send_avpkt(vd_ffmpeg_ctx *ctx, AVPacket *pkt)
+{
+    if (!ctx->bsf)
+        return avcodec_send_packet(ctx->avctx, pkt);
+
+    if (ctx->bsf_pkt->data) {
+        int ret = avcodec_send_packet(ctx->avctx, ctx->bsf_pkt);
+        if (ret == AVERROR(EAGAIN))
+            return ret;
+        av_packet_unref(ctx->bsf_pkt);
+    }
+
+    if (ctx->bsf_eof)
+        return avcodec_send_packet(ctx->avctx, NULL);
+
+    AVPacket *in = NULL;
+    if (pkt) {
+        in = av_packet_clone(pkt);
+        if (!in)
+            return AVERROR(ENOMEM);
+    }
+    int ret = av_bsf_send_packet(ctx->bsf, in);
+    av_packet_free(&in);
+    if (ret < 0)
+        return ret;
+    while (1) {
+        ret = av_bsf_receive_packet(ctx->bsf, ctx->bsf_pkt);
+        if (ret == AVERROR(EAGAIN))
+            return 0;
+        if (ret == AVERROR_EOF) {
+            ctx->bsf_eof = true;
+            return avcodec_send_packet(ctx->avctx, NULL);
+        }
+        if (ret < 0)
+            return ret;
+        ret = avcodec_send_packet(ctx->avctx, ctx->bsf_pkt);
+        if (ret == AVERROR(EAGAIN))
+            return 0;
+        av_packet_unref(ctx->bsf_pkt);
+        if (ret < 0)
+            return ret;
+    }
+}
+
 static void reset_avctx(struct mp_filter *vd)
 {
     vd_ffmpeg_ctx *ctx = vd->priv;
 
     if (ctx->avctx && avcodec_is_open(ctx->avctx))
         avcodec_flush_buffers(ctx->avctx);
+    if (ctx->bsf) {
+        av_bsf_flush(ctx->bsf);
+        av_packet_unref(ctx->bsf_pkt);
+        ctx->bsf_eof = false;
+    }
     ctx->flushing = false;
     ctx->hwdec_request_reinit = false;
     // Wait for the first keyframe after reset to ensure the decoder state is
@@ -992,6 +1127,10 @@ static void uninit_avctx(struct mp_filter *vd)
     av_buffer_unref(&ctx->cached_hw_frames_ctx);
 
     avcodec_free_context(&ctx->avctx);
+    av_bsf_free(&ctx->bsf);
+    av_packet_free(&ctx->bsf_pkt);
+    ctx->bsf_eof = false;
+    TA_FREEP(&ctx->dovi_path);
 
     av_buffer_unref(&ctx->hwdec_dev);
 
@@ -1273,7 +1412,7 @@ static int send_packet(struct mp_filter *vd, struct demux_packet *pkt)
 
     mp_set_av_packet(ctx->avpkt, pkt, &ctx->codec_timebase);
 
-    int ret = avcodec_send_packet(avctx, pkt ? ctx->avpkt : NULL);
+    int ret = send_avpkt(ctx, pkt ? ctx->avpkt : NULL);
     if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF)
         return ret;
 
@@ -1482,6 +1621,11 @@ static int control(struct mp_filter *vd, enum dec_ctrl cmd, void *arg)
         if (!ctx->hwdec_notified || !ctx->use_hwdec || !ctx->hwdec_codec)
             return CONTROL_FALSE;
         *(char **)arg = talloc_strdup(NULL, ctx->hwdec_codec);
+        return CONTROL_TRUE;
+    case VDCTRL_GET_DOVI_PATH:
+        if (!ctx->dovi_path)
+            return CONTROL_FALSE;
+        *(char **)arg = talloc_strdup(NULL, ctx->dovi_path);
         return CONTROL_TRUE;
     case VDCTRL_FORCE_HWDEC_FALLBACK:
         if (ctx->use_hwdec) {

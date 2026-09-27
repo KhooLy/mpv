@@ -2704,6 +2704,27 @@ static int mp_property_hwdec_codec(void *ctx, struct m_property *prop,
     return res;
 }
 
+static int mp_property_hwdec_dolby_vision_current(void *ctx, struct m_property *prop,
+                                                  int action, void *arg)
+{
+    MPContext *mpctx = ctx;
+    struct track *track = mpctx->current_track[0][STREAM_VIDEO];
+    char *path = NULL;
+    if (!track || !track->dec ||
+        mp_decoder_wrapper_control(track->dec, VDCTRL_GET_DOVI_PATH, &path) != CONTROL_TRUE)
+        return M_PROPERTY_UNAVAILABLE;
+
+    const char *name = path;
+    if (!strcmp(path, "p81")) {
+        name = "convert";
+    } else if (!strcmp(path, "base_layer")) {
+        name = "base-layer";
+    }
+    int res = m_property_strdup_ro(action, arg, name);
+    talloc_free(path);
+    return res;
+}
+
 static int mp_property_hwdec_interop(void *ctx, struct m_property *prop,
                                      int action, void *arg)
 {
@@ -5097,6 +5118,7 @@ static const struct m_property mp_properties_base[] = {
     {"vid", mp_property_switch_track, .priv = (void *)(const int[]){0, STREAM_VIDEO}},
     {"hwdec-current", mp_property_hwdec_current},
     {"hwdec-codec", mp_property_hwdec_codec},
+    {"hwdec-dolby-vision-current", mp_property_hwdec_dolby_vision_current},
     {"hwdec-interop", mp_property_hwdec_interop},
 
     {"estimated-frame-count", mp_property_frame_count},
@@ -5237,7 +5259,7 @@ static const char *const *const mp_event_property_change[] = {
     E(MPV_EVENT_VIDEO_RECONFIG, "video-out-params", "video-params",
       "video-format", "video-codec", "video-bitrate", "dwidth", "dheight",
       "width", "height", "container-fps", "display-mode-hint", "aspect", "aspect-name", "vo-configured", "current-vo",
-      "video-dec-params", "osd-dimensions", "hwdec", "hwdec-current", "hwdec-codec", "hwdec-interop",
+      "video-dec-params", "osd-dimensions", "hwdec", "hwdec-current", "hwdec-codec", "hwdec-dolby-vision-current", "hwdec-interop",
       "window-id", "track-list", "current-tracks"),
     E(MPV_EVENT_AUDIO_RECONFIG, "audio-format", "audio-codec", "audio-bitrate",
       "samplerate", "channels", "audio", "volume", "volume-gain", "mute",

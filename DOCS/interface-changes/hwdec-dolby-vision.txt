@@ -1,0 +1,2 @@
+add `--hwdec-dolby-vision` option
+add `hwdec-dolby-vision-current` property

@@ -2885,6 +2885,12 @@ Property list
         (e.g. ``c2.android.av1-dav1d.decoder`` on devices without an AV1
         hardware decoder).
 
+``hwdec-dolby-vision-current``
+    How the current Dolby Vision video is being hardware decoded: ``native``,
+    ``convert`` (profile 7 as 8.1) or ``base-layer``. Unavailable for other
+    videos, software decoding and hwdecs other than ``mediacodec``. See
+    ``--hwdec-dolby-vision``.
+
 ``hwdec-interop``
     This returns the currently loaded hardware decoding/output interop driver.
     This is known only once the VO has opened (and possibly later). With some
