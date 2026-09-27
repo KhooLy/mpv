@@ -173,6 +173,7 @@ bool mp_jni_display_supports_dolby_vision(struct mp_log *log);
 
 struct mp_jni_audio_caps {
     bool ac3, eac3, dts, dtshd, truehd;
+    bool spatial;
     int max_channels;
 };
 

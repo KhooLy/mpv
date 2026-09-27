@@ -897,7 +897,10 @@ static int init(struct ao *ao)
             if (layout_map[i])
                 mp_chmap_sel_add_map(&sel, &layouts[i]);
         }
-        if (!ao_chmap_sel_adjust(ao, &sel, &ao->channels))
+        struct mp_jni_audio_caps caps;
+        mp_jni_audio_caps(ao->log, &caps);
+        bool safe = caps.spatial || caps.max_channels > 2;
+        if (!ao_chmap_sel_adjust2(ao, &sel, &ao->channels, safe))
             goto error;
         p->channel_config = layout_map[ao->channels.num];
         mp_assert(p->channel_config);

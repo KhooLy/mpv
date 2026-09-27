@@ -481,6 +481,7 @@ enum {
     ENC_TRUEHD = 14,
     ENC_E_AC3_JOC = 18,
     MASK_STEREO = 0xc,
+    MASK_5_1 = 0xfc,
     MASK_7_1 = 0x18fc,
 };
 
@@ -604,6 +605,45 @@ static void hdmi_plug_intent(JNIEnv *env, struct mp_jni_audio_caps *caps)
         (*env)->ReleaseIntArrayElements(env, enc, v, JNI_ABORT);
 }
 
+static bool spatializer_active(JNIEnv *env, struct direct_probe *d)
+{
+    jobject ctx = get_app_context(env);
+    jclass ctx_class = (*env)->FindClass(env, "android/content/Context");
+    jclass am_class = (*env)->FindClass(env, "android/media/AudioManager");
+    jclass sp_class = (*env)->FindClass(env, "android/media/Spatializer");
+    if (!ctx || !ctx_class || !am_class || !sp_class)
+        return false;
+    jmethodID get_service = (*env)->GetMethodID(env, ctx_class, "getSystemService",
+        "(Ljava/lang/String;)Ljava/lang/Object;");
+    jmethodID get_sp = (*env)->GetMethodID(env, am_class, "getSpatializer",
+        "()Landroid/media/Spatializer;");
+    jmethodID available = (*env)->GetMethodID(env, sp_class, "isAvailable", "()Z");
+    jmethodID enabled = (*env)->GetMethodID(env, sp_class, "isEnabled", "()Z");
+    jmethodID can = (*env)->GetMethodID(env, sp_class, "canBeSpatialized",
+        "(Landroid/media/AudioAttributes;Landroid/media/AudioFormat;)Z");
+    if (!get_service || !get_sp || !available || !enabled || !can)
+        return false;
+    jobject am = (*env)->CallObjectMethod(env, ctx, get_service,
+                                          (*env)->NewStringUTF(env, "audio"));
+    jobject sp = am ? (*env)->CallObjectMethod(env, am, get_sp) : NULL;
+    if (mp_jni_exception_check(env, 0, NULL) < 0 || !sp)
+        return false;
+    if (!(*env)->CallBooleanMethod(env, sp, available) ||
+        !(*env)->CallBooleanMethod(env, sp, enabled))
+        return false;
+    jobject b = (*env)->NewObject(env, d->builder, d->init);
+    if (!b)
+        return false;
+    (*env)->CallObjectMethod(env, b, d->set_encoding, ENC_PCM_16);
+    (*env)->CallObjectMethod(env, b, d->set_rate, 48000);
+    (*env)->CallObjectMethod(env, b, d->set_mask, MASK_5_1);
+    jobject fmt = (*env)->CallObjectMethod(env, b, d->build);
+    if (mp_jni_exception_check(env, 0, NULL) < 0 || !fmt)
+        return false;
+    bool ok = (*env)->CallBooleanMethod(env, sp, can, d->attrs, fmt);
+    return mp_jni_exception_check(env, 0, NULL) >= 0 && ok;
+}
+
 void mp_jni_audio_caps(struct mp_log *log, struct mp_jni_audio_caps *caps)
 {
     *caps = (struct mp_jni_audio_caps){.max_channels = 2};
@@ -627,11 +667,13 @@ void mp_jni_audio_caps(struct mp_log *log, struct mp_jni_audio_caps *caps)
             caps->eac3 = false;
         if (probe_direct(env, &d, ENC_PCM_16, 48000, MASK_7_1))
             caps->max_channels = 8;
+        if (android_get_device_api_level() >= 32)
+            caps->spatial = spatializer_active(env, &d);
     }
     mp_jni_exception_check(env, 0, NULL);
     (*env)->PopLocalFrame(env, NULL);
 
-    mp_verbose(log, "Audio output caps: ac3=%d eac3=%d dts=%d dts-hd=%d truehd=%d channels=%d\n",
+    mp_verbose(log, "Audio output caps: ac3=%d eac3=%d dts=%d dts-hd=%d truehd=%d channels=%d spatial=%d\n",
                caps->ac3, caps->eac3, caps->dts, caps->dtshd, caps->truehd,
-               caps->max_channels);
+               caps->max_channels, caps->spatial);
 }

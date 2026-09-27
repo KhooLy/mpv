@@ -168,6 +168,11 @@ Available audio output drivers are:
 ``audiotrack`` (Android only)
     Android ``AudioTrack`` audio output driver.
 
+    With ``--audio-channels=auto-safe``, multichannel PCM is passed through
+    when the output device reports more than 2 channels, or when the system
+    ``Spatializer`` is enabled and can spatialize 5.1 (Android 12L+). Head
+    tracking is then applied by the system.
+
     The following global options are supported by this audio output:
 
     ``--audiotrack-pcm-float=<yes|no>``
