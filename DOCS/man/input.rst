@@ -2305,6 +2305,14 @@ Property list
     or unavailable if there is none. Observe it to show a skip button; mpv
     does not skip on its own.
 
+``watch-progress``
+    How much of the current file was actually played, for "mark as watched"
+    logic. Seeking over a part, pausing and buffering do not count. Map with
+    ``played`` (seconds of media played) and ``covered`` (fraction of the file
+    duration that was played at least once, 0 to 1). To resume a file, start
+    it with the ``start`` option, e.g. ``loadfile <url> replace -1
+    start=1234``, which starts there without a visible seek.
+
 ``platform-caps``
     What the device can play, for choosing between streams before loading
     one. Only available on Android. Map with these entries:

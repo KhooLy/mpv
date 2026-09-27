@@ -796,6 +796,29 @@ static int mp_property_skip_range(void *ctx, struct m_property *prop,
     return M_PROPERTY_OK;
 }
 
+static int mp_property_watch_progress(void *ctx, struct m_property *prop,
+                                      int action, void *arg)
+{
+    MPContext *mpctx = ctx;
+    if (!mpctx->playback_initialized)
+        return M_PROPERTY_UNAVAILABLE;
+    if (action == M_PROPERTY_GET_TYPE) {
+        *(struct m_option *)arg = (struct m_option){.type = CONF_TYPE_NODE};
+        return M_PROPERTY_OK;
+    }
+    if (action != M_PROPERTY_GET)
+        return M_PROPERTY_NOT_IMPLEMENTED;
+    int seen = 0;
+    for (int n = 0; n < MP_ARRAY_SIZE(mpctx->watch_seen); n++)
+        seen += mpctx->watch_seen[n];
+    struct mpv_node *res = arg;
+    node_init(res, MPV_FORMAT_NODE_MAP, NULL);
+    node_map_add_double(res, "played", mpctx->watch_played);
+    node_map_add_double(res, "covered",
+                        seen / (double)MP_ARRAY_SIZE(mpctx->watch_seen));
+    return M_PROPERTY_OK;
+}
+
 static int mp_property_platform_caps(void *ctx, struct m_property *prop,
                                      int action, void *arg)
 {
@@ -4902,6 +4925,7 @@ static const struct m_property mp_properties_base[] = {
     {"platform-caps", mp_property_platform_caps},
     {"skip-ranges", mp_property_skip_ranges},
     {"skip-range", mp_property_skip_range},
+    {"watch-progress", mp_property_watch_progress},
     {"stream-pos", mp_property_stream_pos},
     {"stream-end", mp_property_stream_end},
     {"duration", mp_property_duration},

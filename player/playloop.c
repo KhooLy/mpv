@@ -1418,6 +1418,30 @@ static void update_skip_range(struct MPContext *mpctx)
     }
 }
 
+static void update_watch_progress(struct MPContext *mpctx)
+{
+    double pos = get_current_time(mpctx);
+    double duration = get_time_length(mpctx);
+    bool playing = mpctx->playback_initialized && mpctx->restart_complete &&
+                   !mpctx->paused && !mpctx->paused_for_cache;
+    if (!playing || pos == MP_NOPTS_VALUE) {
+        mpctx->watch_last = MP_NOPTS_VALUE;
+        return;
+    }
+    double last = mpctx->watch_last;
+    mpctx->watch_last = pos;
+    if (last == MP_NOPTS_VALUE || pos <= last || pos - last > 2)
+        return;
+    mpctx->watch_played += pos - last;
+    if (duration > 0) {
+        int n = MP_ARRAY_SIZE(mpctx->watch_seen);
+        int a = MPCLAMP(last / duration * n, 0, n - 1);
+        int b = MPCLAMP(pos / duration * n, 0, n - 1);
+        for (int i = a; i <= b; i++)
+            mpctx->watch_seen[i] = true;
+    }
+}
+
 void run_playloop(struct MPContext *mpctx)
 {
     error_report_update(mpctx);
@@ -1429,6 +1453,7 @@ void run_playloop(struct MPContext *mpctx)
 
     update_demuxer_properties(mpctx);
     update_skip_range(mpctx);
+    update_watch_progress(mpctx);
 
     handle_cursor_autohide(mpctx);
     handle_vo_events(mpctx);

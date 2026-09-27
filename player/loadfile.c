@@ -1794,6 +1794,9 @@ static void play_current_file(struct MPContext *mpctx)
     mpctx->num_skip_ranges = 0;
     mpctx->skip_ranges_set = false;
     mpctx->skip_range = -1;
+    mpctx->watch_last = MP_NOPTS_VALUE;
+    mpctx->watch_played = 0;
+    memset(mpctx->watch_seen, 0, sizeof(mpctx->watch_seen));
     mpctx->video_speed = mpctx->audio_speed = opts->playback_speed;
     mpctx->speed_factor_a = mpctx->speed_factor_v = 1.0;
     mpctx->display_sync_error = 0.0;

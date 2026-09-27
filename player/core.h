@@ -417,6 +417,10 @@ typedef struct MPContext {
     bool skip_ranges_set;
     int skip_range;
 
+    double watch_last;
+    double watch_played;
+    bool watch_seen[1000];
+
     double sleeptime;      // number of seconds to sleep before next iteration
 
     double mouse_timer;
