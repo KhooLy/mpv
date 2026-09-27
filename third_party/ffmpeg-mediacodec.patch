@@ -1,7 +1,16 @@
 diff --git a/configure b/configure
-index 374bd5c..77cabf4 100755
+index 374bd5c..d6e6dfd 100755
 --- a/configure
 +++ b/configure
+@@ -3658,7 +3658,7 @@ hevc_cuvid_decoder_deps="cuvid"
+ hevc_cuvid_decoder_select="hevc_mp4toannexb_bsf"
+ hevc_d3d12va_encoder_select="cbs_h265 d3d12va_encode"
+ hevc_mediacodec_decoder_deps="mediacodec"
+-hevc_mediacodec_decoder_select="hevc_mp4toannexb_bsf hevc_parser"
++hevc_mediacodec_decoder_select="dovi_rpudec dovi_rpuenc hevc_mp4toannexb_bsf hevc_parser"
+ hevc_mediacodec_encoder_deps="mediacodec"
+ hevc_mediacodec_encoder_select="extract_extradata_bsf hevc_metadata"
+ hevc_mf_encoder_deps="mediafoundation"
 @@ -3686,6 +3686,9 @@ mjpeg_vaapi_encoder_deps="VAEncPictureParameterBufferJPEG"
  mjpeg_vaapi_encoder_select="cbs_jpeg jpegtables vaapi_encode"
  mp3_mf_encoder_deps="mediafoundation"
@@ -325,10 +334,10 @@ index 18d0796..73e5c4d 100644
  {
      return codec->start(codec);
 diff --git a/libavcodec/mediacodecdec.c b/libavcodec/mediacodecdec.c
-index bc176d8..6b28a53 100644
+index bc176d8..36aa280 100644
 --- a/libavcodec/mediacodecdec.c
 +++ b/libavcodec/mediacodecdec.c
-@@ -32,6 +32,8 @@
+@@ -32,10 +32,13 @@
  #include "libavutil/intreadwrite.h"
  #include "libavutil/pixfmt.h"
  #include "libavutil/internal.h"
@@ -337,7 +346,12 @@ index bc176d8..6b28a53 100644
  
  #include "avcodec.h"
  #include "codec_internal.h"
-@@ -59,6 +61,14 @@ typedef struct MediaCodecH264DecContext {
+ #include "decode.h"
++#include "dovi_rpu.h"
+ #include "h264_parse.h"
+ #include "h264_ps.h"
+ #include "hevc/parse.h"
+@@ -59,6 +62,20 @@ typedef struct MediaCodecH264DecContext {
      int use_ndk_codec;
      // Ref. MediaFormat KEY_OPERATING_RATE
      int operating_rate;
@@ -347,12 +361,30 @@ index bc176d8..6b28a53 100644
 +    // the display cannot present Dolby Vision.
 +    int prefer_base_layer;
 +    int strip_dovi;
++    int convert_dovi;
++    AVDOVIDecoderConfigurationRecord dovi_cfg;
++    DOVIContext dovi_dec;
++    DOVIContext dovi_enc;
++    uint8_t *rpu_buf;
++    unsigned rpu_buf_size;
 +    int max_output_channels;
 +    char *codec_name;
  } MediaCodecH264DecContext;
  
  static av_cold int mediacodec_decode_close(AVCodecContext *avctx)
-@@ -139,6 +149,9 @@ static int h264_set_extradata(AVCodecContext *avctx, FFAMediaFormat *format)
+@@ -70,6 +87,11 @@ static av_cold int mediacodec_decode_close(AVCodecContext *avctx)
+ 
+     av_packet_unref(&s->buffered_pkt);
+ 
++    ff_dovi_ctx_unref(&s->dovi_dec);
++    ff_dovi_ctx_unref(&s->dovi_enc);
++    av_freep(&s->rpu_buf);
++    s->rpu_buf_size = 0;
++
+     return 0;
+ }
+ 
+@@ -139,6 +161,9 @@ static int h264_set_extradata(AVCodecContext *avctx, FFAMediaFormat *format)
      int is_avc = 0;
      int nal_length_size = 0;
  
@@ -362,7 +394,7 @@ index bc176d8..6b28a53 100644
      ret = ff_h264_decode_extradata(avctx->extradata, avctx->extradata_size,
                                     &ps, &is_avc, &nal_length_size, 0, avctx);
      if (ret < 0) {
-@@ -213,6 +226,9 @@ static int hevc_set_extradata(AVCodecContext *avctx, FFAMediaFormat *format)
+@@ -213,6 +238,9 @@ static int hevc_set_extradata(AVCodecContext *avctx, FFAMediaFormat *format)
      int sps_data_size = 0;
      int pps_data_size = 0;
  
@@ -372,7 +404,7 @@ index bc176d8..6b28a53 100644
      ret = ff_hevc_decode_extradata(avctx->extradata, avctx->extradata_size,
                                     &ps, &sei, &is_nalff, &nal_length_size, 0, 1, avctx);
      if (ret < 0) {
-@@ -292,7 +308,10 @@ done:
+@@ -292,7 +320,10 @@ done:
      CONFIG_AAC_MEDIACODEC_DECODER   || \
      CONFIG_AMRNB_MEDIACODEC_DECODER || \
      CONFIG_AMRWB_MEDIACODEC_DECODER || \
@@ -384,7 +416,7 @@ index bc176d8..6b28a53 100644
  static int common_set_extradata(AVCodecContext *avctx, FFAMediaFormat *format)
  {
      int ret = 0;
-@@ -305,12 +324,135 @@ static int common_set_extradata(AVCodecContext *avctx, FFAMediaFormat *format)
+@@ -305,12 +336,151 @@ static int common_set_extradata(AVCodecContext *avctx, FFAMediaFormat *format)
  }
  #endif
  
@@ -441,6 +473,22 @@ index bc176d8..6b28a53 100644
 +        return NULL;
 +    }
 +    return base_codec_mime && !strcmp(mime, base_codec_mime) ? mime : NULL;
++}
++
++static int mediacodec_dolby_vision_p8_only(AVCodecContext *avctx)
++{
++    char *name;
++
++    name = ff_AMediaCodecList_getCodecNameByType("video/dolby-vision", 128, 0, avctx, avctx);
++    if (name) {
++        av_free(name);
++        return 0;
++    }
++    name = ff_AMediaCodecList_getCodecNameByType("video/dolby-vision", 256, 0, avctx, avctx);
++    if (!name)
++        return 0;
++    av_free(name);
++    return 1;
 +}
 +
 +static void mediacodec_set_hdr_static_info(AVCodecContext *avctx,
@@ -520,7 +568,7 @@ index bc176d8..6b28a53 100644
  
      FFAMediaFormat *format = NULL;
      MediaCodecH264DecContext *s = avctx->priv_data;
-@@ -328,6 +470,7 @@ static av_cold int mediacodec_decode_init(AVCodecContext *avctx)
+@@ -328,6 +498,7 @@ static av_cold int mediacodec_decode_init(AVCodecContext *avctx)
      switch (avctx->codec_id) {
  #if CONFIG_AV1_MEDIACODEC_DECODER
      case AV_CODEC_ID_AV1:
@@ -528,7 +576,7 @@ index bc176d8..6b28a53 100644
          codec_mime = "video/av01";
  
          ret = common_set_extradata(avctx, format);
-@@ -337,6 +480,7 @@ static av_cold int mediacodec_decode_init(AVCodecContext *avctx)
+@@ -337,6 +508,7 @@ static av_cold int mediacodec_decode_init(AVCodecContext *avctx)
  #endif
  #if CONFIG_H264_MEDIACODEC_DECODER
      case AV_CODEC_ID_H264:
@@ -536,7 +584,7 @@ index bc176d8..6b28a53 100644
          codec_mime = "video/avc";
  
          ret = h264_set_extradata(avctx, format);
-@@ -346,6 +490,7 @@ static av_cold int mediacodec_decode_init(AVCodecContext *avctx)
+@@ -346,6 +518,7 @@ static av_cold int mediacodec_decode_init(AVCodecContext *avctx)
  #endif
  #if CONFIG_HEVC_MEDIACODEC_DECODER
      case AV_CODEC_ID_HEVC:
@@ -544,7 +592,7 @@ index bc176d8..6b28a53 100644
          codec_mime = "video/hevc";
  
          ret = hevc_set_extradata(avctx, format);
-@@ -425,11 +570,65 @@ static av_cold int mediacodec_decode_init(AVCodecContext *avctx)
+@@ -425,11 +598,75 @@ static av_cold int mediacodec_decode_init(AVCodecContext *avctx)
              goto done;
          break;
  #endif
@@ -577,10 +625,20 @@ index bc176d8..6b28a53 100644
      }
  
 +    if (is_dolby_vision) {
++        const AVDOVIDecoderConfigurationRecord *cfg =
++            (const AVDOVIDecoderConfigurationRecord *)dovi_sd->data;
 +        alternative_mime = mediacodec_dolby_vision_alternative_mime(
 +            avctx, dovi_sd, base_codec_mime);
 +        codec_mime = s->prefer_base_layer && alternative_mime
 +                     ? alternative_mime : "video/dolby-vision";
++        if (!s->prefer_base_layer && cfg->dv_profile == 7 &&
++            avctx->codec_id == AV_CODEC_ID_HEVC &&
++            mediacodec_dolby_vision_p8_only(avctx)) {
++            dovi_profile = 256;
++            s->convert_dovi = 1;
++            s->dovi_dec.logctx = s->dovi_enc.logctx = avctx;
++            s->dovi_cfg = *cfg;
++        }
 +        av_log(avctx, AV_LOG_VERBOSE,
 +               "Dolby Vision stream: using %s, alternative %s\n", codec_mime,
 +               alternative_mime ? alternative_mime : "none");
@@ -610,7 +668,7 @@ index bc176d8..6b28a53 100644
  
      if (avctx->codec_type == AVMEDIA_TYPE_VIDEO) {
          ff_AMediaFormat_setInt32(format, "width", avctx->width);
-@@ -440,6 +639,8 @@ static av_cold int mediacodec_decode_init(AVCodecContext *avctx)
+@@ -440,6 +677,8 @@ static av_cold int mediacodec_decode_init(AVCodecContext *avctx)
      }
      if (s->operating_rate > 0)
          ff_AMediaFormat_setInt32(format, "operating-rate", s->operating_rate);
@@ -619,7 +677,7 @@ index bc176d8..6b28a53 100644
  
      s->ctx = av_mallocz(sizeof(*s->ctx));
      if (!s->ctx) {
-@@ -451,14 +652,45 @@ static av_cold int mediacodec_decode_init(AVCodecContext *avctx)
+@@ -451,14 +690,49 @@ static av_cold int mediacodec_decode_init(AVCodecContext *avctx)
      s->ctx->delay_flush = s->delay_flush;
      s->ctx->use_ndk_codec = s->use_ndk_codec;
  
@@ -655,6 +713,10 @@ index bc176d8..6b28a53 100644
  
 +    s->strip_dovi = is_dolby_vision && avctx->codec_id == AV_CODEC_ID_HEVC &&
 +                    strcmp(codec_mime, "video/dolby-vision");
++    s->convert_dovi = s->convert_dovi && !s->strip_dovi;
++    if (s->convert_dovi)
++        av_log(avctx, AV_LOG_INFO,
++               "Decoder lacks Dolby Vision profile 7, converting RPUs to profile 8.1\n");
 +    if (s->strip_dovi)
 +        av_log(avctx, AV_LOG_INFO,
 +               "Decoding Dolby Vision base layer, dropping RPU and EL NAL units\n");
@@ -667,7 +729,7 @@ index bc176d8..6b28a53 100644
  
      sdk_int = ff_Build_SDK_INT(avctx);
      /* ff_Build_SDK_INT can fail when target API < 24 and JVM isn't available.
-@@ -486,6 +718,32 @@ done:
+@@ -486,6 +760,195 @@ done:
      return ret;
  }
  
@@ -697,10 +759,173 @@ index bc176d8..6b28a53 100644
 +    pkt->size = out;
 +}
 +
++static const int dovi_p81_ycc_to_rgb[9] = {
++    9574, 0, 13802, 9574, -1540, -5348, 9574, 17610, 0,
++};
++static const int dovi_p81_rgb_to_lms[9] = {
++    7222, 8771, 390, 2654, 12430, 1300, 0, 422, 15962,
++};
++
++static int mediacodec_is_mel(const AVDOVIRpuDataHeader *hdr,
++                             const AVDOVIDataMapping *map)
++{
++    if (map->nlq_method_idc == AV_DOVI_NLQ_NONE)
++        return 1;
++    for (int c = 0; c < 3; c++) {
++        const AVDOVINLQParams *nlq = &map->nlq[c];
++        if (nlq->nlq_offset || nlq->vdr_in_max != 1ULL << hdr->coef_log2_denom ||
++            nlq->linear_deadzone_slope || nlq->linear_deadzone_threshold)
++            return 0;
++    }
++    return 1;
++}
++
++static int mediacodec_rewrite_rpu(AVCodecContext *avctx, const uint8_t *nal,
++                                  int size, uint8_t **out, int *out_size)
++{
++    MediaCodecH264DecContext *s = avctx->priv_data;
++    AVDOVIMetadata *md = NULL;
++    AVDOVIRpuDataHeader *hdr;
++    AVDOVIDataMapping *map;
++    AVDOVIColorMetadata *color;
++    int len = 0, zeros = 0, ret;
++
++    s->dovi_dec.cfg = s->dovi_cfg;
++    s->dovi_enc.cfg = s->dovi_cfg;
++    s->dovi_enc.cfg.dv_profile = 8;
++    s->dovi_enc.cfg.dv_bl_signal_compatibility_id = 1;
++    s->dovi_enc.cfg.el_present_flag = 0;
++    s->dovi_enc.cfg.dv_md_compression = AV_DOVI_COMPRESSION_NONE;
++    s->dovi_enc.enable = 1;
++
++    av_fast_padded_malloc(&s->rpu_buf, &s->rpu_buf_size, size);
++    if (!s->rpu_buf)
++        return AVERROR(ENOMEM);
++    for (int i = 2; i < size; i++) {
++        if (zeros >= 2 && nal[i] == 3) {
++            zeros = 0;
++            continue;
++        }
++        zeros = nal[i] ? 0 : zeros + 1;
++        s->rpu_buf[len++] = nal[i];
++    }
++
++    ret = ff_dovi_rpu_parse(&s->dovi_dec, s->rpu_buf, len, 0);
++    if (ret < 0) {
++        ff_dovi_ctx_flush(&s->dovi_dec);
++        return ret;
++    }
++    ret = ff_dovi_get_metadata(&s->dovi_dec, &md);
++    if (ret <= 0)
++        return ret < 0 ? ret : AVERROR_INVALIDDATA;
++
++    hdr = av_dovi_get_header(md);
++    map = av_dovi_get_mapping(md);
++    color = av_dovi_get_color(md);
++
++    if (!mediacodec_is_mel(hdr, map)) {
++        for (int c = 0; c < 3; c++) {
++            AVDOVIReshapingCurve *curve = &map->curves[c];
++            memset(curve, 0, sizeof(*curve));
++            curve->num_pivots = 2;
++            curve->pivots[1] = (1 << hdr->bl_bit_depth) - 1;
++            curve->mapping_idc[0] = AV_DOVI_MAPPING_POLYNOMIAL;
++            curve->poly_order[0] = 1;
++            curve->poly_coef[0][1] = 1LL << hdr->coef_log2_denom;
++        }
++    }
++    hdr->disable_residual_flag = 1;
++    hdr->el_spatial_resampling_filter_flag = 0;
++    map->nlq_method_idc = AV_DOVI_NLQ_NONE;
++    map->num_x_partitions = map->num_y_partitions = 1;
++    memset(map->nlq, 0, sizeof(map->nlq));
++
++    for (int i = 0; i < 9; i++) {
++        color->ycc_to_rgb_matrix[i] = av_make_q(dovi_p81_ycc_to_rgb[i], 1 << 13);
++        color->rgb_to_lms_matrix[i] = av_make_q(dovi_p81_rgb_to_lms[i], 1 << 14);
++    }
++    color->ycc_to_rgb_offset[0] = av_make_q(1 << 24, 1 << 28);
++    color->ycc_to_rgb_offset[1] = av_make_q(1 << 27, 1 << 28);
++    color->ycc_to_rgb_offset[2] = av_make_q(1 << 27, 1 << 28);
++    color->signal_color_space = 0;
++
++    ret = ff_dovi_rpu_generate(&s->dovi_enc, md, FF_DOVI_WRAP_NAL, out, out_size);
++    av_free(md);
++    if (ret < 0)
++        ff_dovi_ctx_flush(&s->dovi_enc);
++    return ret;
++}
++
++static int mediacodec_convert_dovi(AVCodecContext *avctx, AVPacket *pkt)
++{
++    const uint8_t *d = pkt->data;
++    int size = pkt->size, i = 0, out = 0, ret;
++    uint8_t *rpu = NULL;
++    int rpu_size = 0;
++    AVBufferRef *buf;
++
++    for (int k = 0; k + 5 < size; k++) {
++        if (d[k] == 0 && d[k + 1] == 0 && d[k + 2] == 1 &&
++            ((d[k + 3] >> 1) & 0x3f) == 62) {
++            int j = k + 3;
++            while (j + 3 <= size && !(d[j] == 0 && d[j + 1] == 0 && d[j + 2] == 1))
++                j++;
++            if (j + 3 > size)
++                j = size;
++            ret = mediacodec_rewrite_rpu(avctx, d + k + 3, j - k - 3, &rpu, &rpu_size);
++            if (ret < 0) {
++                av_log(avctx, AV_LOG_WARNING, "Dropping unconvertible Dolby Vision RPU\n");
++                rpu = NULL;
++                rpu_size = 0;
++            }
++            break;
++        }
++    }
++
++    buf = av_buffer_alloc(size + rpu_size + 5 + AV_INPUT_BUFFER_PADDING_SIZE);
++    if (!buf) {
++        av_free(rpu);
++        return AVERROR(ENOMEM);
++    }
++
++    while (i + 3 <= size && !(d[i] == 0 && d[i + 1] == 0 && d[i + 2] == 1))
++        i++;
++    memcpy(buf->data, d, FFMIN(i, size));
++    out = FFMIN(i, size);
++    while (i + 3 < size) {
++        int j = i + 3;
++        while (j + 3 <= size && !(d[j] == 0 && d[j + 1] == 0 && d[j + 2] == 1))
++            j++;
++        if (j + 3 > size)
++            j = size;
++        int type = (d[i + 3] >> 1) & 0x3f;
++        if (type == 62) {
++            if (rpu) {
++                memcpy(buf->data + out, (const uint8_t[]){ 0, 0, 1, 0x7c, 0x01 }, 5);
++                memcpy(buf->data + out + 5, rpu, rpu_size);
++                out += 5 + rpu_size;
++                av_freep(&rpu);
++            }
++        } else if (type != 63) {
++            memcpy(buf->data + out, d + i, j - i);
++            out += j - i;
++        }
++        i = j;
++    }
++    av_free(rpu);
++    memset(buf->data + out, 0, AV_INPUT_BUFFER_PADDING_SIZE);
++
++    av_buffer_unref(&pkt->buf);
++    pkt->buf = buf;
++    pkt->data = buf->data;
++    pkt->size = out;
++    return 0;
++}
++
  static int mediacodec_receive_frame(AVCodecContext *avctx, AVFrame *frame)
  {
      MediaCodecH264DecContext *s = avctx->priv_data;
-@@ -564,6 +822,13 @@ static int mediacodec_receive_frame(AVCodecContext *avctx, AVFrame *frame)
+@@ -564,6 +1027,17 @@ static int mediacodec_receive_frame(AVCodecContext *avctx, AVFrame *frame)
          } else if (ret < 0) {
              return ret;
          }
@@ -710,11 +935,24 @@ index bc176d8..6b28a53 100644
 +            if (ret < 0)
 +                return ret;
 +            mediacodec_strip_dovi_nals(&s->buffered_pkt);
++        } else if (s->convert_dovi) {
++            ret = mediacodec_convert_dovi(avctx, &s->buffered_pkt);
++            if (ret < 0)
++                return ret;
 +        }
      }
  
      return AVERROR(EAGAIN);
-@@ -600,6 +865,13 @@ static const AVOption ff_mediacodec_vdec_options[] = {
+@@ -574,6 +1048,8 @@ static void mediacodec_decode_flush(AVCodecContext *avctx)
+     MediaCodecH264DecContext *s = avctx->priv_data;
+ 
+     av_packet_unref(&s->buffered_pkt);
++    ff_dovi_ctx_flush(&s->dovi_dec);
++    ff_dovi_ctx_flush(&s->dovi_enc);
+ 
+     ff_mediacodec_dec_flush(avctx, s->ctx);
+ }
+@@ -600,6 +1076,13 @@ static const AVOption ff_mediacodec_vdec_options[] = {
                     OFFSET(use_ndk_codec), AV_OPT_TYPE_BOOL, {.i64 = -1}, -1, 1, VD },
      { "operating_rate", "The desired operating rate that the codec will need to operate at, zero for unspecified",
              OFFSET(operating_rate), AV_OPT_TYPE_INT, {.i64 = 0}, 0, INT_MAX, VD },
@@ -728,7 +966,7 @@ index bc176d8..6b28a53 100644
      { NULL }
  };
  
-@@ -665,6 +937,8 @@ static const AVOption ff_mediacodec_adec_options[] = {
+@@ -665,6 +1148,8 @@ static const AVOption ff_mediacodec_adec_options[] = {
                     OFFSET(use_ndk_codec), AV_OPT_TYPE_BOOL, {.i64 = -1}, -1, 1, AD },
      { "operating_rate", "The desired operating rate that the codec will need to operate at, zero for unspecified",
              OFFSET(operating_rate), AV_OPT_TYPE_INT, {.i64 = 0}, 0, INT_MAX, AD },
@@ -737,7 +975,7 @@ index bc176d8..6b28a53 100644
      { NULL }
  };
  
-@@ -689,7 +963,7 @@ const FFCodec ff_ ## short_name ## _mediacodec_decoder = {
+@@ -689,7 +1174,7 @@ const FFCodec ff_ ## short_name ## _mediacodec_decoder = {
      FF_CODEC_RECEIVE_FRAME_CB(mediacodec_receive_frame),                                       \
      .flush          = mediacodec_decode_flush,                                                 \
      .close          = mediacodec_decode_close,                                                 \
@@ -746,7 +984,7 @@ index bc176d8..6b28a53 100644
      .caps_internal  = FF_CODEC_CAP_NOT_INIT_THREADSAFE,                                        \
      .bsfs           = bsf,                                                                     \
      .p.wrapper_name = "mediacodec",                                                            \
-@@ -710,3 +984,15 @@ DECLARE_MEDIACODEC_ADEC(amrwb, "AMR-WB", AV_CODEC_ID_AMR_WB, NULL)
+@@ -710,3 +1195,15 @@ DECLARE_MEDIACODEC_ADEC(amrwb, "AMR-WB", AV_CODEC_ID_AMR_WB, NULL)
  #if CONFIG_MP3_MEDIACODEC_DECODER
  DECLARE_MEDIACODEC_ADEC(mp3, "MP3", AV_CODEC_ID_MP3, NULL)
  #endif
