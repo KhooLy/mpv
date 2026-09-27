@@ -249,15 +249,18 @@ static bool init_format(struct priv *p)
 
     const AVDOVIDecoderConfigurationRecord *dovi = get_dovi(c);
     if (dovi && type == kCMVideoCodecType_HEVC) {
+        bool display = AVPlayer.availableHDRModes & AVPlayerHDRModeDolbyVision;
         bool native = (dovi->dv_profile == 5 || dovi->dv_profile == 8) &&
-                      VTIsHardwareDecodeSupported('dvh1');
+                      display && VTIsHardwareDecodeSupported('dvh1');
+        if (!display)
+            MP_VERBOSE(p, "Display lacks Dolby Vision\n");
         if (native) {
             type = 'dvh1';
             atoms[dovi->dv_profile > 7 ? @"dvvC" : @"dvcC"] = dovi_atom(dovi);
             MP_VERBOSE(p, "Dolby Vision profile %d.%d\n", dovi->dv_profile,
                        dovi->dv_level);
         } else if (dovi->dv_profile == 5) {
-            MP_WARN(p, "Dolby Vision profile 5 is not supported natively here\n");
+            MP_VERBOSE(p, "Dolby Vision profile 5 needs the Dolby Vision display path\n");
             return false;
         } else {
             MP_VERBOSE(p, "Dolby Vision profile %d, using the base layer\n",
