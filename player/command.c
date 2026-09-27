@@ -659,6 +659,25 @@ static int mp_property_last_error(void *ctx, struct m_property *prop,
     return error_report_property(ctx, true, action, arg);
 }
 
+static int mp_property_startup_time(void *ctx, struct m_property *prop,
+                                    int action, void *arg)
+{
+    MPContext *mpctx = ctx;
+    if (!mpctx->playing || mpctx->startup_time < 0)
+        return M_PROPERTY_UNAVAILABLE;
+    if (action == M_PROPERTY_GET_TYPE) {
+        *(struct m_option *)arg = (struct m_option){.type = CONF_TYPE_NODE};
+        return M_PROPERTY_OK;
+    }
+    if (action != M_PROPERTY_GET)
+        return M_PROPERTY_NOT_IMPLEMENTED;
+    struct mpv_node *res = arg;
+    node_init(res, MPV_FORMAT_NODE_MAP, NULL);
+    node_map_add_double(res, "open", mpctx->open_time);
+    node_map_add_double(res, "total", mpctx->startup_time);
+    return M_PROPERTY_OK;
+}
+
 static int mp_property_file_format(void *ctx, struct m_property *prop,
                                    int action, void *arg)
 {
@@ -4650,6 +4669,7 @@ static const struct m_property mp_properties_base[] = {
     {"file-format", mp_property_file_format},
     {"error-log", mp_property_error_log},
     {"last-error", mp_property_last_error},
+    {"startup-time", mp_property_startup_time},
     {"stream-pos", mp_property_stream_pos},
     {"stream-end", mp_property_stream_end},
     {"duration", mp_property_duration},

@@ -1257,6 +1257,12 @@ static void handle_playback_restart(struct MPContext *mpctx)
         mpctx->restart_complete = true;
         mpctx->current_seek = (struct seek_params){0};
         handle_playback_time(mpctx);
+        if (mpctx->startup_time < 0) {
+            mpctx->startup_time = mp_time_sec() - mpctx->load_start;
+            MP_VERBOSE(mpctx, "Startup took %.3fs (open %.3fs).\n",
+                       mpctx->startup_time, mpctx->open_time);
+            mp_notify_property(mpctx, "startup-time");
+        }
         mp_notify(mpctx, MPV_EVENT_PLAYBACK_RESTART, NULL);
         update_core_idle_state(mpctx);
         if (!mpctx->playing_msg_shown) {

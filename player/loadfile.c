@@ -1758,6 +1758,9 @@ static void play_current_file(struct MPContext *mpctx)
     mpctx->abr_next_check = 0;
     mpctx->abr_last_switch = mp_time_sec();
     error_report_start(mpctx);
+    mpctx->load_start = mp_time_sec();
+    mpctx->open_time = -1;
+    mpctx->startup_time = -1;
     mpctx->video_speed = mpctx->audio_speed = opts->playback_speed;
     mpctx->speed_factor_a = mpctx->speed_factor_v = 1.0;
     mpctx->display_sync_error = 0.0;
@@ -1841,6 +1844,7 @@ static void play_current_file(struct MPContext *mpctx)
             open_demux_reentrant(mpctx);
         }
     }
+    mpctx->open_time = mp_time_sec() - mpctx->load_start;
     if (!mpctx->demuxer || mpctx->stop_play)
         goto terminate_playback;
 

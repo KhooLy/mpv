@@ -405,6 +405,10 @@ typedef struct MPContext {
 
     struct error_report *error_report;
 
+    double load_start;
+    double open_time;
+    double startup_time;
+
     double sleeptime;      // number of seconds to sleep before next iteration
 
     double mouse_timer;

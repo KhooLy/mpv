@@ -2273,6 +2273,11 @@ Property list
     loading), ``level``, ``prefix`` and ``text``. Query strings and user
     credentials are removed from URLs in the text.
 
+``startup-time``
+    How long the current file took to start, available after the first frame
+    or audio was played. Map with ``open`` (seconds until the demuxer was
+    opened) and ``total`` (seconds until playback started).
+
 ``last-error``
     Report about the last file that failed to play, or that ended more than 5
     seconds before its duration. It is set before the ``end-file`` event is
