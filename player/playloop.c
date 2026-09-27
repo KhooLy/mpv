@@ -239,6 +239,14 @@ void step_frame_mute(struct MPContext *mpctx, bool mute)
 }
 
 // Clear some playback-related fields on file loading or after seeks.
+static void end_rebuffer(struct MPContext *mpctx)
+{
+    if (mpctx->rebuffer_start < 0)
+        return;
+    mpctx->rebuffer_time += mp_time_sec() - mpctx->rebuffer_start;
+    mpctx->rebuffer_start = -1;
+}
+
 void reset_playback_state(struct MPContext *mpctx)
 {
     mp_filter_reset(mpctx->filter_root);
@@ -268,6 +276,7 @@ void reset_playback_state(struct MPContext *mpctx)
     mpctx->step_frames = 0;
     mpctx->ab_loop_clip = true;
     mpctx->restart_complete = false;
+    end_rebuffer(mpctx);
     mpctx->paused_for_cache = false;
     mpctx->cache_buffer = 100;
     mpctx->cache_update_pts = MP_NOPTS_VALUE;
@@ -840,8 +849,15 @@ static void handle_update_cache(struct MPContext *mpctx)
         mpctx->paused_for_cache = need_wait;
         update_internal_pause_state(mpctx);
         force_update = true;
-        if (mpctx->paused_for_cache)
+        if (mpctx->paused_for_cache) {
             mpctx->cache_stop_time = now;
+            if (mpctx->restart_complete) {
+                mpctx->rebuffer_count++;
+                mpctx->rebuffer_start = now;
+            }
+        } else {
+            end_rebuffer(mpctx);
+        }
     }
 
     if (!mpctx->paused_for_cache)

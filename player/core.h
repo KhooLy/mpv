@@ -408,6 +408,9 @@ typedef struct MPContext {
     double load_start;
     double open_time;
     double startup_time;
+    int rebuffer_count;
+    double rebuffer_time;
+    double rebuffer_start;
 
     double sleeptime;      // number of seconds to sleep before next iteration
 

@@ -678,6 +678,28 @@ static int mp_property_startup_time(void *ctx, struct m_property *prop,
     return M_PROPERTY_OK;
 }
 
+static int mp_property_rebuffering(void *ctx, struct m_property *prop,
+                                   int action, void *arg)
+{
+    MPContext *mpctx = ctx;
+    if (!mpctx->playback_initialized)
+        return M_PROPERTY_UNAVAILABLE;
+    if (action == M_PROPERTY_GET_TYPE) {
+        *(struct m_option *)arg = (struct m_option){.type = CONF_TYPE_NODE};
+        return M_PROPERTY_OK;
+    }
+    if (action != M_PROPERTY_GET)
+        return M_PROPERTY_NOT_IMPLEMENTED;
+    double time = mpctx->rebuffer_time;
+    if (mpctx->rebuffer_start >= 0)
+        time += mp_time_sec() - mpctx->rebuffer_start;
+    struct mpv_node *res = arg;
+    node_init(res, MPV_FORMAT_NODE_MAP, NULL);
+    node_map_add_int64(res, "count", mpctx->rebuffer_count);
+    node_map_add_double(res, "time", time);
+    return M_PROPERTY_OK;
+}
+
 static int mp_property_file_format(void *ctx, struct m_property *prop,
                                    int action, void *arg)
 {
@@ -4670,6 +4692,7 @@ static const struct m_property mp_properties_base[] = {
     {"error-log", mp_property_error_log},
     {"last-error", mp_property_last_error},
     {"startup-time", mp_property_startup_time},
+    {"rebuffering", mp_property_rebuffering},
     {"stream-pos", mp_property_stream_pos},
     {"stream-end", mp_property_stream_end},
     {"duration", mp_property_duration},
@@ -4927,7 +4950,7 @@ static const char *const *const mp_event_property_change[] = {
     E(MP_EVENT_CACHE_UPDATE,
       "demuxer-cache-duration", "demuxer-cache-idle", "paused-for-cache",
       "demuxer-cache-time", "cache-buffering-state", "cache-speed",
-      "demuxer-cache-state"),
+      "demuxer-cache-state", "rebuffering"),
     E(MP_EVENT_WIN_RESIZE, "current-window-scale", "osd-width", "osd-height",
       "osd-par", "osd-dimensions"),
     E(MP_EVENT_WIN_STATE, "display-names", "display-fps", "display-width",

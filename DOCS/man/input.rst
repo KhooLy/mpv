@@ -2278,6 +2278,11 @@ Property list
     or audio was played. Map with ``open`` (seconds until the demuxer was
     opened) and ``total`` (seconds until playback started).
 
+``rebuffering``
+    How often playback of the current file stalled because the cache ran empty,
+    not counting the initial buffering and seeks. Map with ``count`` and
+    ``time`` (total seconds spent stalled).
+
 ``last-error``
     Report about the last file that failed to play, or that ended more than 5
     seconds before its duration. It is set before the ``end-file`` event is

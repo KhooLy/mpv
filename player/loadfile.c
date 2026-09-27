@@ -1761,6 +1761,9 @@ static void play_current_file(struct MPContext *mpctx)
     mpctx->load_start = mp_time_sec();
     mpctx->open_time = -1;
     mpctx->startup_time = -1;
+    mpctx->rebuffer_count = 0;
+    mpctx->rebuffer_time = 0;
+    mpctx->rebuffer_start = -1;
     mpctx->video_speed = mpctx->audio_speed = opts->playback_speed;
     mpctx->speed_factor_a = mpctx->speed_factor_v = 1.0;
     mpctx->display_sync_error = 0.0;

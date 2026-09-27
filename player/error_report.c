@@ -38,7 +38,7 @@ static const char *const state_props[] = {
     "video-codec", "video-params", "hwdec-current", "audio-codec",
     "audio-params", "current-ao", "current-vo", "track-list/count",
     "estimated-vf-fps", "frame-drop-count", "decoder-frame-drop-count",
-    "mpv-version", "ffmpeg-version",
+    "rebuffering", "startup-time", "mpv-version", "ffmpeg-version",
     NULL
 };
 
