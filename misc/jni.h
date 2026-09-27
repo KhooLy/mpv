@@ -36,6 +36,7 @@
 #define MP_JNI_CALL_BOOL(obj, method, ...) MP_JNI_DO(CallBooleanMethod, obj, method, ##__VA_ARGS__)
 #define MP_JNI_CALL_VOID(obj, method, ...) MP_JNI_DO(CallVoidMethod, obj, method, ##__VA_ARGS__)
 #define MP_JNI_CALL_STATIC_INT(clazz, method, ...) MP_JNI_DO(CallStaticIntMethod, clazz, method, ##__VA_ARGS__)
+#define MP_JNI_CALL_STATIC_BOOL(clazz, method, ...) MP_JNI_DO(CallStaticBooleanMethod, clazz, method, ##__VA_ARGS__)
 #define MP_JNI_CALL_OBJECT(obj, method, ...) MP_JNI_DO(CallObjectMethod, obj, method, ##__VA_ARGS__)
 #define MP_JNI_GET_INT(obj, field) MP_JNI_DO(GetIntField, obj, field)
 #define MP_JNI_GET_LONG(obj, field) MP_JNI_DO(GetLongField, obj, field)
