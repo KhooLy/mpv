@@ -85,7 +85,9 @@ struct osd_layer {
     struct mp_osd_res res;
     int vid_w, vid_h;
     int buf_w, buf_h;
-    uint8_t *scratch;
+    AHardwareBuffer *pool[3];
+    struct mp_rect dirty[3];
+    int pool_w, pool_h, pool_idx;
     int64_t change_id;
     bool visible;
     double pts;
@@ -338,6 +340,53 @@ static void osd_init(struct vo *vo)
     o->txn_delete(t);
 }
 
+static void pool_free(struct osd_layer *o)
+{
+    for (int n = 0; n < MP_ARRAY_SIZE(o->pool); n++) {
+        if (o->pool[n])
+            AHardwareBuffer_release(o->pool[n]);
+        o->pool[n] = NULL;
+    }
+    o->pool_w = o->pool_h = 0;
+}
+
+static bool pool_alloc(struct vo *vo, struct osd_layer *o, int w, int h)
+{
+    if (o->pool_w == w && o->pool_h == h)
+        return true;
+    pool_free(o);
+    AHardwareBuffer_Desc desc = {
+        .width = w,
+        .height = h,
+        .layers = 1,
+        .format = AHARDWAREBUFFER_FORMAT_R8G8B8A8_UNORM,
+        .usage = AHARDWAREBUFFER_USAGE_CPU_WRITE_OFTEN |
+                 AHARDWAREBUFFER_USAGE_CPU_READ_OFTEN |
+                 AHARDWAREBUFFER_USAGE_GPU_SAMPLED_IMAGE |
+                 AHARDWAREBUFFER_USAGE_COMPOSER_OVERLAY,
+    };
+    for (int n = 0; n < MP_ARRAY_SIZE(o->pool); n++) {
+        void *data;
+        if (AHardwareBuffer_allocate(&desc, &o->pool[n]) != 0 ||
+            AHardwareBuffer_lock(o->pool[n], AHARDWAREBUFFER_USAGE_CPU_WRITE_OFTEN,
+                                 -1, NULL, &data) != 0)
+        {
+            MP_WARN(vo, "Failed to allocate subtitle buffers\n");
+            pool_free(o);
+            return false;
+        }
+        AHardwareBuffer_Desc real;
+        AHardwareBuffer_describe(o->pool[n], &real);
+        memset(data, 0, (size_t)real.stride * 4 * h);
+        AHardwareBuffer_unlock(o->pool[n], NULL);
+        o->dirty[n] = (struct mp_rect){0};
+    }
+    o->pool_w = w;
+    o->pool_h = h;
+    o->pool_idx = 0;
+    return true;
+}
+
 static void osd_uninit(struct osd_layer *o)
 {
     if (!o->sc)
@@ -348,6 +397,7 @@ static void osd_uninit(struct osd_layer *o)
     o->txn_delete(t);
     o->release(o->sc);
     o->sc = NULL;
+    pool_free(o);
 }
 
 static void blend_part(uint8_t *dst, int dst_stride, struct mp_rect box,
@@ -444,52 +494,38 @@ static void draw_osd(struct vo *vo, int64_t present_ns)
     box.y1 = MPMIN(box.y1, res.h);
 
     AHardwareBuffer *buf = NULL;
-    if (box.x1 > box.x0 && box.y1 > box.y0) {
-        AHardwareBuffer_Desc desc = {
-            .width = box.x1 - box.x0,
-            .height = box.y1 - box.y0,
-            .layers = 1,
-            .format = AHARDWAREBUFFER_FORMAT_R8G8B8A8_UNORM,
-            .usage = AHARDWAREBUFFER_USAGE_CPU_WRITE_OFTEN |
-                     AHARDWAREBUFFER_USAGE_GPU_SAMPLED_IMAGE |
-                     AHARDWAREBUFFER_USAGE_COMPOSER_OVERLAY,
-        };
-        int stride = desc.width * 4;
-        size_t size = (size_t)stride * desc.height;
-        if (talloc_get_size(o->scratch) < size) {
-            talloc_free(o->scratch);
-            o->scratch = talloc_size(p, size);
+    uint8_t *data = NULL;
+    if (box.x1 > box.x0 && box.y1 > box.y0 && pool_alloc(vo, o, res.w, res.h)) {
+        buf = o->pool[o->pool_idx];
+        if (AHardwareBuffer_lock(buf, AHARDWAREBUFFER_USAGE_CPU_WRITE_OFTEN |
+                                 AHARDWAREBUFFER_USAGE_CPU_READ_OFTEN,
+                                 -1, NULL, (void **)&data) != 0)
+        {
+            MP_WARN(vo, "Failed to map subtitle buffer\n");
+            buf = NULL;
         }
-        memset(o->scratch, 0, size);
+    }
+    if (buf) {
+        AHardwareBuffer_Desc desc;
+        AHardwareBuffer_describe(buf, &desc);
+        int stride = desc.stride * 4;
+        struct mp_rect *d = &o->dirty[o->pool_idx];
+        for (int y = d->y0; y < d->y1; y++)
+            memset(data + (size_t)y * stride + (size_t)d->x0 * 4, 0, (size_t)(d->x1 - d->x0) * 4);
+        *d = box;
+        uint8_t *dst = data + (size_t)box.y0 * stride + (size_t)box.x0 * 4;
         for (int n = 0; n < list->num_items; n++) {
             struct sub_bitmaps *imgs = list->items[n];
             for (int i = 0; i < imgs->num_parts; i++) {
                 struct sub_bitmap *b = &imgs->parts[i];
                 if (imgs->format == SUBBITMAP_LIBASS)
-                    blend_ass(o->scratch, stride, box, b);
+                    blend_ass(dst, stride, box, b);
                 else if (b->dw > 0 && b->dh > 0)
-                    blend_part(o->scratch, stride, box, b);
+                    blend_part(dst, stride, box, b);
             }
         }
-
-        void *data = NULL;
-        if (AHardwareBuffer_allocate(&desc, &buf) == 0) {
-            AHardwareBuffer_describe(buf, &desc);
-            if (AHardwareBuffer_lock(buf, AHARDWAREBUFFER_USAGE_CPU_WRITE_OFTEN,
-                                     -1, NULL, &data) != 0)
-                data = NULL;
-        }
-        if (data) {
-            for (uint32_t y = 0; y < desc.height; y++) {
-                memcpy((uint8_t *)data + (size_t)y * desc.stride * 4,
-                       o->scratch + (size_t)y * stride, stride);
-            }
-            AHardwareBuffer_unlock(buf, NULL);
-        } else if (buf) {
-            MP_WARN(vo, "Failed to map subtitle buffer\n");
-            AHardwareBuffer_release(buf);
-            buf = NULL;
-        }
+        AHardwareBuffer_unlock(buf, NULL);
+        o->pool_idx = (o->pool_idx + 1) % MP_ARRAY_SIZE(o->pool);
     }
     talloc_free(list);
 
@@ -498,7 +534,7 @@ static void draw_osd(struct vo *vo, int64_t present_ns)
 
     ASurfaceTransaction *t = o->txn_create();
     if (buf) {
-        ARect src = {0, 0, box.x1 - box.x0, box.y1 - box.y0};
+        ARect src = {box.x0, box.y0, box.x1, box.y1};
         ARect dst = {
             (int64_t)box.x0 * o->vid_w / res.w, (int64_t)box.y0 * o->vid_h / res.h,
             (int64_t)box.x1 * o->vid_w / res.w, (int64_t)box.y1 * o->vid_h / res.h,
@@ -513,8 +549,6 @@ static void draw_osd(struct vo *vo, int64_t present_ns)
         o->set_present_time(t, present_ns);
     o->txn_apply(t);
     o->txn_delete(t);
-    if (buf)
-        AHardwareBuffer_release(buf);
 }
 
 static AVBufferRef *create_mediacodec_device_ref(struct vo *vo)
