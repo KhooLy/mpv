@@ -40,3 +40,17 @@ This is not a software Dolby Vision decoder. Final Dolby Vision output still
 requires a device/display path that advertises and implements Dolby Vision.
 On devices without that capability, the base-layer fallback is the expected
 behavior.
+
+## libass Android font provider
+
+Apply `libass-android-fontprovider.patch` to libass `b2fe9d8` before building
+it for Android. libass has no system font provider there, so without it only
+embedded fonts and the single default font work, and scripts that font lacks
+(CJK, Arabic, Devanagari, ...) render as boxes.
+
+The provider uses the NDK `AFontMatcher` API (Android 10+), loaded with
+`dlsym` so the library still runs on older releases, where libass falls back
+to having no provider. It resolves requested family names to system fonts
+(e.g. `Arial` to Roboto) and answers per-codepoint fallback queries, opening
+font files only when a glyph is actually needed. Fonts attached to the file
+still take precedence.
