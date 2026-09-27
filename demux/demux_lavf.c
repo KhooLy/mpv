@@ -33,10 +33,13 @@
 #include <libavutil/avstring.h>
 #include <libavutil/display.h>
 #include <libavutil/dovi_meta.h>
+#include <libavutil/mastering_display_metadata.h>
 #include <libavutil/mathematics.h>
 #include <libavutil/opt.h>
 #include <libavutil/pixdesc.h>
 #include <libavutil/replaygain.h>
+
+#include <libplacebo/utils/libav.h>
 
 #include "audio/chmap_avchannel.h"
 
@@ -765,6 +768,17 @@ static void handle_new_stream(demuxer_t *demuxer, int i)
             if (!isnan(r))
                 sh->codec->rotate = (((int)(-r) % 360) + 360) % 360;
         }
+
+        sh->codec->color.primaries = pl_primaries_from_av(codec->color_primaries);
+        sh->codec->color.transfer = pl_transfer_from_av(codec->color_trc);
+        sh->codec->repr.sys = pl_system_from_av(codec->color_space);
+        sh->codec->repr.levels = pl_levels_from_av(codec->color_range);
+        pl_map_hdr_metadata(&sh->codec->color.hdr, &(struct pl_av_hdr_metadata){
+            .mdm = (const AVMasteringDisplayMetadata *)
+                mp_av_stream_get_side_data(st, AV_PKT_DATA_MASTERING_DISPLAY_METADATA),
+            .clm = (const AVContentLightMetadata *)
+                mp_av_stream_get_side_data(st, AV_PKT_DATA_CONTENT_LIGHT_LEVEL),
+        });
 
         if ((sd = mp_av_stream_get_side_data(st, AV_PKT_DATA_DOVI_CONF))) {
             const AVDOVIDecoderConfigurationRecord *cfg = (void *) sd;
