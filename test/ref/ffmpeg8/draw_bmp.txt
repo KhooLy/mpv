@@ -4,6 +4,7 @@ abgr        = align=1:1 ov=unknown, ov_f=gbrap, v_f=gbrap, a=unknown, ca=unknown
 amf         = no
 argb        = align=1:1 ov=unknown, ov_f=gbrap, v_f=gbrap, a=unknown, ca=unknown, ca_f=unknown
 ayuv        = align=1:1 ov=yuva444p, ov_f=yuva444pf, v_f=yuva444pf, a=unknown, ca=unknown, ca_f=unknown
+apple_native= no
 ayuv64      = align=1:1 ov=yuva444p, ov_f=yuva444pf, v_f=yuva444pf, a=unknown, ca=unknown, ca_f=unknown
 ayuv64be    = align=1:1 ov=yuva444p, ov_f=yuva444pf, v_f=yuva444pf, a=unknown, ca=unknown, ca_f=unknown
 bayer_bggr16= no

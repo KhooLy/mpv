@@ -109,7 +109,6 @@ static bool init_audiounit(struct ao *ao)
     AudioChannelLayout *layout = NULL;
     struct priv *p = ao->priv;
     AVAudioSession *instance = AVAudioSession.sharedInstance;
-    AVAudioSessionPortDescription *port = nil;
     NSInteger maxChannels = instance.maximumOutputNumberOfChannels;
     NSInteger prefChannels = MIN(maxChannels, ao->channels.num);
 

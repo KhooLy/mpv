@@ -317,6 +317,7 @@ enum mp_imgfmt {
     IMGFMT_VIDEOTOOLBOX,    // CVPixelBufferRef
     IMGFMT_VULKAN,          // VKImage
     IMGFMT_DRMPRIME,        // AVDRMFrameDescriptor
+    IMGFMT_APPLE_NATIVE,    // no data, samples go straight to the display layer
 
     // Generic pass-through of AV_PIX_FMT_*. Used for formats which don't have
     // a corresponding IMGFMT_ value.

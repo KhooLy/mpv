@@ -44,6 +44,10 @@ argb: fcsp=rgb ctype=uint
     1: p=0  st=4  o=2  sh=0  d=8
     2: p=0  st=4  o=3  sh=0  d=8
     3: p=0  st=4  o=0  sh=0  d=8
+apple_native: ctype=unknown
+  Basic desc: [le][be][hw]
+    planes=0, chroma=0:0 align=1:1
+    {}
 ayuv64: [GENERIC] ctype=uint
   Basic desc: [ba][bb][a][yuv][le][uint]
     planes=1, chroma=0:0 align=1:1

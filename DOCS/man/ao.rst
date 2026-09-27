@@ -153,6 +153,9 @@ Available audio output drivers are:
     in AVFoundation, which supports `spatial audio
     <https://support.apple.com/en-us/HT211775>`_.
 
+    AC3 and E-AC3 (including Dolby Atmos) can be passed through with
+    ``--audio-spdif=ac3,eac3``.
+
     .. warning::
 
         Turning on spatial audio may hang the playback

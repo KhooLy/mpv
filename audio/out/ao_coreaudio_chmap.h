@@ -30,6 +30,9 @@ AudioChannelLabel mp_speaker_id_to_ca_label(int speaker_id);
 AudioChannelLayout *ca_find_standard_layout(void *talloc_ctx, AudioChannelLayout *l);
 AudioChannelLayout *ca_get_acl(struct ao *ao, size_t *out_layout_size);
 void ca_log_layout(struct ao *ao, int l, AudioChannelLayout *layout);
+#endif
+
+#if HAVE_COREAUDIO_HAL
 bool ca_init_chmap(struct ao *ao, AudioDeviceID device);
 void ca_get_active_chmap(struct ao *ao, AudioDeviceID device, int channel_count,
                          struct mp_chmap *out_map);

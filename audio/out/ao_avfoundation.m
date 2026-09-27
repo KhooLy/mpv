@@ -25,6 +25,8 @@
 #include "osdep/timer.h"
 #include "ta/ta_talloc.h"
 
+#include <libavutil/intreadwrite.h>
+
 #import <AVFoundation/AVFoundation.h>
 #import <Foundation/Foundation.h>
 #import <CoreAudioTypes/CoreAudioTypes.h>
@@ -45,6 +47,7 @@ struct priv {
     CMAudioFormatDescriptionRef format_description;
     AVObserver *observer;
     int64_t end_time_av;
+    int period;
 };
 
 static int64_t CMTimeGetNanoseconds(CMTime time)
@@ -56,6 +59,116 @@ static int64_t CMTimeGetNanoseconds(CMTime time)
 static CMTime CMTimeFromNanoseconds(int64_t time)
 {
     return CMTimeMake(time, 1000000000);
+}
+
+static bool create_compressed_format(struct ao *ao, const uint8_t *d, int len)
+{
+    struct priv *p = ao->priv;
+    static const int rates[] = {48000, 44100, 32000, 0};
+    static const int acmod_channels[] = {2, 1, 2, 3, 3, 4, 4, 5};
+
+    if (len < 7 || d[0] != 0x0B || d[1] != 0x77)
+        return false;
+
+    AudioStreamBasicDescription asbd = {.mFramesPerPacket = 1536};
+    int fscod = d[4] >> 6, acmod, lfe;
+    if (ao->format == AF_FORMAT_S_EAC3) {
+        asbd.mFormatID = kAudioFormatEnhancedAC3;
+        asbd.mSampleRate = fscod == 3 ? rates[(d[4] >> 4) & 3] / 2 : rates[fscod];
+        acmod = (d[4] >> 1) & 7;
+        lfe = d[4] & 1;
+    } else {
+        asbd.mFormatID = kAudioFormatAC3;
+        asbd.mSampleRate = rates[fscod];
+        acmod = d[6] >> 5;
+        int skip = ((acmod & 1) && acmod != 1 ? 2 : 0) + (acmod & 4 ? 2 : 0) +
+                   (acmod == 2 ? 2 : 0);
+        lfe = (d[6] >> (4 - skip)) & 1;
+    }
+    if (!asbd.mSampleRate)
+        return false;
+    asbd.mChannelsPerFrame = acmod_channels[acmod] + lfe;
+
+    OSStatus err = CMAudioFormatDescriptionCreate(NULL, &asbd, 0, NULL, 0, NULL,
+                                                  NULL, &p->format_description);
+    if (err != noErr) {
+        MP_ERR(ao, "failed to create compressed format description (%d)\n", err);
+        return false;
+    }
+    MP_VERBOSE(ao, "compressed passthrough: %d Hz, %d channels\n",
+               (int)asbd.mSampleRate, (int)asbd.mChannelsPerFrame);
+    return true;
+}
+
+static void enqueue_packet(struct ao *ao, const uint8_t *src, int len, int64_t pts)
+{
+    struct priv *p = ao->priv;
+    int size = (len + 1) & ~1;
+    uint8_t *data = CFAllocatorAllocate(NULL, size, 0);
+    for (int i = 0; i < size; i += 2) {
+        data[i] = src[i + 1];
+        data[i + 1] = src[i];
+    }
+
+    if (!p->format_description && !create_compressed_format(ao, data, len)) {
+        CFAllocatorDeallocate(NULL, data);
+        return;
+    }
+
+    CMBlockBufferRef block = NULL;
+    CMSampleBufferRef sample = NULL;
+    if (CMBlockBufferCreateWithMemoryBlock(NULL, data, size, NULL, NULL, 0, len, 0,
+                                           &block) != noErr)
+    {
+        CFAllocatorDeallocate(NULL, data);
+        return;
+    }
+    AudioStreamPacketDescription desc = {.mDataByteSize = len};
+    if (CMAudioSampleBufferCreateReadyWithPacketDescriptions(
+            NULL, block, p->format_description, 1, CMTimeFromNanoseconds(pts),
+            &desc, &sample) == noErr)
+    {
+        [p->renderer enqueueSampleBuffer:sample];
+        CFRelease(sample);
+    }
+    CFRelease(block);
+}
+
+static void feed_compressed(struct ao *ao)
+{
+    struct priv *p = ao->priv;
+    int frames = MPMAX(1, ao->samplerate / 10 / p->period) * p->period;
+    int bytes = frames * ao->sstride;
+    uint8_t *buf = talloc_size(NULL, bytes);
+    void *data[] = {buf};
+
+    int64_t cur_time_av = CMTimeGetNanoseconds([p->synchronizer currentTime]);
+    int64_t end_time_av = MPMAX(p->end_time_av, cur_time_av);
+    int64_t period_ns = CMTimeGetNanoseconds(CMTimeMake(p->period, ao->samplerate));
+    bool eof;
+    int got = ao_read_data(ao, data, frames,
+                           end_time_av - cur_time_av + mp_time_ns() + period_ns,
+                           &eof, false, true);
+    if (eof) {
+        [p->renderer stopRequestingMediaData];
+        ao_stop_streaming(ao);
+    }
+
+    for (int n = 0; n + p->period <= got; n += p->period) {
+        uint8_t *burst = buf + n * ao->sstride;
+        int64_t pts = end_time_av;
+        end_time_av += period_ns;
+        if (AV_RL16(burst) != 0xF872 || AV_RL16(burst + 2) != 0x4E1F)
+            continue;
+        int len = AV_RL16(burst + 6);
+        if ((burst[4] & 0x7f) == 0x01)
+            len /= 8;
+        if (len <= 0 || 8 + len > p->period * ao->sstride)
+            continue;
+        enqueue_packet(ao, burst + 8, len, pts);
+    }
+    p->end_time_av = end_time_av;
+    talloc_free(buf);
 }
 
 static void feed(struct ao *ao)
@@ -143,11 +256,12 @@ finish:
 static void start(struct ao *ao)
 {
     struct priv *p = ao->priv;
+    void (*fill)(struct ao *) = p->period ? feed_compressed : feed;
 
     p->end_time_av = -1;
     [p->synchronizer setRate:1];
     [p->renderer requestMediaDataWhenReadyOnQueue:p->queue usingBlock:^{
-        feed(ao);
+        fill(ao);
     }];
 }
 
@@ -249,9 +363,11 @@ static int init(struct ao *ao)
         goto error;
     }
 
+#if HAVE_COREAUDIO_HAL
     if (ao->device && ao->device[0]) {
         [p->renderer setAudioOutputDeviceUniqueID:(NSString*)cfstr_from_cstr(ao->device)];
     }
+#endif
 
     [p->synchronizer addRenderer:p->renderer];
 #if HAVE_MACOS_11_3_FEATURES
@@ -260,11 +376,13 @@ static int init(struct ao *ao)
     }
 #endif
 
+    if (ao->format == AF_FORMAT_S_AC3 || ao->format == AF_FORMAT_S_EAC3) {
+        p->period = ao->format == AF_FORMAT_S_EAC3 ? 6144 : 1536;
+        ao->device_buffer = ao->samplerate * 2;
+        goto observe;
+    }
     if (af_fmt_is_spdif(ao->format)) {
-        MP_FATAL(ao, "avfoundation does not support SPDIF\n");
-#if HAVE_COREAUDIO
-        MP_FATAL(ao, "please use coreaudio_exclusive instead\n");
-#endif
+        MP_FATAL(ao, "avfoundation only passes through AC3 and E-AC3\n");
         goto error;
     }
 
@@ -301,6 +419,7 @@ static int init(struct ao *ao)
     // AVSampleBufferAudioRenderer read ahead aggressively
     ao->device_buffer = ao->samplerate * 2;
 
+observe:
     p->observer = [[AVObserver alloc] initWithAO:ao];
     NSNotificationCenter *center = [NSNotificationCenter defaultCenter];
 #if HAVE_MACOS_12_FEATURES
@@ -338,7 +457,8 @@ static void uninit(struct ao *ao)
     [p->renderer release];
     [p->synchronizer release];
     dispatch_release(p->queue);
-    CFRelease(p->format_description);
+    if (p->format_description)
+        CFRelease(p->format_description);
 
     [[NSNotificationCenter defaultCenter] removeObserver:p->observer];
     [p->observer release];
@@ -362,6 +482,8 @@ const struct ao_driver audio_out_avfoundation = {
     .reset          = stop,
     .start          = start,
     .set_pause      = set_pause,
+#if HAVE_COREAUDIO_HAL
     .list_devs      = ca_get_device_list,
+#endif
     .priv_size      = sizeof(struct priv),
 };

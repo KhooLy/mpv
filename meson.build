@@ -420,6 +420,7 @@ add_project_link_arguments(link_flags, language: ['c', 'cpp', 'objc'])
 if darwin
     path_source = files('osdep/path-darwin.c')
     timer_source = files('osdep/timer-darwin.c')
+    sources += files('osdep/utils-mac.c')
 endif
 
 cocoa = dependency('appleframeworks', modules: ['Cocoa', 'IOKit', 'QuartzCore'],
@@ -429,7 +430,6 @@ if features['cocoa']
     dependencies += cocoa
     path_source += files('osdep/path-mac.m')
     sources += files('osdep/language-mac.c',
-                     'osdep/utils-mac.c',
                      'osdep/mac/app_bridge.m',
                      'player/clipboard/clipboard-mac.m')
     main_fn_source = files('osdep/main-fn-mac.c')
@@ -836,12 +836,16 @@ if features['audiounit']
     sources += files('audio/out/ao_audiounit.m')
 endif
 
-avfoundation = dependency('appleframeworks', modules: ['CoreMedia', 'AVFoundation'],
+avfoundation = dependency('appleframeworks',
+                          modules: ['CoreMedia', 'CoreVideo', 'CoreGraphics', 'QuartzCore',
+                                   'AVFoundation', 'VideoToolbox'],
                           required: get_option('avfoundation'))
 features += {'avfoundation': avfoundation.found()}
 if features['avfoundation']
     dependencies += avfoundation
-    sources += files('audio/out/ao_avfoundation.m')
+    sources += files('audio/out/ao_avfoundation.m',
+                     'video/decode/vd_apple_native.m',
+                     'video/out/vo_apple_native.m')
 endif
 
 coreaudio = dependency('appleframeworks', modules: ['CoreFoundation', 'CoreAudio',
@@ -859,7 +863,9 @@ if features['audiounit'] or features['coreaudio'] or features['avfoundation']
                      'audio/out/ao_coreaudio_utils.c')
 endif
 
-if features['avfoundation']
+features += {'coreaudio-hal': features['coreaudio'] or
+             (features['avfoundation'] and host_machine.subsystem() == 'macos')}
+if features['avfoundation'] and features['coreaudio-hal']
     sources += files('audio/out/ao_coreaudio_properties.c')
 endif
 
@@ -1463,6 +1469,7 @@ ios_gl = cc.has_header_symbol('OpenGLES/ES3/glext.h', 'GL_RGB32F', required:
     get_option('ios-gl').require(darwin))
 features += {'ios-gl': ios_gl}
 if features['ios-gl']
+    dependencies += dependency('appleframeworks', modules: ['OpenGLES'])
     sources += files('video/out/hwdec/hwdec_ios_gl.m')
 endif
 
@@ -1536,8 +1543,8 @@ if features['vdpau'] and features['vdpau-gl-x11']
 endif
 
 videotoolbox_gl = get_option('videotoolbox-gl').require(
-    features['gl-cocoa'] or features['ios-gl'],
-    error_message: 'gl-cocoa nor ios-gl could be found!',
+    features['gl-cocoa'],
+    error_message: 'gl-cocoa could not be found!',
 )
 features += {'videotoolbox-gl': videotoolbox_gl.allowed()}
 corevideo = dependency('appleframeworks', modules: ['CoreVideo'], required:

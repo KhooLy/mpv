@@ -2,6 +2,7 @@
            0rgb    Zin   Zout  SWSin  SWSout |
            abgr    Zin   Zout  SWSin  SWSout |
            argb    Zin   Zout  SWSin  SWSout |
+   apple_native                              |
          ayuv64    Zin   Zout  SWSin  SWSout |
        ayuv64be    Zin   Zout                |
    bayer_bggr16                SWSin         |

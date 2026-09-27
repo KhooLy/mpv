@@ -50,7 +50,7 @@ static const int speaker_map[][2] = {
     { kAudioChannelLabel_LeftWide,             MP_SPEAKER_ID_WL   },
     { kAudioChannelLabel_RightWide,            MP_SPEAKER_ID_WR   },
     { kAudioChannelLabel_LFE2,                 MP_SPEAKER_ID_LFE2 },
-#if __MAC_OS_X_VERSION_MAX_ALLOWED >= 130000
+#if defined(__MAC_OS_X_VERSION_MAX_ALLOWED) && __MAC_OS_X_VERSION_MAX_ALLOWED >= 130000
     { kAudioChannelLabel_LeftTopSurround,      MP_SPEAKER_ID_TSL  },
     { kAudioChannelLabel_RightTopSurround,     MP_SPEAKER_ID_TSR  },
     { kAudioChannelLabel_CenterBottom,         MP_SPEAKER_ID_BFC  },
@@ -339,6 +339,9 @@ AudioChannelLayout *ca_get_acl(struct ao *ao, size_t *out_layout_size)
 }
 
 
+#endif
+
+#if HAVE_COREAUDIO_HAL
 #define CHMAP(n, ...) &(struct mp_chmap) MP_CONCAT(MP_CHMAP, n) (__VA_ARGS__)
 
 // Replace each channel in a with b (a->num == b->num)

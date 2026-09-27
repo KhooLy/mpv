@@ -6,6 +6,7 @@ abgr            => [pa] [un] gbrap           | a=1:1 [tu] [tp]
 abgr            => [pa] [un] gbrapf32        | a=1:1 [planar-f32]
 argb            => [pa] [un] gbrap           | a=1:1 [tu] [tp]
 argb            => [pa] [un] gbrapf32        | a=1:1 [planar-f32]
+apple_native    => no
 ayuv64          => [pa] [un] yuva444p16      | a=1:1 [tu] [tp]
 ayuv64          => [pa] [un] yuva444pf       | a=1:1 [planar-f32]
 ayuv64be        => [pa] [un] yuva444p16      | a=1:1 [tu] [tp]
