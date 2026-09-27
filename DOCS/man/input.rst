@@ -2290,6 +2290,21 @@ Property list
     not counting the initial buffering and seeks. Map with ``count`` and
     ``time`` (total seconds spent stalled).
 
+``skip-ranges`` (RW)
+    List of time ranges the host app may offer to skip, such as intros and
+    credits. Each entry is a map with ``start`` and ``end`` in seconds, and an
+    optional ``type`` string. Writing it replaces the list for the current
+    file. If nothing was written, it is filled from chapters whose names
+    contain ``intro``, ``opening``, ``recap``, ``previously``, ``credits``,
+    ``ending``, ``outro`` or ``preview``, or are ``OP`` or ``ED``, with the
+    types ``intro``, ``recap``, ``credits`` and ``preview``. The list is
+    cleared when a new file starts.
+
+``skip-range``
+    The entry of ``skip-ranges`` that contains the current playback position,
+    or unavailable if there is none. Observe it to show a skip button; mpv
+    does not skip on its own.
+
 ``platform-caps``
     What the device can play, for choosing between streams before loading
     one. Only available on Android. Map with these entries:

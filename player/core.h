@@ -412,6 +412,11 @@ typedef struct MPContext {
     double rebuffer_time;
     double rebuffer_start;
 
+    struct skip_range *skip_ranges;
+    int num_skip_ranges;
+    bool skip_ranges_set;
+    int skip_range;
+
     double sleeptime;      // number of seconds to sleep before next iteration
 
     double mouse_timer;
@@ -653,6 +658,11 @@ double get_playback_time(struct MPContext *mpctx);
 double get_current_pos_ratio(struct MPContext *mpctx, bool use_range);
 int get_current_chapter(struct MPContext *mpctx);
 char *chapter_display_name(struct MPContext *mpctx, int chapter);
+struct skip_range {
+    double start, end;
+    char *type;
+};
+
 char *chapter_name(struct MPContext *mpctx, int chapter);
 double chapter_start_time(struct MPContext *mpctx, int chapter);
 int get_chapter_count(struct MPContext *mpctx);

@@ -705,6 +705,97 @@ static int mp_property_rebuffering(void *ctx, struct m_property *prop,
     return M_PROPERTY_OK;
 }
 
+static void add_skip_range(struct mpv_node *dst, struct skip_range *r)
+{
+    node_map_add_double(dst, "start", r->start);
+    node_map_add_double(dst, "end", r->end);
+    if (r->type)
+        node_map_add_string(dst, "type", r->type);
+}
+
+static double node_number(struct mpv_node *node)
+{
+    if (node && node->format == MPV_FORMAT_DOUBLE)
+        return node->u.double_;
+    if (node && node->format == MPV_FORMAT_INT64)
+        return node->u.int64;
+    return MP_NOPTS_VALUE;
+}
+
+static int mp_property_skip_ranges(void *ctx, struct m_property *prop,
+                                   int action, void *arg)
+{
+    MPContext *mpctx = ctx;
+    if (!mpctx->playing)
+        return M_PROPERTY_UNAVAILABLE;
+    switch (action) {
+    case M_PROPERTY_GET_TYPE:
+        *(struct m_option *)arg = (struct m_option){.type = CONF_TYPE_NODE};
+        return M_PROPERTY_OK;
+    case M_PROPERTY_GET: {
+        struct mpv_node *res = arg;
+        node_init(res, MPV_FORMAT_NODE_ARRAY, NULL);
+        for (int n = 0; n < mpctx->num_skip_ranges; n++) {
+            add_skip_range(node_array_add(res, MPV_FORMAT_NODE_MAP),
+                           &mpctx->skip_ranges[n]);
+        }
+        return M_PROPERTY_OK;
+    }
+    case M_PROPERTY_SET: {
+        struct mpv_node *list = arg;
+        if (list->format != MPV_FORMAT_NODE_ARRAY)
+            return M_PROPERTY_ERROR;
+        struct skip_range *ranges = NULL;
+        int num = 0;
+        for (int n = 0; n < list->u.list->num; n++) {
+            struct mpv_node *e = &list->u.list->values[n];
+            if (e->format != MPV_FORMAT_NODE_MAP)
+                goto error;
+            struct skip_range r = {
+                node_number(node_map_get(e, "start")),
+                node_number(node_map_get(e, "end")),
+            };
+            if (r.start == MP_NOPTS_VALUE || r.end == MP_NOPTS_VALUE || r.end <= r.start)
+                goto error;
+            MP_TARRAY_APPEND(mpctx, ranges, num, r);
+            struct mpv_node *type = node_map_get(e, "type");
+            if (type && type->format == MPV_FORMAT_STRING)
+                ranges[num - 1].type = talloc_strdup(ranges, type->u.string);
+        }
+        talloc_free(mpctx->skip_ranges);
+        mpctx->skip_ranges = ranges;
+        mpctx->num_skip_ranges = num;
+        mpctx->skip_ranges_set = true;
+        mpctx->skip_range = -1;
+        mp_notify_property(mpctx, "skip-ranges");
+        mp_wakeup_core(mpctx);
+        return M_PROPERTY_OK;
+    error:
+        talloc_free(ranges);
+        return M_PROPERTY_ERROR;
+    }
+    }
+    return M_PROPERTY_NOT_IMPLEMENTED;
+}
+
+static int mp_property_skip_range(void *ctx, struct m_property *prop,
+                                  int action, void *arg)
+{
+    MPContext *mpctx = ctx;
+    if (mpctx->skip_range < 0 || mpctx->skip_range >= mpctx->num_skip_ranges)
+        return M_PROPERTY_UNAVAILABLE;
+    if (action == M_PROPERTY_GET_TYPE) {
+        *(struct m_option *)arg = (struct m_option){.type = CONF_TYPE_NODE};
+        return M_PROPERTY_OK;
+    }
+    if (action != M_PROPERTY_GET)
+        return M_PROPERTY_NOT_IMPLEMENTED;
+    struct mpv_node *res = arg;
+    node_init(res, MPV_FORMAT_NODE_MAP, NULL);
+    add_skip_range(res, &mpctx->skip_ranges[mpctx->skip_range]);
+    return M_PROPERTY_OK;
+}
+
 static int mp_property_platform_caps(void *ctx, struct m_property *prop,
                                      int action, void *arg)
 {
@@ -4809,6 +4900,8 @@ static const struct m_property mp_properties_base[] = {
     {"startup-time", mp_property_startup_time},
     {"rebuffering", mp_property_rebuffering},
     {"platform-caps", mp_property_platform_caps},
+    {"skip-ranges", mp_property_skip_ranges},
+    {"skip-range", mp_property_skip_range},
     {"stream-pos", mp_property_stream_pos},
     {"stream-end", mp_property_stream_end},
     {"duration", mp_property_duration},

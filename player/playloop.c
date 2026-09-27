@@ -1351,6 +1351,73 @@ static void handle_clipboard_updates(struct MPContext *mpctx)
         mp_notify_property(mpctx, "clipboard");
 }
 
+static const char *chapter_skip_type(const char *name)
+{
+    static const char *const types[][2] = {
+        {"intro", "intro"}, {"opening", "intro"}, {"recap", "recap"},
+        {"previously", "recap"}, {"credits", "credits"}, {"ending", "credits"},
+        {"outro", "credits"}, {"preview", "preview"},
+    };
+    if (!name)
+        return NULL;
+    bstr lname = bstr0(name);
+    if (bstrcasecmp0(lname, "op") == 0)
+        return "intro";
+    if (bstrcasecmp0(lname, "ed") == 0)
+        return "credits";
+    for (int n = 0; n < MP_ARRAY_SIZE(types); n++) {
+        for (int i = 0; i + strlen(types[n][0]) <= lname.len; i++) {
+            if (bstr_case_startswith(bstr_cut(lname, i), bstr0(types[n][0])))
+                return types[n][1];
+        }
+    }
+    return NULL;
+}
+
+static void ranges_from_chapters(struct MPContext *mpctx)
+{
+    int count = get_chapter_count(mpctx);
+    double duration = get_time_length(mpctx);
+    for (int n = 0; n < count; n++) {
+        char *name = chapter_name(mpctx, n);
+        const char *type = chapter_skip_type(name);
+        talloc_free(name);
+        if (!type)
+            continue;
+        double end = n + 1 < count ? chapter_start_time(mpctx, n + 1) : duration;
+        if (end == MP_NOPTS_VALUE)
+            continue;
+        struct skip_range r = {chapter_start_time(mpctx, n), end};
+        MP_TARRAY_APPEND(mpctx, mpctx->skip_ranges, mpctx->num_skip_ranges, r);
+        mpctx->skip_ranges[mpctx->num_skip_ranges - 1].type =
+            talloc_strdup(mpctx->skip_ranges, type);
+    }
+    mpctx->skip_ranges_set = true;
+    if (mpctx->num_skip_ranges)
+        mp_notify_property(mpctx, "skip-ranges");
+}
+
+static void update_skip_range(struct MPContext *mpctx)
+{
+    if (!mpctx->playback_initialized)
+        return;
+    if (!mpctx->skip_ranges_set)
+        ranges_from_chapters(mpctx);
+    double pos = get_current_time(mpctx);
+    int cur = -1;
+    for (int n = 0; pos != MP_NOPTS_VALUE && n < mpctx->num_skip_ranges; n++) {
+        struct skip_range *r = &mpctx->skip_ranges[n];
+        if (pos >= r->start && pos < r->end) {
+            cur = n;
+            break;
+        }
+    }
+    if (cur != mpctx->skip_range) {
+        mpctx->skip_range = cur;
+        mp_notify_property(mpctx, "skip-range");
+    }
+}
+
 void run_playloop(struct MPContext *mpctx)
 {
     error_report_update(mpctx);
@@ -1361,6 +1428,7 @@ void run_playloop(struct MPContext *mpctx)
     }
 
     update_demuxer_properties(mpctx);
+    update_skip_range(mpctx);
 
     handle_cursor_autohide(mpctx);
     handle_vo_events(mpctx);
