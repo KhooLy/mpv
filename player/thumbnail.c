@@ -88,7 +88,7 @@ struct thumbnailer {
     bool hold;
     bool eager;
     int want;
-    int near;
+    int hover;
     bool ready;
     bool changed;
     int w, h, count;
@@ -191,11 +191,11 @@ static int next_index(struct thumbnailer *t)
         return t->want;
     if (t->hold || !t->eager)
         return -1;
-    for (int d = 1; t->near >= 0 && d <= 16; d++) {
-        if (t->near - d >= 0 && t->state[t->near - d] == SLOT_EMPTY)
-            return t->near - d;
-        if (t->near + d < t->count && t->state[t->near + d] == SLOT_EMPTY)
-            return t->near + d;
+    for (int d = 1; t->hover >= 0 && d <= 16; d++) {
+        if (t->hover - d >= 0 && t->state[t->hover - d] == SLOT_EMPTY)
+            return t->hover - d;
+        if (t->hover + d < t->count && t->state[t->hover + d] == SLOT_EMPTY)
+            return t->hover + d;
     }
     for (int stride = 8; stride >= 1; stride /= 2) {
         for (int i = 0; i < t->count; i += stride) {
@@ -562,7 +562,7 @@ void mp_thumbnails_start(struct MPContext *mpctx)
     t->wakeup_ctx = mpctx;
     t->cancel = mp_cancel_new(t);
     t->want = -1;
-    t->near = -1;
+    t->hover = -1;
     t->out_sws = mp_sws_alloc(t);
     t->out_sws->flags = mp_sws_fast_flags;
     mp_mutex_init(&t->lock);
@@ -670,7 +670,7 @@ void cmd_thumbnail(void *p)
         return;
     }
     int want = MPCLAMP((int)lrint(cmd->args[0].v.d / t->step), 0, t->count - 1);
-    t->near = want;
+    t->hover = want;
     if (!t->eager) {
         t->eager = true;
         mp_cond_signal(&t->cond);
