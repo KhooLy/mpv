@@ -311,7 +311,7 @@ index 18d0796..73e5c4d 100644
  {
      return codec->start(codec);
 diff --git a/libavcodec/mediacodecdec.c b/libavcodec/mediacodecdec.c
-index bc176d8..439093b 100644
+index bc176d8..5dd551c 100644
 --- a/libavcodec/mediacodecdec.c
 +++ b/libavcodec/mediacodecdec.c
 @@ -32,6 +32,8 @@
@@ -323,7 +323,7 @@ index bc176d8..439093b 100644
  
  #include "avcodec.h"
  #include "codec_internal.h"
-@@ -59,6 +61,11 @@ typedef struct MediaCodecH264DecContext {
+@@ -59,6 +61,12 @@ typedef struct MediaCodecH264DecContext {
      int use_ndk_codec;
      // Ref. MediaFormat KEY_OPERATING_RATE
      int operating_rate;
@@ -332,10 +332,11 @@ index bc176d8..439093b 100644
 +    // Media3-style selection: use the backward-compatible DV base layer when
 +    // the display cannot present Dolby Vision.
 +    int prefer_base_layer;
++    int max_output_channels;
  } MediaCodecH264DecContext;
  
  static av_cold int mediacodec_decode_close(AVCodecContext *avctx)
-@@ -139,6 +146,9 @@ static int h264_set_extradata(AVCodecContext *avctx, FFAMediaFormat *format)
+@@ -139,6 +147,9 @@ static int h264_set_extradata(AVCodecContext *avctx, FFAMediaFormat *format)
      int is_avc = 0;
      int nal_length_size = 0;
  
@@ -345,7 +346,7 @@ index bc176d8..439093b 100644
      ret = ff_h264_decode_extradata(avctx->extradata, avctx->extradata_size,
                                     &ps, &is_avc, &nal_length_size, 0, avctx);
      if (ret < 0) {
-@@ -213,6 +223,9 @@ static int hevc_set_extradata(AVCodecContext *avctx, FFAMediaFormat *format)
+@@ -213,6 +224,9 @@ static int hevc_set_extradata(AVCodecContext *avctx, FFAMediaFormat *format)
      int sps_data_size = 0;
      int pps_data_size = 0;
  
@@ -355,7 +356,7 @@ index bc176d8..439093b 100644
      ret = ff_hevc_decode_extradata(avctx->extradata, avctx->extradata_size,
                                     &ps, &sei, &is_nalff, &nal_length_size, 0, 1, avctx);
      if (ret < 0) {
-@@ -292,7 +305,10 @@ done:
+@@ -292,7 +306,10 @@ done:
      CONFIG_AAC_MEDIACODEC_DECODER   || \
      CONFIG_AMRNB_MEDIACODEC_DECODER || \
      CONFIG_AMRWB_MEDIACODEC_DECODER || \
@@ -367,7 +368,7 @@ index bc176d8..439093b 100644
  static int common_set_extradata(AVCodecContext *avctx, FFAMediaFormat *format)
  {
      int ret = 0;
-@@ -305,12 +321,131 @@ static int common_set_extradata(AVCodecContext *avctx, FFAMediaFormat *format)
+@@ -305,12 +322,131 @@ static int common_set_extradata(AVCodecContext *avctx, FFAMediaFormat *format)
  }
  #endif
  
@@ -499,7 +500,7 @@ index bc176d8..439093b 100644
  
      FFAMediaFormat *format = NULL;
      MediaCodecH264DecContext *s = avctx->priv_data;
-@@ -328,6 +463,7 @@ static av_cold int mediacodec_decode_init(AVCodecContext *avctx)
+@@ -328,6 +464,7 @@ static av_cold int mediacodec_decode_init(AVCodecContext *avctx)
      switch (avctx->codec_id) {
  #if CONFIG_AV1_MEDIACODEC_DECODER
      case AV_CODEC_ID_AV1:
@@ -507,7 +508,7 @@ index bc176d8..439093b 100644
          codec_mime = "video/av01";
  
          ret = common_set_extradata(avctx, format);
-@@ -337,6 +473,7 @@ static av_cold int mediacodec_decode_init(AVCodecContext *avctx)
+@@ -337,6 +474,7 @@ static av_cold int mediacodec_decode_init(AVCodecContext *avctx)
  #endif
  #if CONFIG_H264_MEDIACODEC_DECODER
      case AV_CODEC_ID_H264:
@@ -515,7 +516,7 @@ index bc176d8..439093b 100644
          codec_mime = "video/avc";
  
          ret = h264_set_extradata(avctx, format);
-@@ -346,6 +483,7 @@ static av_cold int mediacodec_decode_init(AVCodecContext *avctx)
+@@ -346,6 +484,7 @@ static av_cold int mediacodec_decode_init(AVCodecContext *avctx)
  #endif
  #if CONFIG_HEVC_MEDIACODEC_DECODER
      case AV_CODEC_ID_HEVC:
@@ -523,7 +524,7 @@ index bc176d8..439093b 100644
          codec_mime = "video/hevc";
  
          ret = hevc_set_extradata(avctx, format);
-@@ -425,11 +563,61 @@ static av_cold int mediacodec_decode_init(AVCodecContext *avctx)
+@@ -425,11 +564,65 @@ static av_cold int mediacodec_decode_init(AVCodecContext *avctx)
              goto done;
          break;
  #endif
@@ -541,6 +542,10 @@ index bc176d8..439093b 100644
 +#if CONFIG_AC4_MEDIACODEC_DECODER
 +    case AV_CODEC_ID_AC4:
 +        codec_mime = "audio/ac4";
++        if (avctx->sample_rate <= 0)
++            avctx->sample_rate = 48000;
++        if (!avctx->ch_layout.nb_channels)
++            av_channel_layout_default(&avctx->ch_layout, 2);
 +
 +        ret = common_set_extradata(avctx, format);
 +        if (ret < 0)
@@ -585,7 +590,16 @@ index bc176d8..439093b 100644
  
      if (avctx->codec_type == AVMEDIA_TYPE_VIDEO) {
          ff_AMediaFormat_setInt32(format, "width", avctx->width);
-@@ -451,9 +639,32 @@ static av_cold int mediacodec_decode_init(AVCodecContext *avctx)
+@@ -440,6 +633,8 @@ static av_cold int mediacodec_decode_init(AVCodecContext *avctx)
+     }
+     if (s->operating_rate > 0)
+         ff_AMediaFormat_setInt32(format, "operating-rate", s->operating_rate);
++    if (s->max_output_channels > 0)
++        ff_AMediaFormat_setInt32(format, "max-output-channel-count", s->max_output_channels);
+ 
+     s->ctx = av_mallocz(sizeof(*s->ctx));
+     if (!s->ctx) {
+@@ -451,9 +646,32 @@ static av_cold int mediacodec_decode_init(AVCodecContext *avctx)
      s->ctx->delay_flush = s->delay_flush;
      s->ctx->use_ndk_codec = s->use_ndk_codec;
  
@@ -620,7 +634,7 @@ index bc176d8..439093b 100644
      }
  
      av_log(avctx, AV_LOG_INFO,
-@@ -600,6 +811,10 @@ static const AVOption ff_mediacodec_vdec_options[] = {
+@@ -600,6 +818,10 @@ static const AVOption ff_mediacodec_vdec_options[] = {
                     OFFSET(use_ndk_codec), AV_OPT_TYPE_BOOL, {.i64 = -1}, -1, 1, VD },
      { "operating_rate", "The desired operating rate that the codec will need to operate at, zero for unspecified",
              OFFSET(operating_rate), AV_OPT_TYPE_INT, {.i64 = 0}, 0, INT_MAX, VD },
@@ -631,7 +645,25 @@ index bc176d8..439093b 100644
      { NULL }
  };
  
-@@ -710,3 +925,15 @@ DECLARE_MEDIACODEC_ADEC(amrwb, "AMR-WB", AV_CODEC_ID_AMR_WB, NULL)
+@@ -665,6 +887,8 @@ static const AVOption ff_mediacodec_adec_options[] = {
+                    OFFSET(use_ndk_codec), AV_OPT_TYPE_BOOL, {.i64 = -1}, -1, 1, AD },
+     { "operating_rate", "The desired operating rate that the codec will need to operate at, zero for unspecified",
+             OFFSET(operating_rate), AV_OPT_TYPE_INT, {.i64 = 0}, 0, INT_MAX, AD },
++    { "max_output_channels", "Maximum channel count the decoder may output instead of downmixing, zero for the decoder default",
++            OFFSET(max_output_channels), AV_OPT_TYPE_INT, {.i64 = 0}, 0, 32, AD },
+     { NULL }
+ };
+ 
+@@ -689,7 +913,7 @@ const FFCodec ff_ ## short_name ## _mediacodec_decoder = {
+     FF_CODEC_RECEIVE_FRAME_CB(mediacodec_receive_frame),                                       \
+     .flush          = mediacodec_decode_flush,                                                 \
+     .close          = mediacodec_decode_close,                                                 \
+-    .p.capabilities = AV_CODEC_CAP_DELAY | AV_CODEC_CAP_HARDWARE,                              \
++    .p.capabilities = AV_CODEC_CAP_DELAY | AV_CODEC_CAP_HARDWARE | AV_CODEC_CAP_CHANNEL_CONF,  \
+     .caps_internal  = FF_CODEC_CAP_NOT_INIT_THREADSAFE,                                        \
+     .bsfs           = bsf,                                                                     \
+     .p.wrapper_name = "mediacodec",                                                            \
+@@ -710,3 +934,15 @@ DECLARE_MEDIACODEC_ADEC(amrwb, "AMR-WB", AV_CODEC_ID_AMR_WB, NULL)
  #if CONFIG_MP3_MEDIACODEC_DECODER
  DECLARE_MEDIACODEC_ADEC(mp3, "MP3", AV_CODEC_ID_MP3, NULL)
  #endif
