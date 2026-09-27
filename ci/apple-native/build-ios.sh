@@ -5,6 +5,8 @@ sdk=$1
 case $sdk in
     iphoneos) triple=arm64-apple-ios16.0; subsystem=ios ;;
     appletvos) triple=arm64-apple-tvos16.0; subsystem=tvos ;;
+    iphonesimulator) triple=arm64-apple-ios16.0-simulator; subsystem=ios-simulator ;;
+    appletvsimulator) triple=arm64-apple-tvos16.0-simulator; subsystem=tvos-simulator ;;
     *) echo "unknown sdk $sdk"; exit 2 ;;
 esac
 
@@ -108,3 +110,26 @@ printf '#include <mpv/client.h>\nint main(void) { mpv_handle *h = mpv_create(); 
 clang -isysroot "$sysroot" -target "$triple" -o "$work/link" "$work/link.c" \
     $(pkg-config --cflags --libs --static mpv) -lc++
 echo "linked $sdk"
+
+out=$work/out
+rm -rf "$out"
+mkdir -p "$out/include/mpv"
+libtool -static -o "$out/libmpv.a" "$prefix"/lib/*.a
+cp "$prefix"/include/mpv/*.h "$out/include/mpv/"
+cat > "$out/include/module.modulemap" <<MAP
+module Libmpv {
+    header "mpv/client.h"
+    header "mpv/render.h"
+    link "c++"
+    link "z"
+    link "bz2"
+    link "iconv"
+    link framework "AVFoundation"
+    link framework "AudioToolbox"
+    link framework "CoreMedia"
+    link framework "CoreText"
+    link framework "CoreVideo"
+    link framework "VideoToolbox"
+    export *
+}
+MAP
