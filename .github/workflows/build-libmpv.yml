@@ -2,7 +2,7 @@ name: Build libmpv (gpu-next render backend)
 
 on:
   push:
-    branches: [gpu-next-render-backend]
+    branches: [gpu-next-render-backend, integrated]
     tags: ["v*"]
   workflow_dispatch:
 

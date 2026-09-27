@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - apple-native
+      - integrated
   workflow_dispatch:
 
 jobs:
