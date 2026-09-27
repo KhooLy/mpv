@@ -655,6 +655,7 @@ static const m_option_t mp_opts[] = {
 
     {"hls-bitrate", OPT_CHOICE(hls_bitrate,
         {"no", -1}, {"min", 0}, {"max", INT_MAX}), M_RANGE(0, INT_MAX)},
+    {"hls-adaptive", OPT_BOOL(hls_adaptive)},
 
     {"display-tags", OPT_STRINGLIST(display_tags)},
 

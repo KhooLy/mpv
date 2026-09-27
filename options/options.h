@@ -254,6 +254,7 @@ typedef struct MPOpts {
     char *force_configdir;
     bool use_filedir_conf;
     int hls_bitrate;
+    bool hls_adaptive;
     int edition_id;
     bool flatten_editions;
     bool show_dependent_tracks;

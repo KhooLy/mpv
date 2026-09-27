@@ -399,6 +399,10 @@ typedef struct MPContext {
     double last_idle_tick;
     double next_cache_update;
 
+    double abr_rate;
+    double abr_next_check;
+    double abr_last_switch;
+
     double sleeptime;      // number of seconds to sleep before next iteration
 
     double mouse_timer;

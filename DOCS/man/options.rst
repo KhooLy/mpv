@@ -5777,6 +5777,13 @@ Network
     The bitrate as used is sent by the server, and there's no guarantee it's
     actually meaningful.
 
+``--hls-adaptive=<yes|no>``
+    Switch between HLS variants during playback based on the measured download
+    rate (default: no). ``--hls-bitrate`` still selects the initial variant;
+    ``min`` gives the fastest start. Switching to a higher variant happens only
+    with at least 10 seconds buffered, switching down when the buffer runs low.
+    Each switch discards the buffered data of the old variant.
+
 Network backend (libcurl)
 -------------------------
 
