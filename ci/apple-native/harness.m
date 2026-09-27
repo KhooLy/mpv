@@ -42,10 +42,14 @@ int main(int argc, char **argv)
     int64_t wid = (int64_t)(intptr_t)layer;
     mpv_set_option(mpv, "wid", MPV_FORMAT_INT64, &wid);
     bool expect_overlay = false;
-    const char *expect_gamma = NULL;
+    const char *expect_gamma = NULL, *expect_audio = NULL;
     for (int i = 2; i < argc; i++) {
         if (strncmp(argv[i], "expect-gamma=", 13) == 0) {
             expect_gamma = argv[i] + 13;
+            continue;
+        }
+        if (strncmp(argv[i], "expect-audio=", 13) == 0) {
+            expect_audio = argv[i] + 13;
             continue;
         }
         if (strcmp(argv[i], "expect-overlay=yes") == 0) {
@@ -67,7 +71,7 @@ int main(int argc, char **argv)
 
     double start = 0, deadline = now() + 60, duration = 0, start_pos = 0;
     bool sampled = false, eof = false, overlay_used = false, native = false;
-    char *gamma = NULL;
+    char *gamma = NULL, *audio = NULL;
     int end_error = 0;
     while (now() < deadline) {
         mpv_event *ev = mpv_wait_event(mpv, 0.005);
@@ -102,6 +106,7 @@ int main(int argc, char **argv)
             native = desc && strcmp(desc, "AVSampleBufferDisplayLayer") == 0;
             mpv_free(desc);
             gamma = mpv_get_property_string(mpv, "video-params/gamma");
+            audio = mpv_get_property_string(mpv, "audio-params/format");
             print_prop(mpv, "current-tracks/video/codec");
             print_prop(mpv, "video-params/pixelformat");
             print_prop(mpv, "video-params/gamma");
@@ -143,6 +148,11 @@ int main(int argc, char **argv)
         fail = 1;
     }
     mpv_free(gamma);
+    if (expect_audio && (!audio || strcmp(audio, expect_audio) != 0)) {
+        printf("FAIL: expected audio format %s\n", expect_audio);
+        fail = 1;
+    }
+    mpv_free(audio);
     if (expect_overlay && !overlay_used) {
         printf("FAIL: subtitles were not drawn into the overlay\n");
         fail = 1;

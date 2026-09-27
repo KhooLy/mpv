@@ -38,7 +38,8 @@ run "HEVC HDR10 MKV" "$dir/hdr10.mkv" expect-gamma=pq
 run "HEVC HDR10 MP4" "$dir/hdr10.mp4" expect-gamma=pq
 run "AV1 MKV" "$dir/av1.mkv"
 run "E-AC3 5.1 PCM" "$dir/eac3.mkv"
-run "E-AC3 5.1 passthrough" "$dir/eac3.mkv" audio-spdif=eac3
+run "E-AC3 5.1 passthrough" "$dir/eac3.mkv" audio-spdif=eac3 expect-audio=spdif-eac3
+run "E-AC3 auto passthrough" "$dir/eac3.mkv" audio-spdif=auto expect-audio=spdif-eac3
 run "ASS subtitles" "$dir/h264.mkv" sub-files="$dir/sub.ass" expect-overlay=yes
 run "Seek and pause" "$dir/hdr10.mkv" start=2 pause=no
 
