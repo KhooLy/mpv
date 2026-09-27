@@ -24,6 +24,11 @@ behavior:
 - mastering display and content light level metadata are passed as
   `hdr-static-info`, together with `frame-rate` and `priority=0`, like
   Media3's `MediaFormatUtil.maybeSetColorInfo()`;
+- HDR10+ metadata carried beside the frames (Matroska BlockAdditions, as
+  used by VP9 and AV1) is sent as `hdr10-plus-info` through
+  `MediaCodec.setParameters()` before each packet, like Media3;
+- decoder selection falls back to software-only codecs when no hardware
+  decoder handles the stream;
 - `tone_map_to_sdr` requests MediaCodec HDR-to-SDR output
   (`--vd-lavc-o=tone_map_to_sdr=1`);
 - codec selection also checks `VideoCapabilities.areSizeAndRateSupported()`;

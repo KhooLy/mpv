@@ -1,5 +1,5 @@
 diff --git a/libavcodec/mediacodec_wrapper.c b/libavcodec/mediacodec_wrapper.c
-index 283bbe7..a2cf4bc 100644
+index 283bbe7..d8e5b4e 100644
 --- a/libavcodec/mediacodec_wrapper.c
 +++ b/libavcodec/mediacodec_wrapper.c
 @@ -54,6 +54,10 @@ struct JNIAMediaCodecListFields {
@@ -24,17 +24,41 @@ index 283bbe7..a2cf4bc 100644
  
      { "android/media/MediaCodecInfo$CodecProfileLevel", NULL, NULL, FF_JNI_CLASS, OFFSET(codec_profile_level_class), 1 },
          { "android/media/MediaCodecInfo$CodecProfileLevel", "profile", "I", FF_JNI_FIELD, OFFSET(profile_id), 1 },
-@@ -467,7 +475,8 @@ int ff_AMediaCodecProfile_getProfileFromAVCodecContext(AVCodecContext *avctx)
+@@ -194,6 +202,11 @@ struct JNIAMediaCodecFields {
+ 
+     jmethodID set_input_surface_id;
+     jmethodID signal_end_of_input_stream_id;
++    jmethodID set_parameters_id;
++
++    jclass bundle_class;
++    jmethodID bundle_init_id;
++    jmethodID bundle_put_byte_array_id;
+ 
+     jclass mediainfo_class;
+ 
+@@ -247,6 +260,11 @@ static const struct FFJniField jni_amediacodec_mapping[] = {
+ 
+         { "android/media/MediaCodec", "setInputSurface", "(Landroid/view/Surface;)V", FF_JNI_METHOD, OFFSET(set_input_surface_id), 0 },
+         { "android/media/MediaCodec", "signalEndOfInputStream", "()V", FF_JNI_METHOD, OFFSET(signal_end_of_input_stream_id), 0 },
++        { "android/media/MediaCodec", "setParameters", "(Landroid/os/Bundle;)V", FF_JNI_METHOD, OFFSET(set_parameters_id), 0 },
++
++    { "android/os/Bundle", NULL, NULL, FF_JNI_CLASS, OFFSET(bundle_class), 0 },
++        { "android/os/Bundle", "<init>", "()V", FF_JNI_METHOD, OFFSET(bundle_init_id), 0 },
++        { "android/os/Bundle", "putByteArray", "(Ljava/lang/String;[B)V", FF_JNI_METHOD, OFFSET(bundle_put_byte_array_id), 0 },
+ 
+     { "android/media/MediaCodec$BufferInfo", NULL, NULL, FF_JNI_CLASS, OFFSET(mediainfo_class), 1 },
+ 
+@@ -467,7 +485,8 @@ int ff_AMediaCodecProfile_getProfileFromAVCodecContext(AVCodecContext *avctx)
      return -1;
  }
  
 -char *ff_AMediaCodecList_getCodecNameByType(const char *mime, int profile, int encoder, void *log_ctx)
-+char *ff_AMediaCodecList_getCodecNameByType(const char *mime, int profile, int encoder,
-+                                            AVCodecContext *avctx, void *log_ctx)
++static char *find_codec_name(const char *mime, int profile, int encoder, int allow_sw,
++                             AVCodecContext *avctx, void *log_ctx)
  {
      int ret;
      int i;
-@@ -489,6 +498,7 @@ char *ff_AMediaCodecList_getCodecNameByType(const char *mime, int profile, int e
+@@ -489,6 +508,7 @@ char *ff_AMediaCodecList_getCodecNameByType(const char *mime, int profile, int e
      jobject capabilities = NULL;
      jobject profile_level = NULL;
      jobjectArray profile_levels = NULL;
@@ -42,7 +66,16 @@ index 283bbe7..a2cf4bc 100644
  
      JNI_GET_ENV_OR_RETURN(env, log_ctx, NULL);
  
-@@ -623,6 +633,31 @@ char *ff_AMediaCodecList_getCodecNameByType(const char *mime, int profile, int e
+@@ -535,7 +555,7 @@ char *ff_AMediaCodecList_getCodecNameByType(const char *mime, int profile, int e
+                 goto done;
+             }
+ 
+-            if (is_software_only) {
++            if (is_software_only && !allow_sw) {
+                 goto done_with_info;
+             }
+         }
+@@ -623,6 +643,31 @@ char *ff_AMediaCodecList_getCodecNameByType(const char *mime, int profile, int e
                  }
              }
  
@@ -74,7 +107,7 @@ index 283bbe7..a2cf4bc 100644
  done_with_type:
              (*env)->DeleteLocalRef(env, profile_levels);
              profile_levels = NULL;
-@@ -662,6 +697,7 @@ done:
+@@ -662,6 +707,7 @@ done:
      (*env)->DeleteLocalRef(env, capabilities);
      (*env)->DeleteLocalRef(env, profile_level);
      (*env)->DeleteLocalRef(env, profile_levels);
@@ -82,8 +115,129 @@ index 283bbe7..a2cf4bc 100644
  
      av_freep(&supported_type);
  
+@@ -675,6 +721,15 @@ done:
+     return name;
+ }
+ 
++char *ff_AMediaCodecList_getCodecNameByType(const char *mime, int profile, int encoder,
++                                            AVCodecContext *avctx, void *log_ctx)
++{
++    char *name = find_codec_name(mime, profile, encoder, 0, avctx, log_ctx);
++    if (!name && !encoder)
++        name = find_codec_name(mime, profile, encoder, 1, avctx, log_ctx);
++    return name;
++}
++
+ static FFAMediaFormat *mediaformat_jni_new(void)
+ {
+     JNIEnv *env = NULL;
+@@ -1762,6 +1817,47 @@ static int mediacodec_jni_signalEndOfInputStream(FFAMediaCodec *ctx)
+     return 0;
+ }
+ 
++static int mediacodec_jni_setParameterBuffer(FFAMediaCodec *ctx, const char *name,
++                                             const uint8_t *data, size_t size)
++{
++    int ret = AVERROR_EXTERNAL;
++    JNIEnv *env = NULL;
++    FFAMediaCodecJni *codec = (FFAMediaCodecJni *)ctx;
++    jobject bundle = NULL;
++    jstring key = NULL;
++    jbyteArray array = NULL;
++
++    JNI_GET_ENV_OR_RETURN(env, codec, AVERROR_EXTERNAL);
++
++    if (!codec->jfields.set_parameters_id || !codec->jfields.bundle_init_id ||
++        !codec->jfields.bundle_put_byte_array_id)
++        return AVERROR(ENOSYS);
++
++    bundle = (*env)->NewObject(env, codec->jfields.bundle_class, codec->jfields.bundle_init_id);
++    if (ff_jni_exception_check(env, 1, codec) < 0)
++        goto fail;
++    key = ff_jni_utf_chars_to_jstring(env, name, codec);
++    if (!key)
++        goto fail;
++    array = (*env)->NewByteArray(env, size);
++    if (ff_jni_exception_check(env, 1, codec) < 0)
++        goto fail;
++    (*env)->SetByteArrayRegion(env, array, 0, size, (const jbyte *)data);
++    (*env)->CallVoidMethod(env, bundle, codec->jfields.bundle_put_byte_array_id, key, array);
++    if (ff_jni_exception_check(env, 1, codec) < 0)
++        goto fail;
++    (*env)->CallVoidMethod(env, codec->object, codec->jfields.set_parameters_id, bundle);
++    if (ff_jni_exception_check(env, 1, codec) < 0)
++        goto fail;
++    ret = 0;
++
++fail:
++    (*env)->DeleteLocalRef(env, bundle);
++    (*env)->DeleteLocalRef(env, key);
++    (*env)->DeleteLocalRef(env, array);
++    return ret;
++}
++
+ static int mediacodec_jni_setAsyncNotifyCallback(FFAMediaCodec *codec,
+                                                  const FFAMediaCodecOnAsyncNotifyCallback *callback,
+                                                  void *userdata)
+@@ -1829,6 +1925,7 @@ static const FFAMediaCodec media_codec_jni = {
+     .getConfigureFlagEncode = mediacodec_jni_getConfigureFlagEncode,
+     .cleanOutputBuffers = mediacodec_jni_cleanOutputBuffers,
+     .signalEndOfInputStream = mediacodec_jni_signalEndOfInputStream,
++    .setParameterBuffer = mediacodec_jni_setParameterBuffer,
+     .setAsyncNotifyCallback = mediacodec_jni_setAsyncNotifyCallback,
+ };
+ 
+@@ -1861,6 +1958,7 @@ typedef struct FFAMediaCodecNdk {
+     // Available since API level 26.
+     media_status_t (*setInputSurface)(AMediaCodec*, ANativeWindow *);
+     media_status_t (*signalEndOfInputStream)(AMediaCodec *);
++    media_status_t (*setParameters)(AMediaCodec *, const AMediaFormat *);
+     media_status_t (*setAsyncNotifyCallback)(AMediaCodec *,
+             struct AMediaCodecOnAsyncNotifyCallback callback, void *userdata);
+ } FFAMediaCodecNdk;
+@@ -2101,6 +2199,7 @@ static inline FFAMediaCodec *ndk_codec_create(int method, const char *arg) {
+     GET_SYMBOL(setInputSurface)
+     GET_SYMBOL(signalEndOfInputStream)
+     GET_SYMBOL(setAsyncNotifyCallback)
++    GET_SYMBOL(setParameters)
+ 
+ #undef GET_SYMBOL
+ 
+@@ -2356,6 +2455,24 @@ static int mediacodec_ndk_cleanOutputBuffers(FFAMediaCodec *ctx)
+     return 0;
+ }
+ 
++static int mediacodec_ndk_setParameterBuffer(FFAMediaCodec *ctx, const char *name,
++                                             const uint8_t *data, size_t size)
++{
++    FFAMediaCodecNdk *codec = (FFAMediaCodecNdk *)ctx;
++    FFAMediaFormat *format;
++    media_status_t status;
++
++    if (!codec->setParameters)
++        return AVERROR(ENOSYS);
++    format = mediaformat_ndk_new();
++    if (!format)
++        return AVERROR(ENOMEM);
++    ff_AMediaFormat_setBuffer(format, name, (void *)data, size);
++    status = codec->setParameters(codec->impl, ((FFAMediaFormatNdk *)format)->impl);
++    ff_AMediaFormat_delete(format);
++    return status == AMEDIA_OK ? 0 : AVERROR_EXTERNAL;
++}
++
+ static int mediacodec_ndk_signalEndOfInputStream(FFAMediaCodec *ctx)
+ {
+     FFAMediaCodecNdk *codec = (FFAMediaCodecNdk *)ctx;
+@@ -2525,6 +2642,7 @@ static const FFAMediaCodec media_codec_ndk = {
+     .getConfigureFlagEncode = mediacodec_ndk_getConfigureFlagEncode,
+     .cleanOutputBuffers = mediacodec_ndk_cleanOutputBuffers,
+     .signalEndOfInputStream = mediacodec_ndk_signalEndOfInputStream,
++    .setParameterBuffer = mediacodec_ndk_setParameterBuffer,
+     .setAsyncNotifyCallback = mediacodec_ndk_setAsyncNotifyCallback,
+ };
+ 
 diff --git a/libavcodec/mediacodec_wrapper.h b/libavcodec/mediacodec_wrapper.h
-index 18d0796..fc90893 100644
+index 18d0796..73e5c4d 100644
 --- a/libavcodec/mediacodec_wrapper.h
 +++ b/libavcodec/mediacodec_wrapper.h
 @@ -57,7 +57,8 @@
@@ -96,6 +250,31 @@ index 18d0796..fc90893 100644
  
  typedef struct FFAMediaFormat FFAMediaFormat;
  struct FFAMediaFormat {
+@@ -240,6 +241,9 @@ struct FFAMediaCodec {
+     int (*setAsyncNotifyCallback)(FFAMediaCodec *codec,
+                                   const FFAMediaCodecOnAsyncNotifyCallback *callback,
+                                   void *userdata);
++
++    int (*setParameterBuffer)(FFAMediaCodec *codec, const char *name,
++                              const uint8_t *data, size_t size);
+ };
+ 
+ static inline char *ff_AMediaCodec_getName(FFAMediaCodec *codec)
+@@ -259,6 +263,14 @@ static inline int ff_AMediaCodec_configure(FFAMediaCodec *codec,
+     return codec->configure(codec, format, surface, crypto, flags);
+ }
+ 
++static inline int ff_AMediaCodec_setParameterBuffer(FFAMediaCodec *codec, const char *name,
++                                                    const uint8_t *data, size_t size)
++{
++    if (!codec->setParameterBuffer)
++        return AVERROR(ENOSYS);
++    return codec->setParameterBuffer(codec, name, data, size);
++}
++
+ static inline int ff_AMediaCodec_start(FFAMediaCodec* codec)
+ {
+     return codec->start(codec);
 diff --git a/libavcodec/mediacodecdec.c b/libavcodec/mediacodecdec.c
 index bc176d8..06f260a 100644
 --- a/libavcodec/mediacodecdec.c
@@ -382,10 +561,18 @@ index bc176d8..06f260a 100644
  };
  
 diff --git a/libavcodec/mediacodecdec_common.c b/libavcodec/mediacodecdec_common.c
-index 9a627c0..0d38b99 100644
+index 9a627c0..1130950 100644
 --- a/libavcodec/mediacodecdec_common.c
 +++ b/libavcodec/mediacodecdec_common.c
-@@ -772,12 +772,13 @@ static int mediacodec_dec_get_video_codec(AVCodecContext *avctx, MediaCodecDecCo
+@@ -23,6 +23,7 @@
+ #include <string.h>
+ #include <sys/types.h>
+ 
++#include "libavutil/hdr_dynamic_metadata.h"
+ #include "libavutil/avassert.h"
+ #include "libavutil/common.h"
+ #include "libavutil/hwcontext_mediacodec.h"
+@@ -772,12 +773,13 @@ static int mediacodec_dec_get_video_codec(AVCodecContext *avctx, MediaCodecDecCo
          }
      }
  
@@ -402,7 +589,7 @@ index 9a627c0..0d38b99 100644
      if (!s->codec_name) {
          // getCodecNameByType() can fail due to missing JVM, while NDK
          // mediacodec can be used without JVM.
-@@ -847,6 +848,12 @@ int ff_mediacodec_dec_init(AVCodecContext *avctx, MediaCodecDecContext *s,
+@@ -847,6 +849,12 @@ int ff_mediacodec_dec_init(AVCodecContext *avctx, MediaCodecDecContext *s,
      if (ret < 0)
          goto fail;
  
@@ -415,3 +602,42 @@ index 9a627c0..0d38b99 100644
      status = ff_AMediaCodec_configure(s->codec, format, s->surface, NULL, 0);
      if (status < 0) {
          char *desc = ff_AMediaFormat_toString(format);
+@@ -891,6 +899,28 @@ fail:
+     return ret;
+ }
+ 
++static void send_hdr10plus(AVCodecContext *avctx, FFAMediaCodec *codec, const AVPacket *pkt)
++{
++    static const uint8_t header[] = { 0xB5, 0x00, 0x3C, 0x00, 0x01, 0x04 };
++    const AVDynamicHDRPlus *hdr;
++    uint8_t *payload = NULL, *t35;
++    size_t payload_size = 0;
++
++    hdr = (const AVDynamicHDRPlus *)av_packet_get_side_data(pkt, AV_PKT_DATA_DYNAMIC_HDR10_PLUS, NULL);
++    if (!hdr || av_dynamic_hdr_plus_to_t35(hdr, &payload, &payload_size) < 0)
++        return;
++    t35 = av_malloc(sizeof(header) + payload_size);
++    if (t35) {
++        memcpy(t35, header, sizeof(header));
++        memcpy(t35 + sizeof(header), payload, payload_size);
++        if (ff_AMediaCodec_setParameterBuffer(codec, "hdr10-plus-info", t35,
++                                              sizeof(header) + payload_size) < 0)
++            av_log(avctx, AV_LOG_DEBUG, "Failed to pass HDR10+ metadata\n");
++        av_free(t35);
++    }
++    av_free(payload);
++}
++
+ int ff_mediacodec_dec_send(AVCodecContext *avctx, MediaCodecDecContext *s,
+                            AVPacket *pkt, bool wait)
+ {
+@@ -966,6 +996,9 @@ int ff_mediacodec_dec_send(AVCodecContext *avctx, MediaCodecDecContext *s,
+             return 0;
+         }
+ 
++        if (!offset)
++            send_hdr10plus(avctx, codec, pkt);
++
+         size = FFMIN(pkt->size - offset, size);
+         memcpy(data, pkt->data + offset, size);
+         offset += size;
