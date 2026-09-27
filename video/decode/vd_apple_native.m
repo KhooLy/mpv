@@ -21,7 +21,6 @@
 #include <libavcodec/avcodec.h>
 #include <libavutil/dovi_meta.h>
 #include <libavutil/intreadwrite.h>
-#include <libavutil/mastering_display_metadata.h>
 #include <libplacebo/utils/libav.h>
 
 #import <AVFoundation/AVFoundation.h>
@@ -129,34 +128,6 @@ static NSData *content_light(const struct pl_hdr_metadata *hdr)
     put_be16(b, hdr->max_cll);
     put_be16(b + 2, hdr->max_fall);
     return [NSData dataWithBytes:b length:sizeof(b)];
-}
-
-static void fill_from_codecpar(struct pl_color_space *color, struct pl_color_repr *repr,
-                               const AVCodecParameters *par)
-{
-    if (!par)
-        return;
-    if (!color->primaries)
-        color->primaries = pl_primaries_from_av(par->color_primaries);
-    if (!color->transfer)
-        color->transfer = pl_transfer_from_av(par->color_trc);
-    if (!repr->sys)
-        repr->sys = pl_system_from_av(par->color_space);
-    if (!repr->levels)
-        repr->levels = pl_levels_from_av(par->color_range);
-
-    const AVPacketSideData *sd = par->coded_side_data;
-    int n = par->nb_coded_side_data;
-    const AVPacketSideData *mdm =
-        av_packet_side_data_get(sd, n, AV_PKT_DATA_MASTERING_DISPLAY_METADATA);
-    const AVPacketSideData *clm =
-        av_packet_side_data_get(sd, n, AV_PKT_DATA_CONTENT_LIGHT_LEVEL);
-    if (!pl_hdr_metadata_equal(&color->hdr, &pl_hdr_metadata_empty))
-        return;
-    pl_map_hdr_metadata(&color->hdr, &(struct pl_av_hdr_metadata){
-        .mdm = mdm ? (const AVMasteringDisplayMetadata *)mdm->data : NULL,
-        .clm = clm ? (const AVContentLightMetadata *)clm->data : NULL,
-    });
 }
 
 static void fill_from_parameter_sets(struct pl_color_space *color,
@@ -296,7 +267,6 @@ static bool init_format(struct priv *p)
 
     struct pl_color_space color = c->color;
     struct pl_color_repr repr = c->repr;
-    fill_from_codecpar(&color, &repr, c->lav_codecpar);
     if (type == kCMVideoCodecType_H264 || type == kCMVideoCodecType_HEVC || type == 'dvh1') {
         fill_from_parameter_sets(&color, &repr, type == kCMVideoCodecType_H264 ?
                                  type : kCMVideoCodecType_HEVC,
