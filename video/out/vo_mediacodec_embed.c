@@ -66,6 +66,14 @@ struct vsync_sampler {
 typedef struct ASurfaceControl ASurfaceControl;
 typedef struct ASurfaceTransaction ASurfaceTransaction;
 
+struct osd_req {
+    double pts;
+    int64_t present_ns;
+    int vid_w, vid_h;
+    int buf_w, buf_h;
+    bool reset;
+};
+
 struct osd_layer {
     ASurfaceControl *(*create)(ANativeWindow *, const char *);
     void (*release)(ASurfaceControl *);
@@ -82,15 +90,18 @@ struct osd_layer {
     void (*reparent)(ASurfaceTransaction *, ASurfaceControl *, ASurfaceControl *);
 
     ASurfaceControl *sc;
+    struct vo *vo;
+    mp_thread thread;
+    mp_mutex lock;
+    mp_cond wakeup;
+    bool running, quit, pending;
+    struct osd_req req;
     struct mp_osd_res res;
-    int vid_w, vid_h;
-    int buf_w, buf_h;
     AHardwareBuffer *pool[3];
     struct mp_rect dirty[3];
     int pool_w, pool_h, pool_idx;
     int64_t change_id;
     bool visible;
-    double pts;
 };
 
 struct release_helper {
@@ -298,6 +309,8 @@ static void update_surface_frame_rate(struct vo *vo, bool force)
     vo_android_set_frame_rate(vo, rate);
 }
 
+static MP_THREAD_VOID osd_thread(void *arg);
+
 static void osd_init(struct vo *vo)
 {
     struct osd_layer *o = &((struct priv *)vo->priv)->osd;
@@ -338,6 +351,16 @@ static void osd_init(struct vo *vo)
     o->set_visibility(t, o->sc, 0);
     o->txn_apply(t);
     o->txn_delete(t);
+
+    o->vo = vo;
+    mp_mutex_init(&o->lock);
+    mp_cond_init(&o->wakeup);
+    if (mp_thread_create(&o->thread, osd_thread, o)) {
+        mp_mutex_destroy(&o->lock);
+        mp_cond_destroy(&o->wakeup);
+        return;
+    }
+    o->running = true;
 }
 
 static void pool_free(struct osd_layer *o)
@@ -391,6 +414,16 @@ static void osd_uninit(struct osd_layer *o)
 {
     if (!o->sc)
         return;
+    if (o->running) {
+        mp_mutex_lock(&o->lock);
+        o->quit = true;
+        mp_cond_signal(&o->wakeup);
+        mp_mutex_unlock(&o->lock);
+        mp_thread_join(o->thread);
+        mp_mutex_destroy(&o->lock);
+        mp_cond_destroy(&o->wakeup);
+        o->running = false;
+    }
     ASurfaceTransaction *t = o->txn_create();
     o->reparent(t, o->sc, NULL);
     o->txn_apply(t);
@@ -451,14 +484,14 @@ static void blend_ass(uint8_t *dst, int dst_stride, struct mp_rect box,
     }
 }
 
-static void draw_osd(struct vo *vo, int64_t present_ns)
+static void osd_update(struct vo *vo, struct osd_layer *o, struct osd_req *r)
 {
-    struct priv *p = vo->priv;
-    struct osd_layer *o = &p->osd;
-    if (!o->sc || !vo->osd || o->buf_w <= 0)
+    if (r->buf_w <= 0)
         return;
+    if (r->reset)
+        o->change_id = -1;
 
-    struct mp_osd_res res = {.w = o->buf_w, .h = o->buf_h, .display_par = 1};
+    struct mp_osd_res res = {.w = r->buf_w, .h = r->buf_h, .display_par = 1};
     if (!osd_res_equals(res, o->res)) {
         o->res = res;
         o->change_id = -1;
@@ -468,7 +501,7 @@ static void draw_osd(struct vo *vo, int64_t present_ns)
         [SUBBITMAP_LIBASS] = true,
         [SUBBITMAP_BGRA] = true,
     };
-    struct sub_bitmap_list *list = osd_render(vo->osd, res, o->pts, 0, formats);
+    struct sub_bitmap_list *list = osd_render(vo->osd, res, r->pts, 0, formats);
     if (list->change_id == o->change_id) {
         talloc_free(list);
         return;
@@ -536,8 +569,8 @@ static void draw_osd(struct vo *vo, int64_t present_ns)
     if (buf) {
         ARect src = {box.x0, box.y0, box.x1, box.y1};
         ARect dst = {
-            (int64_t)box.x0 * o->vid_w / res.w, (int64_t)box.y0 * o->vid_h / res.h,
-            (int64_t)box.x1 * o->vid_w / res.w, (int64_t)box.y1 * o->vid_h / res.h,
+            (int64_t)box.x0 * r->vid_w / res.w, (int64_t)box.y0 * r->vid_h / res.h,
+            (int64_t)box.x1 * r->vid_w / res.w, (int64_t)box.y1 * r->vid_h / res.h,
         };
         o->set_buffer(t, o->sc, buf, -1);
         o->set_geometry(t, o->sc, &src, &dst, 0);
@@ -545,10 +578,43 @@ static void draw_osd(struct vo *vo, int64_t present_ns)
     if (o->visible != !!buf)
         o->set_visibility(t, o->sc, !!buf);
     o->visible = !!buf;
-    if (present_ns > 0)
-        o->set_present_time(t, present_ns);
+    if (r->present_ns > monotonic_ns())
+        o->set_present_time(t, r->present_ns);
     o->txn_apply(t);
     o->txn_delete(t);
+}
+
+static MP_THREAD_VOID osd_thread(void *arg)
+{
+    struct osd_layer *o = arg;
+    mp_thread_set_name("subrender");
+    mp_mutex_lock(&o->lock);
+    while (!o->quit) {
+        if (!o->pending) {
+            mp_cond_wait(&o->wakeup, &o->lock);
+            continue;
+        }
+        struct osd_req r = o->req;
+        o->pending = false;
+        o->req.reset = false;
+        mp_mutex_unlock(&o->lock);
+        osd_update(o->vo, o, &r);
+        mp_mutex_lock(&o->lock);
+    }
+    mp_mutex_unlock(&o->lock);
+    MP_THREAD_RETURN();
+}
+
+static void draw_osd(struct vo *vo, int64_t present_ns)
+{
+    struct osd_layer *o = &((struct priv *)vo->priv)->osd;
+    if (!o->running || !vo->osd)
+        return;
+    mp_mutex_lock(&o->lock);
+    o->req.present_ns = present_ns;
+    o->pending = true;
+    mp_cond_signal(&o->wakeup);
+    mp_mutex_unlock(&o->lock);
 }
 
 static AVBufferRef *create_mediacodec_device_ref(struct vo *vo)
@@ -655,8 +721,11 @@ static bool draw_frame(struct vo *vo, struct vo_frame *frame)
     talloc_free(p->next_image);
     p->next_image = mpi;
     p->next_image_pts = mpi ? frame->pts : 0;
-    if (frame->current)
-        p->osd.pts = frame->current->pts;
+    if (frame->current && p->osd.running) {
+        mp_mutex_lock(&p->osd.lock);
+        p->osd.req.pts = frame->current->pts;
+        mp_mutex_unlock(&p->osd.lock);
+    }
     p->next_frame_duration_ns = frame->duration > 0 ? llrint(frame->duration) : -1;
     if (mpi) {
         vo_android_set_buffers_dataspace(vo, &mpi->params);
@@ -709,11 +778,16 @@ static int reconfig(struct vo *vo, struct mp_image_params *params)
         sh = vo->opts->android_surface_size.h;
     }
     double scale = MPMIN(1.0, MPMIN(sw / (double)params->w, sh / (double)params->h));
-    p->osd.vid_w = params->w;
-    p->osd.vid_h = params->h;
-    p->osd.buf_w = MPMAX(1, lrint(params->w * scale));
-    p->osd.buf_h = MPMAX(1, lrint(params->h * scale));
-    p->osd.change_id = -1;
+    if (p->osd.running) {
+        struct osd_layer *o = &p->osd;
+        mp_mutex_lock(&o->lock);
+        o->req.vid_w = params->w;
+        o->req.vid_h = params->h;
+        o->req.buf_w = MPMAX(1, lrint(params->w * scale));
+        o->req.buf_h = MPMAX(1, lrint(params->h * scale));
+        o->req.reset = true;
+        mp_mutex_unlock(&o->lock);
+    }
     vo_android_set_buffers_dataspace(vo, params);
     return 0;
 }
