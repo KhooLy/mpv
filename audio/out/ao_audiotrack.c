@@ -748,8 +748,14 @@ static MP_THREAD_VOID ao_thread(void *arg)
             } else {
                 ret = AudioTrack_write(ao, samples * ao->sstride);
             }
+            bool passthrough = p->raw || p->format == AudioFormat.ENCODING_IEC61937;
             if (ret >= 0) {
                 p->written_frames += ret / ao->sstride;
+            } else if (passthrough) {
+                MP_WARN(ao, "Passthrough write failed with %d, reloading output\n", ret);
+                ao_request_reload(ao);
+                while (!p->thread_terminate)
+                    mp_cond_wait(&p->wakeup, &p->lock);
             } else if (ret == AudioManager.ERROR_DEAD_OBJECT) {
                 MP_WARN(ao, "AudioTrack.write failed with ERROR_DEAD_OBJECT. Recreating AudioTrack...\n");
                 if (AudioTrack_Recreate(ao) < 0) {
