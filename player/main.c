@@ -260,6 +260,27 @@ static bool check_locale(void)
     return !name || strcmp(name, "C") == 0 || strcmp(name, "C.UTF-8") == 0;
 }
 
+#if HAVE_ANDROID
+#include <unistd.h>
+
+static void set_cache_defaults(struct MPContext *mpctx)
+{
+    long pages = sysconf(_SC_PHYS_PAGES);
+    long page_size = sysconf(_SC_PAGESIZE);
+    if (pages <= 0 || page_size <= 0)
+        return;
+    int64_t ram_mib = (int64_t)pages * page_size / (1024 * 1024);
+    int64_t fwd = MPCLAMP(ram_mib / 16, 48, 512);
+    char conf[128];
+    snprintf(conf, sizeof(conf),
+             "demuxer-max-bytes=%" PRId64 "MiB\ndemuxer-max-back-bytes=%" PRId64 "MiB\n",
+             fwd, fwd / 3);
+    m_config_parse(mpctx->mconfig, "", bstr0(conf), NULL, 0);
+    MP_VERBOSE(mpctx, "%" PRId64 " MiB RAM, demuxer cache %" PRId64 " MiB.\n",
+               ram_mib, fwd);
+}
+#endif
+
 struct MPContext *mp_create(void)
 {
     if (!check_locale()) {
@@ -316,6 +337,9 @@ struct MPContext *mp_create(void)
     mpctx->mconfig->is_toplevel = true;
     mpctx->mconfig->global = mpctx->global;
     m_config_parse(mpctx->mconfig, "", bstr0(def_config), NULL, 0);
+#if HAVE_ANDROID
+    set_cache_defaults(mpctx);
+#endif
 
     mpctx->input = mp_input_init(mpctx->global, mp_wakeup_core_cb, mpctx);
     clipboard_init(mpctx);

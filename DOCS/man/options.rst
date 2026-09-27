@@ -4252,7 +4252,9 @@ Demuxer
     will normally try to read ahead as much as necessary, or as much is
     requested with ``--demuxer-readahead-secs``. The option can be used to
     restrict the maximum readahead. This limits excessive readahead in case of
-    broken files or desynced playback. The demuxer will stop reading additional
+    broken files or desynced playback. On Android, the default is 1/16 of the
+    device RAM between 48 MiB and 512 MiB, and ``--demuxer-max-back-bytes``
+    defaults to a third of that. The demuxer will stop reading additional
     packets as soon as one of the limits is reached. (The limits still can be
     slightly overstepped due to technical reasons.)
 
