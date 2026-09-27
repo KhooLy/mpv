@@ -60,8 +60,8 @@ Available filters are:
         detach itself (default: 3).
 
     ``encoder=<name>``
-        Select the libavcodec encoder used. Currently, this should be an AC-3
-        encoder, and using another codec will fail horribly.
+        Select the libavcodec encoder used: ``ac3`` (default) or ``eac3``.
+        Other codecs will fail horribly.
 
 ``format=format:srate:channels:out-srate:out-channels``
     Does not do any format conversion itself. Rather, it may cause the

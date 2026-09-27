@@ -99,14 +99,17 @@ static bool want_ac3_transcode(struct MPContext *mpctx)
                       ao_c->track->stream->codec->decoder : NULL;
     if (dec && strncmp(dec, "spdif_", 6) == 0)
         return false;
-    if (!avcodec_find_encoder(AV_CODEC_ID_AC3)) {
-        if (mpctx->opts->audio_ac3_transcode == 1)
-            MP_WARN(mpctx, "No AC3 encoder available, not transcoding.\n");
+    bool eac3 = mpctx->opts->audio_ac3_transcode == 3;
+    if (!avcodec_find_encoder(eac3 ? AV_CODEC_ID_EAC3 : AV_CODEC_ID_AC3)) {
+        if (mpctx->opts->audio_ac3_transcode & 1)
+            MP_WARN(mpctx, "No %s encoder available, not transcoding.\n",
+                    eac3 ? "E-AC3" : "AC3");
         return false;
     }
 
     switch (mpctx->opts->audio_ac3_transcode) {
     case 1:
+    case 3:
         return true;
     case 2: {
 #if HAVE_ANDROID
@@ -132,9 +135,13 @@ static int recreate_audio_filters(struct MPContext *mpctx)
         struct m_obj_settings *ext = talloc_zero_array(NULL, struct m_obj_settings, num + 2);
         for (int n = 0; n < num; n++)
             ext[n] = list[n];
-        ext[num] = (struct m_obj_settings){.name = "lavcac3enc", .enabled = true};
+        bool eac3 = mpctx->opts->audio_ac3_transcode == 3;
+        static char *eac3_attribs[] = {"encoder", "eac3", NULL};
+        ext[num] = (struct m_obj_settings){.name = "lavcac3enc", .enabled = true,
+                                           .attribs = eac3 ? eac3_attribs : NULL};
         list = ext;
-        MP_VERBOSE(mpctx, "Transcoding multichannel audio to AC3.\n");
+        MP_VERBOSE(mpctx, "Transcoding multichannel audio to %s.\n",
+                   eac3 ? "E-AC3" : "AC3");
     }
     bool ok = mp_output_chain_update_filters(ao_c->filter, list);
     if (list != mpctx->opts->af_settings)

@@ -2106,6 +2106,10 @@ Audio
     decodes them itself when the output cannot take them, and keeps Dolby
     Atmos for AirPods spatial audio and HDMI receivers.
 
+    ``offload`` sends AAC and MP3 to the audio output undecoded, for DSP
+    decoding with ``--ao=audiotrack``. See ``--audiotrack-offload``. Other
+    audio outputs reject it and mpv decodes normally.
+
     In earlier mpv versions you could use ``--ad`` to force the spdif wrapper.
     This does not work anymore.
 
@@ -2115,13 +2119,14 @@ Audio
         multichannel PCM, and mpv supports lossless DTS-HD decoding via
         FFmpeg's new DCA decoder (based on libdcadec).
 
-``--audio-ac3-transcode=<no|yes|auto>``
+``--audio-ac3-transcode=<no|yes|auto|eac3>``
     Encode multichannel PCM to AC3 at 640 kbps and send it as compressed
     passthrough. This is useful for S/PDIF or HDMI ARC receivers that accept
     AC3 but not multichannel PCM. Audio that is already passed through is not
     affected. ``auto`` enables it on Android when the output accepts AC3 but
-    reports at most 2 PCM channels. Requires FFmpeg's ``ac3`` encoder
-    (default: no).
+    reports at most 2 PCM channels. ``eac3`` encodes to E-AC3 instead, for
+    outputs that take E-AC3 but not AC3 or multichannel PCM. Requires FFmpeg's
+    ``ac3`` or ``eac3`` encoder (default: no).
 
 ``--ad=<decoder1,decoder2,...[-]>``
     Specify a priority list of audio decoders to be used, according to their
@@ -2227,6 +2232,13 @@ Audio
     Pass AVOptions to libavcodec decoder. Note, a patch to make the o=
     unneeded and pass all unknown options through the AVOption system is
     welcome. A full list of AVOptions can be found in the FFmpeg manual.
+
+    On Android, the MediaCodec audio decoders (``aac_mediacodec``,
+    ``ac3_mediacodec``, ``eac3_mediacodec`` and ``ac4_mediacodec``) take
+    ``max_output_channels=<n>``, which stops vendor decoders such as Dolby's
+    from downmixing to stereo. AC-4 is only decodable through MediaCodec, so
+    ``ac4_mediacodec`` is used automatically; for the others, prefer them with
+    ``--ad=eac3_mediacodec,ac3_mediacodec,+``.
 
     This is a key/value list option. See `List Options`_ for details.
 

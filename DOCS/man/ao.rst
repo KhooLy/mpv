@@ -165,6 +165,29 @@ Available audio output drivers are:
 ``audiounit`` (iOS only)
     Native iOS audio output driver using ``AudioUnits`` and AudioToolbox.
 
+``audiotrack`` (Android only)
+    Android ``AudioTrack`` audio output driver.
+
+    The following global options are supported by this audio output:
+
+    ``--audiotrack-pcm-float=<yes|no>``
+        Output float PCM when the decoder produces it (default: yes).
+
+    ``--audiotrack-session-id=<id>``
+        Attach the ``AudioTrack`` to an existing audio session (default: 0,
+        a new session).
+
+    ``--audiotrack-offload=<yes|no>``
+        Request offloaded playback, where the DSP plays out a large buffer
+        while the CPU sleeps (default: no). Meant for audio-only or background
+        playback. When the device cannot offload PCM, the track is created in
+        power saving mode instead. Combine with ``--audio-spdif=offload`` to
+        send AAC and MP3 undecoded to the DSP; if the device refuses the
+        codec, mpv decodes as usual.
+
+        Some devices disable offload entirely while vendor effects such as
+        Dolby Atmos are enabled in the system sound settings.
+
 ``openal``
     OpenAL audio output driver.
 

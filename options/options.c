@@ -698,7 +698,7 @@ static const m_option_t mp_opts[] = {
 
     {"af", OPT_SETTINGSLIST(af_settings, &af_obj_list)},
     {"audio-ac3-transcode", OPT_CHOICE(audio_ac3_transcode,
-        {"no", 0}, {"yes", 1}, {"auto", 2}), .flags = UPDATE_AUDIO},
+        {"no", 0}, {"yes", 1}, {"auto", 2}, {"eac3", 3}), .flags = UPDATE_AUDIO},
     {"vf", OPT_SETTINGSLIST(vf_settings, &vf_obj_list)},
 
     {"thumbnails", OPT_BOOL(thumbnails), .flags = UPDATE_BUILTIN_SCRIPTS},
