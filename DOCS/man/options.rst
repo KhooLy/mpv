@@ -7184,6 +7184,16 @@ them.
 
     Android with ``--gpu-context=android`` only.
 
+``--android-frame-rate-switch=<no|seamless|always>``
+    Tell Android the video frame rate so the display can switch its refresh
+    rate to match (default: seamless). ``seamless`` only allows switches the
+    display can do without blanking, as on phones with variable refresh
+    rates. ``always`` also allows a display mode change that briefly blanks
+    the screen, which is what Android TV devices need to switch a TV to
+    24 Hz; it requires Android 12, and older versions behave as ``seamless``.
+    Android TV only switches when the user enabled match content frame rate
+    in the system settings.
+
 ``--d3d11-composition-size=<WxH>``
     Set size of the output for d3d11 composition mode.
     When use composition mode, there is no window, must set the output size by

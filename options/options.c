@@ -250,6 +250,8 @@ static const m_option_t mp_vo_opt_list[] = {
 #endif
 #if HAVE_EGL_ANDROID
     {"android-surface-size", OPT_SIZE_BOX(android_surface_size)},
+    {"android-frame-rate-switch", OPT_CHOICE(android_frame_rate_switch,
+        {"no", 0}, {"seamless", 1}, {"always", 2})},
 #endif
 #if HAVE_D3D11
     {"d3d11-composition-size", OPT_SIZE_BOX(d3d11_composition_size)},
@@ -275,6 +277,7 @@ const struct m_sub_options vo_sub_opts = {
         .keepaspect = true,
         .keepaspect_window = true,
         .native_fs = true,
+        .android_frame_rate_switch = 1,
         .taskbar_progress = true,
         .show_in_taskbar = true,
         .border = true,

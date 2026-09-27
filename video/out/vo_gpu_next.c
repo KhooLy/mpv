@@ -103,6 +103,9 @@ struct cache {
 
 struct priv {
     struct mp_log *log;
+#if HAVE_ANDROID
+    float surface_fps;
+#endif
     struct mpv_global *global;
     struct stats_ctx *stats;
     struct ra_ctx *ra_ctx;
@@ -1480,6 +1483,11 @@ static bool draw_frame(struct vo *vo, struct vo_frame *frame)
     // lets Android keep a PQ/HLG swapchain in HDR mode after gpu-next has
     // selected its output transform.
     vo_android_set_buffers_dataspace(vo, &p->target_params);
+    float fps = frame->current ? frame->current->nominal_fps : 0;
+    if (fps > 0 && fabsf(fps - p->surface_fps) > 0.01f) {
+        p->surface_fps = fps;
+        vo_android_set_frame_rate(vo, fps);
+    }
 #endif
 
     p->is_interpolated = pts_offset != 0 && mix.num_frames > 1;
