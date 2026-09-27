@@ -2102,6 +2102,9 @@ Audio
     On Android, ``auto`` selects the codecs the current audio output accepts,
     based on the HDMI audio plug state and ``AudioTrack`` direct playback
     queries. If DTS-HD is not supported but DTS is, the DTS core is sent.
+    With ``--ao=avfoundation``, ``auto`` selects ``ac3,eac3``: the system
+    decodes them itself when the output cannot take them, and keeps Dolby
+    Atmos for AirPods spatial audio and HDMI receivers.
 
     In earlier mpv versions you could use ``--ad`` to force the spdif wrapper.
     This does not work anymore.

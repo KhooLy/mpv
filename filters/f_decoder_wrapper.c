@@ -44,6 +44,7 @@
 #include "misc/dispatch.h"
 
 #include "audio/aframe.h"
+#include "audio/out/ao.h"
 #include "video/out/vo.h"
 #include "video/csputils.h"
 
@@ -424,6 +425,19 @@ struct mp_decoder_list *audio_decoder_list(void)
     return list;
 }
 
+#if HAVE_AVFOUNDATION
+extern const struct m_sub_options ao_conf;
+
+static bool uses_avfoundation(struct priv *p)
+{
+    struct ao_opts *opts = mp_get_config_group(NULL, p->decf->global, &ao_conf);
+    bool r = opts->audio_driver_list && opts->audio_driver_list[0].name &&
+             strcmp(opts->audio_driver_list[0].name, "avfoundation") == 0;
+    talloc_free(opts);
+    return r;
+}
+#endif
+
 static char *auto_spdif_codecs(struct priv *p)
 {
 #if HAVE_ANDROID
@@ -439,6 +453,8 @@ static char *auto_spdif_codecs(struct priv *p)
     if (caps.truehd)
         list = talloc_strdup_append(list, "truehd,");
     return list;
+#elif HAVE_AVFOUNDATION
+    return uses_avfoundation(p) ? talloc_strdup(NULL, "ac3,eac3") : NULL;
 #else
     return NULL;
 #endif
