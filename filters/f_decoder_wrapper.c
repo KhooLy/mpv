@@ -53,6 +53,10 @@
 #include "f_lavfi.h"
 #include "filter_internal.h"
 
+#if HAVE_ANDROID
+#include "misc/jni.h"
+#endif
+
 struct dec_queue_opts {
     bool use_queue;
     int64_t max_bytes;
@@ -418,6 +422,26 @@ struct mp_decoder_list *audio_decoder_list(void)
     return list;
 }
 
+static char *auto_spdif_codecs(struct priv *p)
+{
+#if HAVE_ANDROID
+    struct mp_jni_audio_caps caps;
+    mp_jni_audio_caps(p->log, &caps);
+    char *list = talloc_strdup(NULL, "");
+    if (caps.ac3)
+        list = talloc_strdup_append(list, "ac3,");
+    if (caps.eac3)
+        list = talloc_strdup_append(list, "eac3,");
+    if (caps.dts || caps.dtshd)
+        list = talloc_strdup_append(list, caps.dtshd ? "dts-hd," : "dts,");
+    if (caps.truehd)
+        list = talloc_strdup_append(list, "truehd,");
+    return list;
+#else
+    return NULL;
+#endif
+}
+
 static bool reinit_decoder(struct priv *p)
 {
     if (p->decoder)
@@ -446,8 +470,13 @@ static bool reinit_decoder(struct priv *p)
         mp_mutex_unlock(&p->cache_lock);
 
         if (try_spdif && p->codec->codec) {
+            const char *pref = p->opts->audio_spdif;
+            char *detected = NULL;
+            if (pref && strcmp(pref, "auto") == 0)
+                pref = detected = auto_spdif_codecs(p);
             struct mp_decoder_list *spdif =
-                select_spdif_codec(p->codec->codec, p->opts->audio_spdif);
+                select_spdif_codec(p->codec->codec, pref);
+            talloc_free(detected);
             if (spdif->num_entries) {
                 driver = &ad_spdif;
                 list = spdif;

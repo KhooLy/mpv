@@ -728,8 +728,19 @@ Available video output drivers are:
     ``--vo=mediacodec_embed`` and ``--wid=(intptr_t)(*android.view.Surface)``.
 
     Since this video output driver uses native decoding and rendering routines,
-    many of mpv's features (subtitle rendering, OSD/OSC, video filters, etc)
-    are not available with this driver.
+    many of mpv's features (video filters, shaders, etc) are not available with
+    this driver. On Android 10 and newer, subtitles and the OSD are drawn into a
+    child ``ASurfaceControl`` above the video surface and blended by the system
+    compositor, so the video buffer and its HDR signaling are left untouched.
+    libass has no Android font provider; unless ``subfont.ttf`` or
+    ``--sub-fonts-dir`` provides fonts, the system default sans-serif font is
+    used for all text.
+
+    For HDR playback, pass a ``Surface`` backed by a ``SurfaceView``. On
+    Android API 28 and newer, mpv propagates the selected output dataspace to
+    the native buffer queue, including BT.2020/PQ and BT.2020/HLG. Dolby
+    Vision still depends on the device's MediaCodec decoder and display path;
+    Android does not expose a separate Dolby Vision dataspace.
 
     To use hardware decoding with ``--vo=gpu`` instead, use ``--hwdec=mediacodec``
     or ``mediacodec-copy`` along with ``--gpu-context=android``.

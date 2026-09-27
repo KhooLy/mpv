@@ -445,6 +445,9 @@ typedef struct MPContext {
     bool drop_message_shown;
 
     struct screenshot_ctx *screenshot_ctx;
+    struct thumbnailer *thumbnailer;
+    struct thumbnailer **old_thumbnailers;
+    int num_old_thumbnailers;
     struct command_ctx *command_ctx;
     struct encode_lavc_context *encode_lavc_ctx;
 
@@ -453,7 +456,7 @@ typedef struct MPContext {
 
     struct mp_ipc_ctx *ipc_ctx;
 
-    int64_t builtin_script_ids[9];
+    int64_t builtin_script_ids[10];
 
     mp_mutex abort_lock;
 

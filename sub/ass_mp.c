@@ -34,6 +34,10 @@
 #include "osd.h"
 #include "stream/stream.h"
 
+#if HAVE_ANDROID
+#include <dlfcn.h>
+#endif
+
 // res_y should be track->PlayResY
 // It determines scaling of font sizes and more.
 void mp_ass_set_style(ASS_Style *style, double res_y,
@@ -76,6 +80,35 @@ void mp_ass_set_style(ASS_Style *style, double res_y,
     style->Italic = opts->italic;
 }
 
+#if HAVE_ANDROID
+static char *android_default_font(void *ta_ctx)
+{
+    void *(*matcher_create)(void) = dlsym(RTLD_DEFAULT, "AFontMatcher_create");
+    void *(*matcher_match)(void *, const char *, const uint16_t *, uint32_t,
+                           uint32_t *) = dlsym(RTLD_DEFAULT, "AFontMatcher_match");
+    void (*matcher_destroy)(void *) = dlsym(RTLD_DEFAULT, "AFontMatcher_destroy");
+    const char *(*font_path)(void *) = dlsym(RTLD_DEFAULT, "AFont_getFontFilePath");
+    void (*font_close)(void *) = dlsym(RTLD_DEFAULT, "AFont_close");
+
+    char *path = NULL;
+    if (matcher_create && matcher_match && matcher_destroy && font_path && font_close) {
+        void *matcher = matcher_create();
+        if (matcher) {
+            const uint16_t text[] = {'a'};
+            void *font = matcher_match(matcher, "sans-serif", text, 1, NULL);
+            if (font) {
+                path = talloc_strdup(ta_ctx, font_path(font));
+                font_close(font);
+            }
+            matcher_destroy(matcher);
+        }
+    }
+    if (!path || !mp_path_exists(path))
+        path = talloc_strdup(ta_ctx, "/system/fonts/Roboto-Regular.ttf");
+    return mp_path_exists(path) ? path : NULL;
+}
+#endif
+
 void mp_ass_configure_fonts(ASS_Renderer *priv, struct osd_style_opts *opts,
                             struct mpv_global *global, struct mp_log *log)
 {
@@ -85,6 +118,10 @@ void mp_ass_configure_fonts(ASS_Renderer *priv, struct osd_style_opts *opts,
 
     if (default_font && !mp_path_exists(default_font))
         default_font = NULL;
+#if HAVE_ANDROID
+    if (!default_font)
+        default_font = android_default_font(tmp);
+#endif
 
     int font_provider = ASS_FONTPROVIDER_AUTODETECT;
     if (opts->font_provider == 1)

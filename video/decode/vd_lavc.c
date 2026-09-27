@@ -56,6 +56,56 @@
 
 #include "options/m_option.h"
 
+#if HAVE_ANDROID
+#include <libavutil/mastering_display_metadata.h>
+#include "misc/jni.h"
+#endif
+
+#if HAVE_ANDROID
+static void add_container_hdr_metadata(AVCodecContext *avctx,
+                                       const struct pl_hdr_metadata *hdr)
+{
+    const struct pl_raw_primaries *prim = &hdr->prim;
+    bool have_mastering = prim->red.x > 0 && prim->green.x > 0 && prim->blue.x > 0 &&
+                          prim->white.x > 0 && hdr->max_luma > 0;
+    if (have_mastering &&
+        !av_packet_side_data_get(avctx->coded_side_data, avctx->nb_coded_side_data,
+                                 AV_PKT_DATA_MASTERING_DISPLAY_METADATA))
+    {
+        size_t size;
+        AVMasteringDisplayMetadata *m = av_mastering_display_metadata_alloc_size(&size);
+        MP_HANDLE_OOM(m);
+        const struct pl_cie_xy xy[4] = {prim->red, prim->green, prim->blue, prim->white};
+        for (int i = 0; i < 3; i++) {
+            m->display_primaries[i][0] = av_d2q(xy[i].x, 50000);
+            m->display_primaries[i][1] = av_d2q(xy[i].y, 50000);
+        }
+        m->white_point[0] = av_d2q(xy[3].x, 50000);
+        m->white_point[1] = av_d2q(xy[3].y, 50000);
+        m->max_luminance = av_d2q(hdr->max_luma, 10000);
+        m->min_luminance = av_d2q(hdr->min_luma, 10000);
+        m->has_primaries = m->has_luminance = 1;
+        if (!av_packet_side_data_add(&avctx->coded_side_data, &avctx->nb_coded_side_data,
+                                     AV_PKT_DATA_MASTERING_DISPLAY_METADATA, m, size, 0))
+            av_free(m);
+    }
+
+    if (hdr->max_cll > 0 &&
+        !av_packet_side_data_get(avctx->coded_side_data, avctx->nb_coded_side_data,
+                                 AV_PKT_DATA_CONTENT_LIGHT_LEVEL))
+    {
+        size_t size;
+        AVContentLightMetadata *l = av_content_light_metadata_alloc(&size);
+        MP_HANDLE_OOM(l);
+        l->MaxCLL = lrintf(hdr->max_cll);
+        l->MaxFALL = lrintf(hdr->max_fall);
+        if (!av_packet_side_data_add(&avctx->coded_side_data, &avctx->nb_coded_side_data,
+                                     AV_PKT_DATA_CONTENT_LIGHT_LEVEL, l, size, 0))
+            av_free(l);
+    }
+}
+#endif
+
 static void init_avctx(struct mp_filter *vd);
 static void uninit_avctx(struct mp_filter *vd);
 
@@ -762,6 +812,15 @@ static void init_avctx(struct mp_filter *vd)
         if (!lavc_param->check_hw_profile)
             avctx->hwaccel_flags |= AV_HWACCEL_FLAG_ALLOW_PROFILE_MISMATCH;
 
+#if HAVE_ANDROID
+        if (ctx->hwdec.lavc_device == AV_HWDEVICE_TYPE_MEDIACODEC &&
+            ctx->codec->dovi && !mp_jni_display_supports_dolby_vision(vd->log))
+        {
+            MP_VERBOSE(vd, "Display lacks Dolby Vision; preferring base-layer decoder.\n");
+            av_opt_set(avctx, "prefer_base_layer", "1", AV_OPT_SEARCH_CHILDREN);
+        }
+#endif
+
 #ifdef AV_HWACCEL_FLAG_UNSAFE_OUTPUT
         /*
          * This flag primarily exists for nvdec which has a very limited
@@ -854,6 +913,11 @@ static void init_avctx(struct mp_filter *vd)
         MP_ERR(vd, "Could not set codec parameters.\n");
         goto error;
     }
+
+#if HAVE_ANDROID
+    if (ctx->hwdec.lavc_device == AV_HWDEVICE_TYPE_MEDIACODEC)
+        add_container_hdr_metadata(avctx, &c->color.hdr);
+#endif
 
 #ifdef FUZZING_BUILD_MODE_UNSAFE_FOR_PRODUCTION
     if (avctx->width > 8192 || avctx->height > 8192) {

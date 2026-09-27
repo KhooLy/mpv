@@ -59,6 +59,7 @@
 #include "video/out/vo.h"
 
 #include "core.h"
+#include "thumbnail.h"
 #include "command.h"
 
 // Called from the demuxer thread if a new packet is available, or other changes.
@@ -1963,6 +1964,7 @@ static void play_current_file(struct MPContext *mpctx)
     mpctx->playlist->playlist_started = true;
     mp_notify(mpctx, MPV_EVENT_FILE_LOADED, NULL);
     update_screensaver_state(mpctx);
+    mp_thumbnails_start(mpctx);
     clear_playlist_paths(mpctx);
 
     // Clear out subs from the previous file if the video track is a still image.
@@ -2029,6 +2031,8 @@ terminate_playback:
         opts->pause = true;
         m_config_notify_change_opt_ptr(mpctx->mconfig, &opts->pause);
     }
+
+    mp_thumbnails_stop(mpctx);
 
     process_hooks(mpctx, "on_unload");
 

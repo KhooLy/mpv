@@ -2099,6 +2099,10 @@ Audio
     and OS support varies). If both ``dts`` and ``dts-hd`` are specified, it
     behaves equivalent to specifying ``dts-hd`` only.
 
+    On Android, ``auto`` selects the codecs the current audio output accepts,
+    based on the HDMI audio plug state and ``AudioTrack`` direct playback
+    queries. If DTS-HD is not supported but DTS is, the DTS core is sent.
+
     In earlier mpv versions you could use ``--ad`` to force the spdif wrapper.
     This does not work anymore.
 
@@ -2107,6 +2111,14 @@ Audio
         There is not much reason to use this. HDMI supports uncompressed
         multichannel PCM, and mpv supports lossless DTS-HD decoding via
         FFmpeg's new DCA decoder (based on libdcadec).
+
+``--audio-ac3-transcode=<no|yes|auto>``
+    Encode multichannel PCM to AC3 at 640 kbps and send it as compressed
+    passthrough. This is useful for S/PDIF or HDMI ARC receivers that accept
+    AC3 but not multichannel PCM. Audio that is already passed through is not
+    affected. ``auto`` enables it on Android when the output accepts AC3 but
+    reports at most 2 PCM channels. Requires FFmpeg's ``ac3`` encoder
+    (default: no).
 
 ``--ad=<decoder1,decoder2,...[-]>``
     Specify a priority list of audio decoders to be used, according to their
@@ -4952,6 +4964,34 @@ OSD
 
 Screenshot
 ----------
+
+``--thumbnails=<yes|no>``
+    Generate seekbar thumbnails in the background after a file is opened
+    (default: no). Keyframes are decoded by a separate demuxer and decoder,
+    coarse positions first. Use the ``thumbnail`` command and the
+    ``thumbnail-info`` property to access them.
+
+``--thumbnail-width=<16-1920>``
+    Width of generated thumbnails (default: 240).
+
+``--thumbnail-interval=<seconds>``
+    Distance between thumbnails (default: 10). Raised if the file would
+    need more than ``--thumbnail-max`` thumbnails.
+
+``--thumbnail-max=<count>``
+    Maximum number of thumbnails per file (default: 1000).
+
+``--thumbnail-cache-dir=<path>``
+    Store generated thumbnails here and reuse them when the same file is
+    opened again. Disabled if unset.
+
+``--thumbnail-hwdec=<no|auto|mediacodec>``
+    Decode thumbnails in hardware. ``auto`` uses VideoToolbox on Apple
+    platforms, D3D11VA on Windows and VAAPI on Linux, and never MediaCodec.
+    ``mediacodec`` is Android only and is off by default because some devices,
+    notably TVs, have very few decoder instances and playback may fail to get
+    one. Falls back to software if the hardware decoder can't be opened or
+    fails on the first thumbnail. (Default: ``no``)
 
 ``--screenshot-format=<type>``
     Set the image file type used for saving screenshots.

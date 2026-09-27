@@ -26,6 +26,7 @@
 #include "core.h"
 #include "mpv_talloc.h"
 #include "screenshot.h"
+#include "thumbnail.h"
 
 #include "audio/out/ao.h"
 #include "common/common.h"
@@ -1283,6 +1284,8 @@ void run_playloop(struct MPContext *mpctx)
     handle_dummy_ticks(mpctx);
 
     handle_clipboard_updates(mpctx);
+
+    mp_thumbnails_update(mpctx);
 
     update_osd_msg(mpctx);
 

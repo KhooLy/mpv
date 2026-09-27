@@ -74,6 +74,7 @@
 #include "video/out/bitmap_packer.h"
 #include "options/path.h"
 #include "screenshot.h"
+#include "thumbnail.h"
 #include "misc/dispatch.h"
 #include "misc/language.h"
 #include "misc/node.h"
@@ -4528,6 +4529,22 @@ static int set_clipboard(struct MPContext *mpctx, void *arg,
     return ret == CLIPBOARD_UNAVAILABLE ? M_PROPERTY_UNAVAILABLE : M_PROPERTY_ERROR;
 }
 
+static int mp_property_thumbnail_info(void *ctx, struct m_property *prop,
+                                      int action, void *arg)
+{
+    struct MPContext *mpctx = ctx;
+    switch (action) {
+    case M_PROPERTY_GET_TYPE:
+        *(struct m_option *)arg = (struct m_option){.type = CONF_TYPE_NODE};
+        return M_PROPERTY_OK;
+    case M_PROPERTY_GET:
+    case M_PROPERTY_GET_NODE:
+        return mp_thumbnails_info(mpctx, arg) ? M_PROPERTY_OK
+                                              : M_PROPERTY_UNAVAILABLE;
+    }
+    return M_PROPERTY_NOT_IMPLEMENTED;
+}
+
 static int mp_property_clipboard(void *ctx, struct m_property *prop,
                                  int action, void *arg)
 {
@@ -4823,6 +4840,7 @@ static const struct m_property mp_properties_base[] = {
     {"term-size", mp_property_term_size},
 
     {"clipboard", mp_property_clipboard},
+    {"thumbnail-info", mp_property_thumbnail_info},
     {"current-clipboard-backend", mp_property_current_clipboard_backend},
 
     M_PROPERTY_ALIAS("video", "vid"),
@@ -5384,6 +5402,14 @@ static void replace_overlay(struct MPContext *mpctx, int id, struct overlay *new
     *ptr = *new;
 
     recreate_overlays(mpctx);
+}
+
+void mp_set_overlay(struct MPContext *mpctx, int id, struct mp_image *img,
+                    int x, int y, int dw, int dh)
+{
+    replace_overlay(mpctx, id, &(struct overlay){
+        .source = img, .x = x, .y = y, .dw = dw, .dh = dh,
+    });
 }
 
 static bool
@@ -7719,6 +7745,16 @@ const struct mp_cmd_def mp_cmds[] = {
                 {"rgba", 2},
                 {"rgba64", 3}),
                 OPTDEF_INT(0)},
+        },
+    },
+    { "thumbnail", cmd_thumbnail,
+        {
+            {"time", OPT_TIME(v.d)},
+            {"overlay-id", OPT_INT(v.i), OPTDEF_INT(-1)},
+            {"x", OPT_INT(v.i), OPTDEF_INT(0)},
+            {"y", OPT_INT(v.i), OPTDEF_INT(0)},
+            {"w", OPT_INT(v.i), OPTDEF_INT(0)},
+            {"h", OPT_INT(v.i), OPTDEF_INT(0)},
         },
     },
     { "loadfile", cmd_loadfile,

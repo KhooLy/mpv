@@ -1507,6 +1507,12 @@ Screenshot Commands
         MPV_FORMAT_NODE_MAP
             "filename"    MPV_FORMAT_STRING
 
+``thumbnail <time>``
+    Return the generated thumbnail closest to ``<time>`` as a map with
+    ``w``, ``h``, ``stride``, ``format`` (always ``bgra``), ``time``,
+    ``exact`` and ``data`` (a byte array). If no thumbnail exists for that
+    exact position yet, it is generated next. Requires ``--thumbnails``.
+
 ``screenshot-to-file <filename> [<flags>]``
     Take a screenshot and save it to a given file. The format of the file will
     be guessed by the extension (and ``--screenshot-format`` is ignored - the
@@ -3457,6 +3463,11 @@ Property list
                 "title"         MPV_FORMAT_STRING (optional)
                 "id"            MPV_FORMAT_INT64
                 "playlist-path" MPV_FORMAT_STRING (optional)
+
+``thumbnail-info``
+    Map with ``w``, ``h``, ``count``, ``done`` and ``interval`` describing
+    thumbnail generation for the current file. Unavailable if
+    ``--thumbnails`` is off or the file has no seekable video.
 
 ``track-list``
     List of audio/video/sub tracks, current entry marked. When the file has
