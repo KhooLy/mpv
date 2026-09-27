@@ -1,3 +1,43 @@
+# Fork overview
+
+`integrated` is the branch to build from. It carries everything below on
+top of upstream mpv: the gpu-next render backend, native Android and Apple
+video/audio pipelines, and the embedding-oriented properties and commands
+(`platform-caps`, `skip-ranges`, `watch-progress`, `opensubtitles-hash`,
+track `format-label`, ...), all documented in the normal manual.
+
+## Building
+
+Desktop (Linux, macOS, Windows):
+
+```sh
+meson setup build -Dlibmpv=true
+ninja -C build
+```
+
+Android (arm64, needs the NDK; `ANDROID_NDK_HOME` or the default SDK path):
+
+```sh
+ci/android/build.sh
+```
+
+This fetches every dependency at a pinned revision, applies
+`third_party/ffmpeg-mediacodec.patch` and
+`third_party/libass-android-fontprovider.patch`, and leaves `libmpv.so`,
+`libc++_shared.so` and the headers in `android-build/out`.
+`ci/android/testapp` is a harness app that plays through it.
+
+iOS and tvOS (on macOS with Xcode):
+
+```sh
+ci/apple-native/build-ios.sh iphoneos
+ci/apple-native/build-ios.sh appletvos
+```
+
+Static libraries and `mpv.pc` end up in `ios-build/<sdk>/prefix`.
+`.github/workflows/apple-native.yml` builds these and runs the macOS
+playback tests.
+
 # gpu-next render backend for libmpv
 
 ## Why
