@@ -487,6 +487,37 @@ int mpv_render_context_get_info(mpv_render_context *ctx,
         res = 0;
         break;
     }
+    case MPV_RENDER_PARAM_COLOR_HINT: {
+        mpv_render_color *out = param.data;
+        const struct pl_color_space *c = &ctx->img_params.color;
+        *out = (mpv_render_color){0};
+        if (c->transfer == PL_COLOR_TRC_PQ) {
+            out->transfer = MPV_RENDER_TRANSFER_PQ;
+        } else if (c->transfer == PL_COLOR_TRC_HLG) {
+            out->transfer = MPV_RENDER_TRANSFER_HLG;
+        }
+        if (c->primaries == PL_COLOR_PRIM_BT_2020) {
+            out->primaries = MPV_RENDER_PRIMARIES_BT2020;
+        } else if (c->primaries == PL_COLOR_PRIM_DISPLAY_P3 ||
+                   c->primaries == PL_COLOR_PRIM_DCI_P3) {
+            out->primaries = MPV_RENDER_PRIMARIES_DISPLAY_P3;
+        }
+        if (out->transfer != MPV_RENDER_TRANSFER_SDR) {
+            const struct pl_hdr_metadata *hdr = &c->hdr;
+            out->min_luma = hdr->min_luma;
+            out->max_luma = hdr->max_luma;
+            out->max_cll = hdr->max_cll;
+            out->max_fall = hdr->max_fall;
+            const struct pl_cie_xy xy[] = {hdr->prim.red, hdr->prim.green,
+                                           hdr->prim.blue, hdr->prim.white};
+            for (int n = 0; n < 4; n++) {
+                out->mastering[n * 2] = xy[n].x;
+                out->mastering[n * 2 + 1] = xy[n].y;
+            }
+        }
+        res = 0;
+        break;
+    }
     default:;
     }
 

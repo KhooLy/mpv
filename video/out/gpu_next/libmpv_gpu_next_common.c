@@ -841,6 +841,28 @@ void lgn_resize(struct render_backend *ctx, struct mp_rect *src,
     p->osd_res = *osd;
 }
 
+static void apply_render_target_color(struct pl_frame *target, mpv_render_color *c)
+{
+    static const enum pl_color_transfer trc[] = {
+        [MPV_RENDER_TRANSFER_SDR] = PL_COLOR_TRC_SRGB,
+        [MPV_RENDER_TRANSFER_PQ] = PL_COLOR_TRC_PQ,
+        [MPV_RENDER_TRANSFER_HLG] = PL_COLOR_TRC_HLG,
+    };
+    static const enum pl_color_primaries prim[] = {
+        [MPV_RENDER_PRIMARIES_BT709] = PL_COLOR_PRIM_BT_709,
+        [MPV_RENDER_PRIMARIES_BT2020] = PL_COLOR_PRIM_BT_2020,
+        [MPV_RENDER_PRIMARIES_DISPLAY_P3] = PL_COLOR_PRIM_DISPLAY_P3,
+    };
+    if ((unsigned)c->transfer < MP_ARRAY_SIZE(trc))
+        target->color.transfer = trc[c->transfer];
+    if ((unsigned)c->primaries < MP_ARRAY_SIZE(prim))
+        target->color.primaries = prim[c->primaries];
+    if (c->max_luma > 0)
+        target->color.hdr.max_luma = c->max_luma;
+    if (c->min_luma > 0)
+        target->color.hdr.min_luma = c->min_luma;
+}
+
 bool lgn_render_frame(struct render_backend *ctx, mpv_render_param *params,
                       struct vo_frame *frame, pl_tex target_tex, bool flip,
                       int w, int h)
@@ -865,6 +887,10 @@ bool lgn_render_frame(struct render_backend *ctx, mpv_render_param *params,
         },
     };
     apply_target_color(p, &target); // --target-trc/--target-peak/--target-prim/etc.
+    mpv_render_color *target_color =
+        get_mpv_render_param(params, MPV_RENDER_PARAM_TARGET_COLOR, NULL);
+    if (target_color)
+        apply_render_target_color(&target, target_color);
     int dither_depth = GET_MPV_RENDER_PARAM(params, MPV_RENDER_PARAM_DEPTH, int, 0);
     if (dither_depth > 0) {
         target.repr.bits.color_depth = dither_depth;

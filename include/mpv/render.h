@@ -444,7 +444,54 @@ typedef enum mpv_render_param_type {
      * Type: mpv_d3d11_target*
      */
     MPV_RENDER_PARAM_D3D11_TARGET = 24,
+    /**
+     * The color space the current video would like the output to use. Valid
+     * for mpv_render_context_get_info(). Use it to pick the swapchain color
+     * space and HDR metadata (e.g. VK_COLOR_SPACE_HDR10_ST2084_EXT and
+     * vkSetHdrMetadataEXT) when the display supports it. Without a video,
+     * this reports SDR BT.709.
+     *
+     * Type: mpv_render_color*
+     */
+    MPV_RENDER_PARAM_COLOR_HINT = 25,
+    /**
+     * The color space of the render target, for mpv_render_context_render().
+     * Optional; without it, the target is SDR sRGB unless --target-trc and
+     * --target-prim say otherwise. Only transfer, primaries, min_luma and
+     * max_luma are read. A max_luma of 0 keeps --target-peak or the default.
+     *
+     * Type: mpv_render_color*
+     */
+    MPV_RENDER_PARAM_TARGET_COLOR = 26,
 } mpv_render_param_type;
+
+typedef enum mpv_render_transfer {
+    MPV_RENDER_TRANSFER_SDR = 0,
+    MPV_RENDER_TRANSFER_PQ = 1,
+    MPV_RENDER_TRANSFER_HLG = 2,
+} mpv_render_transfer;
+
+typedef enum mpv_render_primaries {
+    MPV_RENDER_PRIMARIES_BT709 = 0,
+    MPV_RENDER_PRIMARIES_BT2020 = 1,
+    MPV_RENDER_PRIMARIES_DISPLAY_P3 = 2,
+} mpv_render_primaries;
+
+/**
+ * For MPV_RENDER_PARAM_COLOR_HINT and MPV_RENDER_PARAM_TARGET_COLOR.
+ * Luminance values are in cd/m², 0 when unknown.
+ */
+typedef struct mpv_render_color {
+    mpv_render_transfer transfer;
+    mpv_render_primaries primaries;
+    float min_luma, max_luma;
+    float max_cll, max_fall;
+    /**
+     * Mastering display primaries as CIE 1931 xy: red, green, blue, white.
+     * All 0 when unknown.
+     */
+    float mastering[8];
+} mpv_render_color;
 
 /**
  * For backwards compatibility with the old naming of
