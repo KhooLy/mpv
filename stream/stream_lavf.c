@@ -209,6 +209,10 @@ void mp_setup_av_network_options(AVDictionary **dict, const char *target_fmt,
     if (strlen(cust_headers))
         av_dict_set(dict, "headers", cust_headers, 0);
     av_dict_set(dict, "icy", "1", 0);
+    av_dict_set(dict, "reconnect", "1", 0);
+    av_dict_set(dict, "reconnect_delay_max", "7", 0);
+    av_dict_set(dict, "reconnect_on_network_error", "1", 0);
+    av_dict_set(dict, "reconnect_on_http_error", "5xx,429,408", 0);
     // So far, every known protocol uses microseconds for this
     // Except rtsp.
     if (opts->timeout > 0) {
@@ -387,10 +391,6 @@ static int open_f(stream_t *stream)
         filename = talloc_asprintf(temp, "https://%.*s", BSTR_P(b_filename));
     }
 
-    av_dict_set(&dict, "reconnect", "1", 0);
-    av_dict_set(&dict, "reconnect_delay_max", "7", 0);
-    av_dict_set(&dict, "reconnect_on_network_error", "1", 0);
-    av_dict_set(&dict, "reconnect_on_http_error", "5xx,429,408", 0);
     if (stream->sparse_reads) {
         av_dict_set(&dict, "multiple_requests", "1", 0);
         av_dict_set(&dict, "request_size", "262144", 0);
