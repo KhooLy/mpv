@@ -437,8 +437,9 @@ static void enqueue(struct priv *p, struct demux_packet *pkt)
         p->pending[p->num_pending++] = pts;
 }
 
-static void noop_free(void *arg)
+static void release_format(void *arg)
 {
+    CFRelease(arg);
 }
 
 static void emit(struct mp_filter *f)
@@ -455,7 +456,9 @@ static void emit(struct mp_filter *f)
 
     struct mp_image t = {0};
     mp_image_set_params(&t, &p->params);
-    struct mp_image *mpi = mp_image_new_custom_ref(&t, NULL, noop_free);
+    t.planes[3] = (void *)p->format;
+    struct mp_image *mpi = mp_image_new_custom_ref(&t, (void *)CFRetain(p->format),
+                                                   release_format);
     MP_HANDLE_OOM(mpi);
     mpi->pts = pts;
     mp_pin_in_write(f->ppins[1], MAKE_FRAME(MP_FRAME_VIDEO, mpi));

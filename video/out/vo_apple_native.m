@@ -25,6 +25,11 @@
 #import <CoreMedia/CoreMedia.h>
 #import <CoreVideo/CoreVideo.h>
 #import <QuartzCore/QuartzCore.h>
+#include <TargetConditionals.h>
+#if TARGET_OS_TV
+#import <AVKit/AVKit.h>
+#import <UIKit/UIKit.h>
+#endif
 
 #include "common/common.h"
 #include "common/msg.h"
@@ -52,6 +57,8 @@ struct priv {
     double rate;
     double last_pts;
     int64_t last_target;
+    CMFormatDescriptionRef criteria_format;
+    float criteria_fps;
 };
 
 static void on_main(void (^block)(void))
@@ -126,6 +133,50 @@ static void enqueue_pixel_buffer(struct vo *vo, struct mp_image *mpi)
         MP_VERBOSE(vo, "Could not wrap CVPixelBuffer in a sample buffer\n");
     }
     CFRelease(format);
+}
+
+static void set_display_criteria(AVSampleBufferDisplayLayer *layer,
+                                 CMFormatDescriptionRef format, float fps)
+{
+#if TARGET_OS_TV
+    if (@available(tvOS 17.0, *)) {
+        CALayer *l = layer;
+        while (l && ![l.delegate isKindOfClass:[UIView class]])
+            l = l.superlayer;
+        AVDisplayManager *manager = ((UIView *)l.delegate).window.avDisplayManager;
+        if (!manager)
+            return;
+        AVDisplayCriteria *criteria = nil;
+        if (format)
+            criteria = [[[AVDisplayCriteria alloc] initWithRefreshRate:fps
+                                                    formatDescription:format] autorelease];
+        manager.preferredDisplayCriteria = criteria;
+    }
+#endif
+}
+
+static void update_display_criteria(struct vo *vo, struct mp_image *mpi)
+{
+    struct priv *p = vo->priv;
+    if (mpi->imgfmt != IMGFMT_APPLE_NATIVE || !mpi->planes[3] || mpi->nominal_fps <= 0)
+        return;
+    CMFormatDescriptionRef format = (CMFormatDescriptionRef)mpi->planes[3];
+    if (format == p->criteria_format && mpi->nominal_fps == p->criteria_fps)
+        return;
+    if (p->criteria_format)
+        CFRelease(p->criteria_format);
+    p->criteria_format = (CMFormatDescriptionRef)CFRetain(format);
+    p->criteria_fps = mpi->nominal_fps;
+    MP_VERBOSE(vo, "Display criteria: %.3f fps\n", p->criteria_fps);
+
+    AVSampleBufferDisplayLayer *layer = [p->layer retain];
+    CFRetain(format);
+    float fps = p->criteria_fps;
+    on_main(^{
+        set_display_criteria(layer, format, fps);
+        CFRelease(format);
+        [layer release];
+    });
 }
 
 static void update_size(struct vo *vo)
@@ -244,6 +295,7 @@ static bool draw_frame(struct vo *vo, struct vo_frame *frame)
     @autoreleasepool {
         if (mpi->imgfmt == IMGFMT_VIDEOTOOLBOX)
             enqueue_pixel_buffer(vo, mpi);
+        update_display_criteria(vo, mpi);
         if (mpi->pts != MP_NOPTS_VALUE)
             sync_clock(vo, mpi->pts, frame->pts);
     }
@@ -378,7 +430,10 @@ static void uninit(struct vo *vo)
 
     AVSampleBufferDisplayLayer *layer = p->layer;
     CALayer *overlay = p->overlay;
+    bool criteria = p->criteria_format;
     on_main(^{
+        if (criteria)
+            set_display_criteria(layer, NULL, 0);
         [overlay removeFromSuperlayer];
         [overlay release];
         [layer flushAndRemoveImage];
@@ -386,6 +441,8 @@ static void uninit(struct vo *vo)
         [layer release];
     });
     CFRelease(p->timebase);
+    if (p->criteria_format)
+        CFRelease(p->criteria_format);
 }
 
 const struct vo_driver video_out_apple_native = {

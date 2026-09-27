@@ -846,6 +846,9 @@ if features['avfoundation']
     sources += files('audio/out/ao_avfoundation.m',
                      'video/decode/vd_apple_native.m',
                      'video/out/vo_apple_native.m')
+    if host_machine.subsystem() == 'tvos'
+        dependencies += dependency('appleframeworks', modules: ['AVKit', 'UIKit'])
+    endif
 endif
 
 coreaudio = dependency('appleframeworks', modules: ['CoreFoundation', 'CoreAudio',
