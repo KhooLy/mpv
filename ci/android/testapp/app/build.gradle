@@ -1,0 +1,50 @@
+plugins {
+    id "com.android.application"
+}
+
+def mpvOut = project.findProperty("mpvOut") ?: "${rootDir}/../../../android-build/out"
+
+android {
+    namespace "org.mpv.androidtest"
+    compileSdk 36
+
+    defaultConfig {
+        applicationId "org.mpv.androidtest"
+        minSdk 28
+        targetSdk 36
+        versionCode 1
+        versionName "0.1"
+
+        ndk {
+            abiFilters "arm64-v8a"
+        }
+
+        externalNativeBuild {
+            cmake {
+                cppFlags "-std=c++17"
+                arguments "-DMPV_OUT=$mpvOut"
+            }
+        }
+    }
+
+    buildTypes {
+        debug {
+            jniDebuggable true
+        }
+    }
+
+    sourceSets {
+        main.jniLibs.srcDirs = [mpvOut]
+    }
+
+    externalNativeBuild {
+        cmake {
+            path "src/main/cpp/CMakeLists.txt"
+            version "3.22.1"
+        }
+    }
+}
+
+dependencies {
+    implementation "androidx.media3:media3-exoplayer:1.8.0"
+}
