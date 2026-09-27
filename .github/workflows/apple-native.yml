@@ -39,24 +39,3 @@ jobs:
       - name: Playback tests
         run: ci/apple-native/run.sh build
 
-  embedded:
-    runs-on: macos-15
-    strategy:
-      fail-fast: false
-      matrix:
-        sdk: [iphoneos, appletvos]
-    steps:
-      - uses: actions/checkout@v6
-
-      - name: Install dependencies
-        run: brew install -q meson nasm pkgconf
-
-      - uses: actions/cache@v4
-        with:
-          path: ios-build/${{ matrix.sdk }}
-          key: deps-${{ matrix.sdk }}-${{ hashFiles('ci/apple-native/build-ios.sh') }}
-
-      - name: Build libmpv
-        run: |
-          rm -rf ios-build/${{ matrix.sdk }}/mpv
-          ci/apple-native/build-ios.sh ${{ matrix.sdk }}

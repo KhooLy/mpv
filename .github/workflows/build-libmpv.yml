@@ -263,9 +263,111 @@ jobs:
           name: libmpv-windows-x86_64
           path: out/
 
+  apple:
+    runs-on: macos-15
+    strategy:
+      fail-fast: false
+      matrix:
+        sdk: [iphoneos, iphonesimulator, appletvos, appletvsimulator]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: brew install -q meson nasm pkgconf
+
+      - uses: actions/cache@v4
+        with:
+          path: ios-build/${{ matrix.sdk }}
+          key: deps-${{ matrix.sdk }}-${{ hashFiles('ci/apple-native/build-ios.sh') }}
+
+      - name: Build libmpv
+        run: |
+          rm -rf ios-build/${{ matrix.sdk }}/mpv
+          ci/apple-native/build-ios.sh ${{ matrix.sdk }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: apple-${{ matrix.sdk }}
+          path: ios-build/${{ matrix.sdk }}/out/
+
+  apple-xcframework:
+    needs: apple
+    runs-on: macos-15
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: apple-*
+          path: slices
+
+      - name: Create xcframework
+        run: |
+          args=""
+          for sdk in iphoneos iphonesimulator appletvos appletvsimulator; do
+            args="$args -library slices/apple-$sdk/libmpv.a -headers slices/apple-$sdk/include"
+          done
+          mkdir -p out
+          xcodebuild -create-xcframework $args -output out/Libmpv.xcframework
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: libmpv-apple.xcframework
+          path: out/
+
+  android:
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        abi: [arm64-v8a, armeabi-v7a, x86_64]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: sudo apt-get update && sudo apt-get install -y meson ninja-build nasm pkg-config gcc-multilib
+
+      - uses: actions/cache@v4
+        with:
+          path: android-build/${{ matrix.abi }}
+          key: android-${{ matrix.abi }}-${{ hashFiles('ci/android/build.sh', 'third_party/*.patch') }}
+
+      - name: Build libmpv
+        env:
+          ABI: ${{ matrix.abi }}
+          WORK: ${{ github.workspace }}/android-build/${{ matrix.abi }}
+        run: |
+          rm -rf "$WORK/mpv"
+          ci/android/build.sh
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android-${{ matrix.abi }}
+          path: android-build/${{ matrix.abi }}/out/
+
+  android-bundle:
+    needs: android
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: android-*
+          path: abis
+
+      - name: Merge ABIs
+        run: |
+          mkdir -p out
+          for dir in abis/android-*; do
+            cp -r "$dir"/. out/
+          done
+          find out -type f
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: libmpv-android
+          path: out/
+
   release:
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [linux, macos, windows]
+    needs: [linux, macos, windows, apple-xcframework, android-bundle]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -277,6 +379,7 @@ jobs:
 
       - uses: actions/download-artifact@v4
         with:
+          pattern: libmpv-*
           path: artifacts
 
       - name: Zip each platform's output
