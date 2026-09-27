@@ -77,6 +77,7 @@ struct priv {
     AVPacket              *lavc_pkt;
     int bit_rate;
     int out_samples;    // upper bound on encoded output per AC3 frame
+    bool eac3;
 };
 
 static bool reinit(struct mp_filter *f)
@@ -89,7 +90,7 @@ static bool reinit(struct mp_filter *f)
         {0, 96000, 192000, 256000, 384000, 448000, 448000};
 
     if (s->opts->add_iec61937_header) {
-        s->out_samples = AC3_FRAME_SIZE;
+        s->out_samples = AC3_FRAME_SIZE * (s->eac3 ? 4 : 1);
     } else {
         s->out_samples = AC3_MAX_CODED_FRAME_SIZE /
                          mp_aframe_get_sstride(s->in_frame);
@@ -122,7 +123,7 @@ static bool reinit(struct mp_filter *f)
     s->lavc_actx->bit_rate = bit_rate;
 
     if (avcodec_open2(s->lavc_actx, s->lavc_acodec, NULL) < 0) {
-        MP_ERR(f, "Couldn't open codec %s, br=%d.\n", "ac3", bit_rate);
+        MP_ERR(f, "Couldn't open codec %s, br=%d.\n", s->lavc_acodec->name, bit_rate);
         return false;
     }
 
@@ -220,9 +221,9 @@ static void af_lavcac3enc_process(struct mp_filter *f)
         goto error;
 
     out = mp_aframe_create();
-    mp_aframe_set_format(out, AF_FORMAT_S_AC3);
+    mp_aframe_set_format(out, s->eac3 ? AF_FORMAT_S_EAC3 : AF_FORMAT_S_AC3);
     mp_aframe_set_chmap(out, &(struct mp_chmap)MP_CHMAP_INIT_STEREO);
-    mp_aframe_set_rate(out, 48000);
+    mp_aframe_set_rate(out, s->eac3 ? 192000 : 48000);
 
     if (mp_aframe_pool_allocate(s->out_pool, out, s->out_samples) < 0)
         goto error;
@@ -235,7 +236,18 @@ static void af_lavcac3enc_process(struct mp_filter *f)
     int header_len = 0;
     char hdr[8];
 
-    if (s->opts->add_iec61937_header && pkt->size > 5) {
+    if (s->opts->add_iec61937_header && s->eac3) {
+        int len = frame_size;
+
+        frame_size = AC3_FRAME_SIZE * 4 * 2 * 2;
+        header_len = 8;
+
+        AV_WL16(hdr,     0xF872);
+        AV_WL16(hdr + 2, 0x4E1F);
+        hdr[4] = 0x15;
+        hdr[5] = 0;
+        AV_WL16(hdr + 6, len);
+    } else if (s->opts->add_iec61937_header && pkt->size > 5) {
         int bsmod = pkt->data[5] & 0x7;
         int len = frame_size;
 
@@ -331,6 +343,7 @@ static struct mp_filter *af_lavcac3enc_create(struct mp_filter *parent,
         MP_ERR(f, "Couldn't find encoder %s.\n", s->opts->encoder);
         goto error;
     }
+    s->eac3 = s->lavc_acodec->id == AV_CODEC_ID_EAC3;
 
     s->lavc_actx = avcodec_alloc_context3(s->lavc_acodec);
     if (!s->lavc_actx) {
