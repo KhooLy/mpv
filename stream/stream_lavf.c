@@ -159,6 +159,35 @@ static int interrupt_cb(void *ctx)
 
 static const char * const prefix[] = { "lavf://", "ffmpeg://" };
 
+static bool is_local_host(const char *url)
+{
+    const char *p = strstr(url, "://");
+    if (!p)
+        return false;
+    bstr host = bstr0(p + 3);
+    host = bstr_splice(host, 0, bstrcspn(host, "/?#"));
+    int at = bstrrchr(host, '@');
+    if (at >= 0)
+        host = bstr_cut(host, at + 1);
+    if (bstr_eatstart0(&host, "[")) {
+        host = bstr_splice(host, 0, bstrchr(host, ']'));
+        return bstrcasecmp0(host, "::1") == 0 || bstr_case_startswith(host, bstr0("fd")) ||
+               bstr_case_startswith(host, bstr0("fe80:"));
+    }
+    int colon = bstrchr(host, ':');
+    if (colon >= 0)
+        host = bstr_splice(host, 0, colon);
+    if (bstrcasecmp0(host, "localhost") == 0 || bstr_case_endswith(host, bstr0(".local")))
+        return true;
+    int a, b;
+    char buf[64];
+    snprintf(buf, sizeof(buf), "%.*s", BSTR_P(host));
+    if (sscanf(buf, "%d.%d.", &a, &b) != 2)
+        return false;
+    return a == 127 || a == 10 || (a == 192 && b == 168) ||
+           (a == 172 && b >= 16 && b <= 31);
+}
+
 void mp_setup_av_network_options(AVDictionary **dict, const char *target_fmt,
                                  struct mpv_global *global, struct mp_log *log)
 {
@@ -397,6 +426,10 @@ static int open_f(stream_t *stream)
     }
 
     mp_setup_av_network_options(&dict, NULL, stream->global, stream->log);
+    if (is_local_host(filename)) {
+        MP_VERBOSE(stream, "Local server, disabling network timeout.\n");
+        av_dict_set(&dict, "timeout", NULL, 0);
+    }
 
     AVIOInterruptCB cb = {
         .callback = interrupt_cb,

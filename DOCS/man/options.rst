@@ -5763,6 +5763,10 @@ Network
     protocol is used which does not support timeouts, this option is silently
     ignored.
 
+    Streams from localhost and private network addresses opened with the
+    FFmpeg HTTP backend have no timeout, since local torrent streaming servers
+    can hold a request for a long time while they fetch the data.
+
     .. warning::
 
         This breaks the RTSP protocol, because of inconsistent FFmpeg API
