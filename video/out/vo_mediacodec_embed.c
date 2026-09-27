@@ -83,6 +83,7 @@ struct osd_layer {
 
     ASurfaceControl *sc;
     struct mp_osd_res res;
+    int vid_w, vid_h;
     int buf_w, buf_h;
     uint8_t *scratch;
     int64_t change_id;
@@ -498,7 +499,10 @@ static void draw_osd(struct vo *vo, int64_t present_ns)
     ASurfaceTransaction *t = o->txn_create();
     if (buf) {
         ARect src = {0, 0, box.x1 - box.x0, box.y1 - box.y0};
-        ARect dst = {box.x0, box.y0, box.x1, box.y1};
+        ARect dst = {
+            (int64_t)box.x0 * o->vid_w / res.w, (int64_t)box.y0 * o->vid_h / res.h,
+            (int64_t)box.x1 * o->vid_w / res.w, (int64_t)box.y1 * o->vid_h / res.h,
+        };
         o->set_buffer(t, o->sc, buf, -1);
         o->set_geometry(t, o->sc, &src, &dst, 0);
     }
@@ -665,8 +669,16 @@ static int control(struct vo *vo, uint32_t request, void *data)
 static int reconfig(struct vo *vo, struct mp_image_params *params)
 {
     struct priv *p = vo->priv;
-    p->osd.buf_w = params->w;
-    p->osd.buf_h = params->h;
+    int sw = 1920, sh = 1080;
+    if (vo->opts->android_surface_size.w > 0 && vo->opts->android_surface_size.h > 0) {
+        sw = vo->opts->android_surface_size.w;
+        sh = vo->opts->android_surface_size.h;
+    }
+    double scale = MPMIN(1.0, MPMIN(sw / (double)params->w, sh / (double)params->h));
+    p->osd.vid_w = params->w;
+    p->osd.vid_h = params->h;
+    p->osd.buf_w = MPMAX(1, lrint(params->w * scale));
+    p->osd.buf_h = MPMAX(1, lrint(params->h * scale));
     p->osd.change_id = -1;
     vo_android_set_buffers_dataspace(vo, params);
     return 0;
