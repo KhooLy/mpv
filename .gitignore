@@ -1,3 +1,9 @@
 /subprojects/*
 !/subprojects/packagefiles
 !/subprojects/*.wrap
+/android-build
+/ios-build
+/ci/android/testapp/.gradle
+/ci/android/testapp/app/build
+/ci/android/testapp/app/.cxx
+/ci/android/testapp/local.properties
