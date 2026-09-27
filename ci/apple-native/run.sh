@@ -15,6 +15,16 @@ $ff $video -c:v libx264 -pix_fmt yuv420p "$dir/h264.mkv"
 $ff $video -c:v libx265 -pix_fmt yuv420p10le -x265-params "$hdr:log-level=error" \
     -color_primaries bt2020 -color_trc smpte2084 -colorspace bt2020nc "$dir/hdr10.mkv"
 $ff -i "$dir/hdr10.mkv" -c copy -tag:v hvc1 "$dir/hdr10.mp4"
+python3 -c '
+import json
+scene = {"BezierCurveData": {"Anchors": [256, 512, 768, 1024, 1280, 1536, 1792, 2048, 2304], "KneePointX": 100, "KneePointY": 200},
+         "LuminanceParameters": {"AverageRGB": 1000, "LuminanceDistributions": {"DistributionIndex": [1, 5, 10, 25, 50, 75, 90, 95, 99], "DistributionValues": [0, 10, 50, 100, 200, 400, 600, 800, 1000]}, "MaxScl": [1000, 1000, 1000]},
+         "NumberOfWindows": 1, "TargetedSystemDisplayMaximumLuminance": 1000}
+frames = [dict(scene, SceneFrameIndex=i, SceneId=0, SequenceFrameIndex=i) for i in range(120)]
+json.dump({"JSONInfo": {"HDR10plusProfile": "B", "Version": "1.0"}, "SceneInfo": frames, "SceneInfoSummary": {"SceneFirstFrameIndex": [0], "SceneFrameNumbers": [120]}, "ToneMappingMode": "LLC"}, open("'"$dir"'/hdr10plus.json", "w"))
+'
+$ff $video -c:v libx265 -pix_fmt yuv420p10le -x265-params "$hdr:dhdr10-info=$dir/hdr10plus.json:log-level=error" \
+    -color_primaries bt2020 -color_trc smpte2084 -colorspace bt2020nc "$dir/hdr10plus.mkv"
 $ff $video -c:v libsvtav1 -pix_fmt yuv420p10le "$dir/av1.mkv"
 $ff $video $audio -filter_complex "[1:a]pan=5.1|c0=c0|c1=c0|c2=c0|c3=c0|c4=c0|c5=c0[a]" \
     -map 0:v -map "[a]" -c:v libx264 -pix_fmt yuv420p -c:a eac3 "$dir/eac3.mkv"
@@ -36,6 +46,7 @@ run() {
 run "H.264 MKV" "$dir/h264.mkv"
 run "HEVC HDR10 MKV" "$dir/hdr10.mkv" expect-gamma=pq
 run "HEVC HDR10 MP4" "$dir/hdr10.mp4" expect-gamma=pq
+run "HEVC HDR10+ MKV" "$dir/hdr10plus.mkv" expect-gamma=pq
 run "AV1 MKV" "$dir/av1.mkv"
 run "E-AC3 5.1 PCM" "$dir/eac3.mkv"
 run "E-AC3 5.1 passthrough" "$dir/eac3.mkv" audio-spdif=eac3 expect-audio=spdif-eac3

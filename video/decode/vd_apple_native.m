@@ -20,6 +20,7 @@
 
 #include <libavcodec/avcodec.h>
 #include <libavutil/dovi_meta.h>
+#include <libavutil/hdr_dynamic_metadata.h>
 #include <libavutil/intreadwrite.h>
 #include <libplacebo/utils/libav.h>
 
@@ -338,6 +339,26 @@ static bool init_format(struct priv *p)
     return true;
 }
 
+static void attach_hdr10plus(CFMutableDictionaryRef dict, struct demux_packet *pkt)
+{
+    if (!pkt->avpacket)
+        return;
+    const AVDynamicHDRPlus *hdr = (const AVDynamicHDRPlus *)
+        av_packet_get_side_data(pkt->avpacket, AV_PKT_DATA_DYNAMIC_HDR10_PLUS, NULL);
+    if (!hdr)
+        return;
+    uint8_t *t35 = NULL;
+    size_t size = 0;
+    if (av_dynamic_hdr_plus_to_t35(hdr, &t35, &size) < 0)
+        return;
+    if (@available(macOS 14.0, iOS 17.0, tvOS 17.0, *)) {
+        CFDataRef data = CFDataCreate(kCFAllocatorDefault, t35, size);
+        CFDictionarySetValue(dict, kCMSampleAttachmentKey_HDR10PlusPerFrameData, data);
+        CFRelease(data);
+    }
+    av_free(t35);
+}
+
 static CMSampleBufferRef create_sample(struct priv *p, struct demux_packet *pkt)
 {
     CMBlockBufferRef block = NULL;
@@ -368,12 +389,12 @@ static CMSampleBufferRef create_sample(struct priv *p, struct demux_packet *pkt)
         return NULL;
     }
 
-    if (!pkt->keyframe) {
-        CFArrayRef attachments = CMSampleBufferGetSampleAttachmentsArray(sample, true);
-        CFMutableDictionaryRef dict =
-            (CFMutableDictionaryRef)CFArrayGetValueAtIndex(attachments, 0);
+    CFArrayRef attachments = CMSampleBufferGetSampleAttachmentsArray(sample, true);
+    CFMutableDictionaryRef dict =
+        (CFMutableDictionaryRef)CFArrayGetValueAtIndex(attachments, 0);
+    if (!pkt->keyframe)
         CFDictionarySetValue(dict, kCMSampleAttachmentKey_NotSync, kCFBooleanTrue);
-    }
+    attach_hdr10plus(dict, pkt);
     return sample;
 }
 
