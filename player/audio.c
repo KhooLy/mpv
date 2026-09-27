@@ -127,19 +127,46 @@ static int recreate_audio_filters(struct MPContext *mpctx)
     struct ao_chain *ao_c = mpctx->ao_chain;
     mp_assert(ao_c);
 
-    struct m_obj_settings *list = mpctx->opts->af_settings;
-    if (want_ac3_transcode(mpctx)) {
+    struct MPOpts *opts = mpctx->opts;
+    static char *downmix[] = {"graph",
+        "aresample=out_chlayout=stereo:clev=0.707:slev=0.707:rematrix_maxval=1", NULL};
+    static char *dialog[] = {"graph",
+        "aresample=out_chlayout=stereo:clev=1.414:slev=0.5:lfe_mix_level=0:rematrix_maxval=1", NULL};
+    static char *night[] = {"graph",
+        "acompressor=threshold=-30dB:ratio=8:attack=5:release=250:makeup=12dB,alimiter=limit=0.9", NULL};
+    static char *stable[] = {"graph", "dynaudnorm=f=250:g=15:p=0.9:m=10", NULL};
+    char **pre[3];
+    int num_pre = 0;
+    if (opts->audio_downmix)
+        pre[num_pre++] = opts->audio_downmix == 2 ? dialog : downmix;
+    if (opts->audio_night_mode)
+        pre[num_pre++] = night;
+    if (opts->audio_stable_volume)
+        pre[num_pre++] = stable;
+    bool transcode = want_ac3_transcode(mpctx);
+
+    struct m_obj_settings *list = opts->af_settings;
+    if (num_pre || transcode) {
         int num = 0;
         while (list && list[num].name)
             num++;
-        struct m_obj_settings *ext = talloc_zero_array(NULL, struct m_obj_settings, num + 2);
+        struct m_obj_settings *ext =
+            talloc_zero_array(NULL, struct m_obj_settings, num_pre + num + 2);
+        for (int n = 0; n < num_pre; n++)
+            ext[n] = (struct m_obj_settings){.name = "lavfi", .enabled = true,
+                                             .attribs = pre[n]};
         for (int n = 0; n < num; n++)
-            ext[n] = list[n];
-        bool eac3 = mpctx->opts->audio_ac3_transcode == 3;
-        static char *eac3_attribs[] = {"encoder", "eac3", NULL};
-        ext[num] = (struct m_obj_settings){.name = "lavcac3enc", .enabled = true,
-                                           .attribs = eac3 ? eac3_attribs : NULL};
+            ext[num_pre + n] = list[n];
         list = ext;
+    }
+    if (transcode) {
+        int num = 0;
+        while (list[num].name)
+            num++;
+        bool eac3 = opts->audio_ac3_transcode == 3;
+        static char *eac3_attribs[] = {"encoder", "eac3", NULL};
+        list[num] = (struct m_obj_settings){.name = "lavcac3enc", .enabled = true,
+                                            .attribs = eac3 ? eac3_attribs : NULL};
         MP_VERBOSE(mpctx, "Transcoding multichannel audio to %s.\n",
                    eac3 ? "E-AC3" : "AC3");
     }

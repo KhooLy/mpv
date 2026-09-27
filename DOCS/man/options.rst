@@ -2119,6 +2119,24 @@ Audio
         multichannel PCM, and mpv supports lossless DTS-HD decoding via
         FFmpeg's new DCA decoder (based on libdcadec).
 
+``--audio-downmix=<no|stereo|dialog>``
+    Downmix multichannel audio to stereo before any other audio filter
+    (default: no). ``stereo`` mixes center and surrounds at -3 dB. ``dialog``
+    boosts the center channel, lowers the surrounds and drops LFE, which makes
+    speech easier to follow on TV or laptop speakers.
+
+``--audio-night-mode=<yes|no>``
+    Compress the dynamic range so quiet dialog gets louder and explosions get
+    quieter (default: no). Useful for late-night listening at low volume.
+
+``--audio-stable-volume=<yes|no>``
+    Level loudness changes over time, for example between scenes, programs or
+    ads (default: no). Uses the ``dynaudnorm`` filter.
+
+    These three options insert ``lavfi`` filters in front of ``--af`` and
+    apply before ``--audio-ac3-transcode``. They have no effect on
+    passthrough audio.
+
 ``--audio-ac3-transcode=<no|yes|auto|eac3>``
     Encode multichannel PCM to AC3 at 640 kbps and send it as compressed
     passthrough. This is useful for S/PDIF or HDMI ARC receivers that accept

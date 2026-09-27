@@ -345,6 +345,9 @@ typedef struct MPOpts {
     struct m_obj_settings *vf_settings;
     struct m_obj_settings *af_settings;
     int audio_ac3_transcode;
+    int audio_downmix;
+    bool audio_night_mode;
+    bool audio_stable_volume;
     bool thumbnails;
     int thumbnail_width;
     double thumbnail_interval;

@@ -703,6 +703,10 @@ static const m_option_t mp_opts[] = {
     {"af", OPT_SETTINGSLIST(af_settings, &af_obj_list)},
     {"audio-ac3-transcode", OPT_CHOICE(audio_ac3_transcode,
         {"no", 0}, {"yes", 1}, {"auto", 2}, {"eac3", 3}), .flags = UPDATE_AUDIO},
+    {"audio-downmix", OPT_CHOICE(audio_downmix,
+        {"no", 0}, {"stereo", 1}, {"dialog", 2}), .flags = UPDATE_AUDIO},
+    {"audio-night-mode", OPT_BOOL(audio_night_mode), .flags = UPDATE_AUDIO},
+    {"audio-stable-volume", OPT_BOOL(audio_stable_volume), .flags = UPDATE_AUDIO},
     {"vf", OPT_SETTINGSLIST(vf_settings, &vf_obj_list)},
 
     {"thumbnails", OPT_BOOL(thumbnails), .flags = UPDATE_BUILTIN_SCRIPTS},
