@@ -249,7 +249,11 @@ static bool init_format(struct priv *p)
 
     const AVDOVIDecoderConfigurationRecord *dovi = get_dovi(c);
     if (dovi && type == kCMVideoCodecType_HEVC) {
+#if TARGET_OS_OSX
+        bool display = true;
+#else
         bool display = AVPlayer.availableHDRModes & AVPlayerHDRModeDolbyVision;
+#endif
         bool native = (dovi->dv_profile == 5 || dovi->dv_profile == 8) &&
                       display && VTIsHardwareDecodeSupported('dvh1');
         if (!display)
