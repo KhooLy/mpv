@@ -1,3 +1,17 @@
+diff --git a/configure b/configure
+index 374bd5c..77cabf4 100755
+--- a/configure
++++ b/configure
+@@ -3686,6 +3686,9 @@ mjpeg_vaapi_encoder_deps="VAEncPictureParameterBufferJPEG"
+ mjpeg_vaapi_encoder_select="cbs_jpeg jpegtables vaapi_encode"
+ mp3_mf_encoder_deps="mediafoundation"
+ mp3_mediacodec_decoder_deps="mediacodec"
++ac3_mediacodec_decoder_deps="mediacodec"
++eac3_mediacodec_decoder_deps="mediacodec"
++ac4_mediacodec_decoder_deps="mediacodec"
+ mp3_mediacodec_decoder_select="mpegaudioheader"
+ mpeg1_cuvid_decoder_deps="cuvid"
+ mpeg1_v4l2m2m_decoder_deps="v4l2_m2m mpeg1_v4l2_m2m"
 diff --git a/libavcodec/Makefile b/libavcodec/Makefile
 index 95ba308..be1a160 100644
 --- a/libavcodec/Makefile
