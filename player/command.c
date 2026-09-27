@@ -647,6 +647,18 @@ static int mp_property_demuxer(void *ctx, struct m_property *prop,
     return m_property_strdup_ro(action, arg, demuxer->desc->name);
 }
 
+static int mp_property_error_log(void *ctx, struct m_property *prop,
+                                 int action, void *arg)
+{
+    return error_report_property(ctx, false, action, arg);
+}
+
+static int mp_property_last_error(void *ctx, struct m_property *prop,
+                                  int action, void *arg)
+{
+    return error_report_property(ctx, true, action, arg);
+}
+
 static int mp_property_file_format(void *ctx, struct m_property *prop,
                                    int action, void *arg)
 {
@@ -4636,6 +4648,8 @@ static const struct m_property mp_properties_base[] = {
     {"stream-path", mp_property_stream_path},
     {"current-demuxer", mp_property_demuxer},
     {"file-format", mp_property_file_format},
+    {"error-log", mp_property_error_log},
+    {"last-error", mp_property_last_error},
     {"stream-pos", mp_property_stream_pos},
     {"stream-end", mp_property_stream_end},
     {"duration", mp_property_duration},

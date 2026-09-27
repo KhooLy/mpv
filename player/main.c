@@ -193,6 +193,7 @@ void mp_destroy(struct MPContext *mpctx)
     mpctx->encode_lavc_ctx = NULL;
 
     command_uninit(mpctx);
+    error_report_uninit(mpctx);
 
     mp_clients_destroy(mpctx);
 
@@ -320,6 +321,7 @@ struct MPContext *mp_create(void)
     clipboard_init(mpctx);
     screenshot_init(mpctx);
     command_init(mpctx);
+    error_report_init(mpctx);
     init_libav(mpctx->global);
     mp_clients_init(mpctx);
     mpctx->osd = osd_create(mpctx->global);

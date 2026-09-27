@@ -1331,6 +1331,8 @@ static void handle_clipboard_updates(struct MPContext *mpctx)
 
 void run_playloop(struct MPContext *mpctx)
 {
+    error_report_update(mpctx);
+
     if (encode_lavc_didfail(mpctx->encode_lavc_ctx)) {
         mpctx->stop_play = PT_ERROR;
         return;

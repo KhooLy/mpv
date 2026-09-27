@@ -2267,6 +2267,39 @@ Property list
 
     Otherwise, return the ``filename`` property.
 
+``error-log``
+    Warning and error log messages of the current file, up to the last 64.
+    Each entry is a map with ``time`` (seconds since the file started
+    loading), ``level``, ``prefix`` and ``text``. Query strings and user
+    credentials are removed from URLs in the text.
+
+``last-error``
+    Report about the last file that failed to play, or that ended more than 5
+    seconds before its duration. It is set before the ``end-file`` event is
+    sent, and is unavailable until the first failure. Map with these entries:
+
+    ``error``, ``code``
+        mpv error string and code, as in the ``end-file`` event. ``code`` is
+        0 for a premature end of file.
+    ``category``
+        One of ``http``, ``network``, ``tls``, ``codec``, ``format``,
+        ``audio-output``, ``video-output``, ``no-streams``, ``truncated`` or
+        ``unknown``, guessed from the error and the log.
+    ``http-status``
+        HTTP status code, if one was found in the log.
+    ``message``
+        The first error message of the file.
+    ``url``
+        The opened URL, without query string and credentials.
+    ``elapsed``, ``played``
+        Seconds since loading started, and whether anything was played.
+    ``state``
+        Values of some properties before playback was stopped, such as
+        ``time-pos``, ``duration``, ``video-codec``, ``hwdec-current`` and
+        ``demuxer-cache-duration``.
+    ``log``
+        Same as ``error-log``.
+
 ``file-format``
     Symbolic name of the file format. In some cases, this is a comma-separated
     list of format names, e.g. mp4 is ``mov,mp4,m4a,3gp,3g2,mj2`` (the list

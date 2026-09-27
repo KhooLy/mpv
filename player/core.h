@@ -403,6 +403,8 @@ typedef struct MPContext {
     double abr_next_check;
     double abr_last_switch;
 
+    struct error_report *error_report;
+
     double sleeptime;      // number of seconds to sleep before next iteration
 
     double mouse_timer;
@@ -538,6 +540,16 @@ struct playlist_entry *mp_check_playlist_resume(struct MPContext *mpctx,
                                                 struct playlist *playlist);
 
 // loadfile.c
+void error_report_init(struct MPContext *mpctx);
+void error_report_uninit(struct MPContext *mpctx);
+void error_report_start(struct MPContext *mpctx);
+void error_report_update(struct MPContext *mpctx);
+void error_report_snapshot(struct MPContext *mpctx);
+void error_report_finish(struct MPContext *mpctx, int error, bool eof,
+                         const char *url);
+int error_report_property(struct MPContext *mpctx, bool last, int action,
+                          void *arg);
+
 void mp_abort_playback_async(struct MPContext *mpctx);
 void mp_abort_add(struct MPContext *mpctx, struct mp_abort_entry *abort);
 void mp_abort_remove(struct MPContext *mpctx, struct mp_abort_entry *abort);

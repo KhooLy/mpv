@@ -1757,6 +1757,7 @@ static void play_current_file(struct MPContext *mpctx)
     mpctx->abr_rate = 0;
     mpctx->abr_next_check = 0;
     mpctx->abr_last_switch = mp_time_sec();
+    error_report_start(mpctx);
     mpctx->video_speed = mpctx->audio_speed = opts->playback_speed;
     mpctx->speed_factor_a = mpctx->speed_factor_v = 1.0;
     mpctx->display_sync_error = 0.0;
@@ -2037,6 +2038,9 @@ terminate_playback:
 
     mp_thumbnails_stop(mpctx);
 
+    if (mpctx->stop_play == PT_ERROR || mpctx->stop_play == AT_END_OF_FILE)
+        error_report_snapshot(mpctx);
+
     process_hooks(mpctx, "on_unload");
 
     // time to uninit all, except global stuff:
@@ -2105,6 +2109,9 @@ terminate_playback:
     case PT_STOP:           end_event.reason = MPV_END_FILE_REASON_STOP; break;
     case PT_QUIT:           end_event.reason = MPV_END_FILE_REASON_QUIT; break;
     };
+    error_report_finish(mpctx, end_event.error,
+                        end_event.reason == MPV_END_FILE_REASON_EOF,
+                        mpctx->stream_open_filename);
     mp_notify(mpctx, MPV_EVENT_END_FILE, &end_event);
 
     MP_VERBOSE(mpctx, "finished playback, %s (reason %d)\n",
