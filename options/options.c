@@ -1035,7 +1035,7 @@ static const struct MPOpts mp_default_opts = {
     .osd_duration = 1000,
 #if HAVE_LUA
     .lua_load_osc = true,
-    .lua_load_ytdl = true,
+    .lua_load_ytdl = !HAVE_ANDROID,
     .lua_ytdl_format = NULL,
     .lua_ytdl_raw_options = NULL,
     .lua_load_stats = true,
