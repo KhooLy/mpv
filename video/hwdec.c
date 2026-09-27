@@ -1,7 +1,9 @@
 #include <assert.h>
+#include <string.h>
 
 #include <libavutil/hwcontext.h>
 
+#include "common/common.h"
 #include "config.h"
 #include "hwdec.h"
 #include "osdep/threads.h"
@@ -141,4 +143,14 @@ const struct hwcontext_fns *hwdec_get_hwcontext_fns(int av_hwdevice_type)
             return hwcontext_fns[n];
     }
     return NULL;
+}
+
+bool mp_hwdec_codec_is_software(const char *name)
+{
+    static const char *const prefixes[] = {"c2.android.", "c2.google.", "OMX.google."};
+    for (int n = 0; n < MP_ARRAY_SIZE(prefixes); n++) {
+        if (name && strncmp(name, prefixes[n], strlen(prefixes[n])) == 0)
+            return true;
+    }
+    return false;
 }

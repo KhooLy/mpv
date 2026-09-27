@@ -2677,6 +2677,33 @@ static int mp_property_hwdec_current(void *ctx, struct m_property *prop,
     return m_property_strdup_ro(action, arg, current);
 }
 
+static int mp_property_hwdec_codec(void *ctx, struct m_property *prop,
+                                   int action, void *arg)
+{
+    MPContext *mpctx = ctx;
+    struct track *track = mpctx->current_track[0][STREAM_VIDEO];
+    char *name = NULL;
+    if (!track || !track->dec ||
+        mp_decoder_wrapper_control(track->dec, VDCTRL_GET_HWDEC_CODEC, &name) != CONTROL_TRUE)
+        return M_PROPERTY_UNAVAILABLE;
+
+    int res;
+    if (action == M_PROPERTY_KEY_ACTION) {
+        struct m_property_action_arg *ka = arg;
+        if (strcmp(ka->key, "software") == 0) {
+            res = m_property_bool_ro(ka->action, ka->arg, mp_hwdec_codec_is_software(name));
+        } else if (strcmp(ka->key, "name") == 0) {
+            res = m_property_strdup_ro(ka->action, ka->arg, name);
+        } else {
+            res = M_PROPERTY_UNKNOWN;
+        }
+    } else {
+        res = m_property_strdup_ro(action, arg, name);
+    }
+    talloc_free(name);
+    return res;
+}
+
 static int mp_property_hwdec_interop(void *ctx, struct m_property *prop,
                                      int action, void *arg)
 {
@@ -5069,6 +5096,7 @@ static const struct m_property mp_properties_base[] = {
     {"video-aspect-override", mp_property_video_aspect_override},
     {"vid", mp_property_switch_track, .priv = (void *)(const int[]){0, STREAM_VIDEO}},
     {"hwdec-current", mp_property_hwdec_current},
+    {"hwdec-codec", mp_property_hwdec_codec},
     {"hwdec-interop", mp_property_hwdec_interop},
 
     {"estimated-frame-count", mp_property_frame_count},
@@ -5209,7 +5237,7 @@ static const char *const *const mp_event_property_change[] = {
     E(MPV_EVENT_VIDEO_RECONFIG, "video-out-params", "video-params",
       "video-format", "video-codec", "video-bitrate", "dwidth", "dheight",
       "width", "height", "container-fps", "display-mode-hint", "aspect", "aspect-name", "vo-configured", "current-vo",
-      "video-dec-params", "osd-dimensions", "hwdec", "hwdec-current", "hwdec-interop",
+      "video-dec-params", "osd-dimensions", "hwdec", "hwdec-current", "hwdec-codec", "hwdec-interop",
       "window-id", "track-list", "current-tracks"),
     E(MPV_EVENT_AUDIO_RECONFIG, "audio-format", "audio-codec", "audio-bitrate",
       "samplerate", "channels", "audio", "volume", "volume-gain", "mute",

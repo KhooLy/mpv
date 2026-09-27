@@ -2875,6 +2875,16 @@ Property list
     the values used by the ``hwdec`` option/property. ``no`` indicates
     software decoding. If no decoder is loaded, the property is unavailable.
 
+``hwdec-codec``
+    The name of the platform decoder component behind the current hardware
+    decoder, e.g. ``c2.exynos.hevc.decoder``. Currently only available with
+    ``mediacodec``. Unavailable with software decoding or other hwdecs.
+
+    ``hwdec-codec/software``
+        ``yes`` if the platform silently gave a software implementation
+        (e.g. ``c2.android.av1-dav1d.decoder`` on devices without an AV1
+        hardware decoder).
+
 ``hwdec-interop``
     This returns the currently loaded hardware decoding/output interop driver.
     This is known only once the VO has opened (and possibly later). With some

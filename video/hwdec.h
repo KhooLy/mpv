@@ -63,6 +63,8 @@ struct mp_hwdec_ctx *hwdec_devices_get_n(struct mp_hwdec_devices *devs, int n);
 
 // Add this to the list of internal devices. Adding the same pointer twice must
 // be avoided.
+bool mp_hwdec_codec_is_software(const char *name);
+
 void hwdec_devices_add(struct mp_hwdec_devices *devs, struct mp_hwdec_ctx *ctx);
 
 // Remove this from the list of internal devices. Idempotent/ignores entries

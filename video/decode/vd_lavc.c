@@ -263,6 +263,7 @@ typedef struct lavc_ctx {
     const char *decoder;
     bool hwdec_failed;
     bool hwdec_notified;
+    char *hwdec_codec;
     bool force_eof;
     int wait_for_keyframe; // max number of frames to wait for keyframe after reset
 
@@ -1428,6 +1429,14 @@ static int receive_frame(struct mp_filter *vd, struct mp_frame *out_frame)
         if (ctx->use_hwdec) {
             MP_INFO(vd, "Using hardware decoding (%s).\n",
                     ctx->hwdec.method_name);
+            TA_FREEP(&ctx->hwdec_codec);
+            uint8_t *name = NULL;
+            if (av_opt_get(ctx->avctx, "codec_name", AV_OPT_SEARCH_CHILDREN, &name) >= 0 && name) {
+                ctx->hwdec_codec = talloc_strdup(ctx, name);
+                if (mp_hwdec_codec_is_software(ctx->hwdec_codec))
+                    MP_WARN(vd, "Decoder %s is a software implementation.\n", ctx->hwdec_codec);
+            }
+            av_free(name);
         } else {
             MP_VERBOSE(vd, "Using software decoding.\n");
         }
@@ -1469,6 +1478,11 @@ static int control(struct mp_filter *vd, enum dec_ctrl cmd, void *arg)
         *(char **)arg = ctx->use_hwdec ? ctx->hwdec.method_name : NULL;
         return CONTROL_TRUE;
     }
+    case VDCTRL_GET_HWDEC_CODEC:
+        if (!ctx->hwdec_notified || !ctx->use_hwdec || !ctx->hwdec_codec)
+            return CONTROL_FALSE;
+        *(char **)arg = talloc_strdup(NULL, ctx->hwdec_codec);
+        return CONTROL_TRUE;
     case VDCTRL_FORCE_HWDEC_FALLBACK:
         if (ctx->use_hwdec) {
             force_fallback(vd);
