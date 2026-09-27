@@ -33,6 +33,7 @@
 #endif
 #include <libavutil/avstring.h>
 #include <libavutil/common.h>
+#include <libavutil/intreadwrite.h>
 #include <libavutil/timecode.h>
 
 #include "mpv_talloc.h"
@@ -6953,6 +6954,52 @@ static void subprocess_write(void *p)
     // Unused; we write a full buffer.
 }
 
+static bool osdb_sum(struct stream *s, int64_t pos, uint64_t *hash)
+{
+    uint8_t buf[65536];
+    if (!stream_seek(s, pos) || stream_read(s, buf, sizeof(buf)) != sizeof(buf))
+        return false;
+    for (int n = 0; n < sizeof(buf); n += 8)
+        *hash += AV_RL64(buf + n);
+    return true;
+}
+
+static void cmd_opensubtitles_hash(void *p)
+{
+    struct mp_cmd_ctx *cmd = p;
+    struct MPContext *mpctx = cmd->mpctx;
+    char *url = cmd->args[0].v.s;
+    if (!url || !url[0])
+        url = mpctx->stream_open_filename;
+    if (!url) {
+        cmd->success = false;
+        return;
+    }
+    url = talloc_strdup(NULL, url);
+    struct mp_cancel *cancel = cmd->abort->cancel;
+
+    mp_core_unlock(mpctx);
+    struct stream *s = stream_create(url, STREAM_READ | STREAM_ORIGIN_DIRECT,
+                                     cancel, mpctx->global);
+    int64_t size = s ? stream_get_size(s) : -1;
+    uint64_t hash = size;
+    bool ok = size >= 65536 && osdb_sum(s, 0, &hash) &&
+              osdb_sum(s, size - 65536, &hash);
+    free_stream(s);
+    mp_core_lock(mpctx);
+
+    talloc_free(url);
+    if (!ok) {
+        mp_cmd_msg(cmd, MSGL_ERR, "Could not compute OpenSubtitles hash.");
+        cmd->success = false;
+        return;
+    }
+    node_init(&cmd->result, MPV_FORMAT_NODE_MAP, NULL);
+    node_map_add_string(&cmd->result, "hash",
+                        mp_tprintf(17, "%016"PRIx64, hash));
+    node_map_add_int64(&cmd->result, "size", size);
+}
+
 static void cmd_subprocess(void *p)
 {
     struct mp_cmd_ctx *cmd = p;
@@ -7933,6 +7980,12 @@ const struct mp_cmd_def mp_cmds[] = {
             {"stdin_data", OPT_STRING(v.s), .flags = MP_CMD_OPT_ARG},
             {"passthrough_stdin", OPT_BOOL(v.b), .flags = MP_CMD_OPT_ARG},
         },
+        .spawn_thread = true,
+        .can_abort = true,
+    },
+
+    { "opensubtitles-hash", cmd_opensubtitles_hash,
+        {{"url", OPT_STRING(v.s), .flags = MP_CMD_OPT_ARG}},
         .spawn_thread = true,
         .can_abort = true,
     },

@@ -742,6 +742,13 @@ Track Manipulation
     The ``lang`` argument sets the track language, and can also influence
     stream selection with ``flags`` set to ``auto``.
 
+``opensubtitles-hash [<url>]``
+    Compute the OpenSubtitles hash of ``<url>``, or of the current file if it
+    is omitted, for looking up matching subtitles. Only the first and last 64
+    KiB are read, so this is cheap for remote files if the server supports
+    range requests. Returns a map with ``hash`` (16 hex digits) and ``size``.
+    The command runs asynchronously and does not block playback.
+
 ``sub-remove [<id>]``
     Remove the given subtitle track. If the ``id`` argument is missing, remove
     the current track. (Works on external subtitle files only.)
