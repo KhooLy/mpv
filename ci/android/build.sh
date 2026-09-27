@@ -3,9 +3,18 @@ set -eu
 
 ndk=${ANDROID_NDK_HOME:-${ANDROID_NDK:-$HOME/Android/Sdk/ndk/27.1.12297006}}
 api=28
+abi=${ABI:-arm64-v8a}
+case $abi in
+    arm64-v8a) target=aarch64-linux-android; triple=$target; family=aarch64; cpu=arm64; ffarch=aarch64 ;;
+    armeabi-v7a) target=armv7a-linux-androideabi; triple=arm-linux-androideabi; family=arm; cpu=armv7; ffarch=arm ;;
+    x86_64) target=x86_64-linux-android; triple=$target; family=x86_64; cpu=x86_64; ffarch=x86_64 ;;
+    *) echo "unknown abi $abi"; exit 2 ;;
+esac
 host=$(uname -s | tr '[:upper:]' '[:lower:]')-x86_64
 tc=$ndk/toolchains/llvm/prebuilt/$host
-cc=$tc/bin/aarch64-linux-android$api-clang
+cc=$tc/bin/$target$api-clang
+luajit_host=gcc
+[ "$family" = arm ] && luajit_host="gcc -m32"
 jobs=$(nproc)
 
 src=$(cd "$(dirname "$0")/../.." && pwd)
@@ -27,8 +36,8 @@ cpp_args = ['-fPIC']
 
 [host_machine]
 system = 'android'
-cpu_family = 'aarch64'
-cpu = 'arm64'
+cpu_family = '$family'
+cpu = '$cpu'
 endian = 'little'
 CROSS
 
@@ -61,7 +70,7 @@ cmake_dep() {
     [ -f "$work/$name/.done" ] && return
     cmake -S "$work/$name" -B "$work/$name/build" \
         -DCMAKE_TOOLCHAIN_FILE="$ndk/build/cmake/android.toolchain.cmake" \
-        -DANDROID_ABI=arm64-v8a -DANDROID_PLATFORM=$api -DCMAKE_INSTALL_PREFIX="$prefix" \
+        -DANDROID_ABI=$abi -DANDROID_PLATFORM=$api -DCMAKE_INSTALL_PREFIX="$prefix" \
         -DCMAKE_BUILD_TYPE=Release -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
         -DBUILD_SHARED_LIBS=OFF "$@"
     cmake --build "$work/$name/build" -j"$jobs"
@@ -82,7 +91,7 @@ meson_dep dav1d -Denable_tools=false -Denable_tests=false
 
 fetch luajit https://github.com/LuaJIT/LuaJIT.git c6ffc141a8762b41703f9287d63d93622a13dd8f
 if [ ! -f "$work/luajit/.done" ]; then
-    make -C "$work/luajit" -j"$jobs" HOST_CC=gcc CROSS="$tc/bin/llvm-" \
+    make -C "$work/luajit" -j"$jobs" HOST_CC="$luajit_host" CROSS="$tc/bin/llvm-" \
         STATIC_CC="$cc" DYNAMIC_CC="$cc -fPIC" TARGET_LD="$cc" \
         TARGET_AR="$tc/bin/llvm-ar rcus" TARGET_STRIP="$tc/bin/llvm-strip" \
         TARGET_SYS=Linux BUILDMODE=static XCFLAGS=-fPIC
@@ -95,7 +104,7 @@ fetch ffmpeg https://github.com/FFmpeg/FFmpeg.git n9.0.1 ffmpeg-mediacodec.patch
 if [ ! -f "$work/ffmpeg/.done" ]; then
     mkdir -p "$work/ffmpeg/build"
     cd "$work/ffmpeg/build"
-    ../configure --prefix="$prefix" --target-os=android --arch=aarch64 \
+    ../configure --prefix="$prefix" --target-os=android --arch=$ffarch \
         --enable-cross-compile --cc="$cc" --cxx="$cc++" --ar="$tc/bin/llvm-ar" \
         --ranlib="$tc/bin/llvm-ranlib" --nm="$tc/bin/llvm-nm" --strip="$tc/bin/llvm-strip" \
         --sysroot="$tc/sysroot" --pkg-config=pkg-config --pkg-config-flags=--static \
@@ -160,10 +169,10 @@ static="libdav1d.a:libxml2.a:libmbedtls.a:libmbedx509.a:libmbedcrypto.a:libluaji
     "-Dc_link_args=-lc++_shared -L$prefix/lib -Wl,--exclude-libs,$static -ldav1d -lxml2 -lmbedtls -lmbedx509 -lmbedcrypto -lm"
 meson compile -C "$work/mpv"
 
-out=$work/out/arm64-v8a
+out=$work/out/jni/$abi
 mkdir -p "$out" "$work/out/include/mpv"
 cp "$work/mpv/libmpv.so" "$out/"
-cp "$tc/sysroot/usr/lib/aarch64-linux-android/libc++_shared.so" "$out/"
+cp "$tc/sysroot/usr/lib/$triple/libc++_shared.so" "$out/"
 cp "$src"/include/mpv/*.h "$work/out/include/mpv/"
 cp -r "$prefix/include/libavcodec" "$work/out/include/"
 echo "built $out/libmpv.so"
