@@ -2283,6 +2283,24 @@ Property list
     not counting the initial buffering and seeks. Map with ``count`` and
     ``time`` (total seconds spent stalled).
 
+``platform-caps``
+    What the device can play, for choosing between streams before loading
+    one. Only available on Android. Map with these entries:
+
+    ``passthrough``
+        Map of ``ac3``, ``eac3``, ``dts``, ``dts-hd`` and ``truehd`` flags for
+        the current audio output.
+    ``max-channels``, ``spatial-audio``
+        Channel count of the current audio output, and whether the spatializer
+        can render multichannel audio.
+    ``hdr``
+        Map of ``dolby-vision``, ``hdr10``, ``hdr10-plus`` and ``hlg`` flags
+        reported by the display.
+    ``hwdec``
+        Map of hardware decoder support: ``h264``, ``hevc``, ``hevc-10bit``,
+        ``av1``, ``av1-10bit``, ``vp9``, ``vp9-10bit``, and ``dolby-vision``,
+        an array of supported Dolby Vision profile numbers.
+
 ``last-error``
     Report about the last file that failed to play, or that ended more than 5
     seconds before its duration. It is set before the ``end-file`` event is

@@ -87,6 +87,10 @@
 
 #include "core.h"
 
+#if HAVE_ANDROID
+#include "misc/jni.h"
+#endif
+
 #ifdef _WIN32
 #include <windows.h>
 #endif
@@ -698,6 +702,60 @@ static int mp_property_rebuffering(void *ctx, struct m_property *prop,
     node_map_add_int64(res, "count", mpctx->rebuffer_count);
     node_map_add_double(res, "time", time);
     return M_PROPERTY_OK;
+}
+
+static int mp_property_platform_caps(void *ctx, struct m_property *prop,
+                                     int action, void *arg)
+{
+#if HAVE_ANDROID
+    MPContext *mpctx = ctx;
+    if (action == M_PROPERTY_GET_TYPE) {
+        *(struct m_option *)arg = (struct m_option){.type = CONF_TYPE_NODE};
+        return M_PROPERTY_OK;
+    }
+    if (action != M_PROPERTY_GET)
+        return M_PROPERTY_NOT_IMPLEMENTED;
+
+    struct mp_jni_audio_caps ac;
+    mp_jni_audio_caps(mpctx->log, &ac);
+    struct mp_jni_video_caps vc;
+    mp_jni_video_caps(mpctx->log, &vc);
+    int hdr = mp_jni_display_hdr_types(mpctx->log);
+
+    struct mpv_node *res = arg;
+    node_init(res, MPV_FORMAT_NODE_MAP, NULL);
+    struct mpv_node *a = node_map_add(res, "passthrough", MPV_FORMAT_NODE_MAP);
+    node_map_add_flag(a, "ac3", ac.ac3);
+    node_map_add_flag(a, "eac3", ac.eac3);
+    node_map_add_flag(a, "dts", ac.dts);
+    node_map_add_flag(a, "dts-hd", ac.dtshd);
+    node_map_add_flag(a, "truehd", ac.truehd);
+    node_map_add_int64(res, "max-channels", ac.max_channels);
+    node_map_add_flag(res, "spatial-audio", ac.spatial);
+
+    struct mpv_node *d = node_map_add(res, "hdr", MPV_FORMAT_NODE_MAP);
+    node_map_add_flag(d, "dolby-vision", hdr & MP_JNI_HDR_DOLBY_VISION);
+    node_map_add_flag(d, "hdr10", hdr & MP_JNI_HDR_HDR10);
+    node_map_add_flag(d, "hdr10-plus", hdr & MP_JNI_HDR_HDR10_PLUS);
+    node_map_add_flag(d, "hlg", hdr & MP_JNI_HDR_HLG);
+
+    struct mpv_node *v = node_map_add(res, "hwdec", MPV_FORMAT_NODE_MAP);
+    node_map_add_flag(v, "h264", vc.h264);
+    node_map_add_flag(v, "hevc", vc.hevc);
+    node_map_add_flag(v, "hevc-10bit", vc.hevc_10bit);
+    node_map_add_flag(v, "av1", vc.av1);
+    node_map_add_flag(v, "av1-10bit", vc.av1_10bit);
+    node_map_add_flag(v, "vp9", vc.vp9);
+    node_map_add_flag(v, "vp9-10bit", vc.vp9_10bit);
+    struct mpv_node *dv = node_map_add(v, "dolby-vision", MPV_FORMAT_NODE_ARRAY);
+    for (int n = 0; n < 11; n++) {
+        if (vc.dv_profiles & (1 << n))
+            node_array_add(dv, MPV_FORMAT_INT64)->u.int64 = n;
+    }
+    return M_PROPERTY_OK;
+#else
+    return M_PROPERTY_UNAVAILABLE;
+#endif
 }
 
 static int mp_property_file_format(void *ctx, struct m_property *prop,
@@ -4693,6 +4751,7 @@ static const struct m_property mp_properties_base[] = {
     {"last-error", mp_property_last_error},
     {"startup-time", mp_property_startup_time},
     {"rebuffering", mp_property_rebuffering},
+    {"platform-caps", mp_property_platform_caps},
     {"stream-pos", mp_property_stream_pos},
     {"stream-end", mp_property_stream_end},
     {"duration", mp_property_duration},

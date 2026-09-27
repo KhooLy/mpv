@@ -169,7 +169,22 @@ int mp_jni_init_jfields(JNIEnv *env, void *jfields, const struct MPJniField *jfi
  */
 int mp_jni_reset_jfields(JNIEnv *env, void *jfields, const struct MPJniField *jfields_mapping, int global, struct mp_log *log);
 
+enum {
+    MP_JNI_HDR_DOLBY_VISION = 1 << 1,
+    MP_JNI_HDR_HDR10 = 1 << 2,
+    MP_JNI_HDR_HLG = 1 << 3,
+    MP_JNI_HDR_HDR10_PLUS = 1 << 4,
+};
+
+int mp_jni_display_hdr_types(struct mp_log *log);
 bool mp_jni_display_supports_dolby_vision(struct mp_log *log);
+
+struct mp_jni_video_caps {
+    bool h264, hevc, hevc_10bit, av1, av1_10bit, vp9, vp9_10bit;
+    int dv_profiles;
+};
+
+void mp_jni_video_caps(struct mp_log *log, struct mp_jni_video_caps *caps);
 const char *mp_jni_ca_bundle(struct mp_log *log);
 
 struct mp_jni_audio_caps {

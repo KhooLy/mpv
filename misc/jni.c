@@ -486,13 +486,13 @@ const char *mp_jni_ca_bundle(struct mp_log *log)
     return bundle;
 }
 
-bool mp_jni_display_supports_dolby_vision(struct mp_log *log)
+int mp_jni_display_hdr_types(struct mp_log *log)
 {
     JNIEnv *env = mp_jni_get_env(log);
     if (!env)
-        return false;
+        return 0;
 
-    bool supported = false;
+    int supported = 0;
     jobject ctx = get_app_context(env);
     jobject manager = NULL, display = NULL, caps = NULL;
     jintArray types = NULL;
@@ -538,8 +538,10 @@ bool mp_jni_display_supports_dolby_vision(struct mp_log *log)
 
     jsize n = (*env)->GetArrayLength(env, types);
     jint *values = (*env)->GetIntArrayElements(env, types, NULL);
-    for (jsize i = 0; values && i < n; i++)
-        supported |= values[i] == 1;
+    for (jsize i = 0; values && i < n; i++) {
+        if (values[i] > 0 && values[i] < 31)
+            supported |= 1 << values[i];
+    }
     if (values)
         (*env)->ReleaseIntArrayElements(env, types, values, JNI_ABORT);
 
@@ -552,6 +554,124 @@ done:
             (*env)->DeleteLocalRef(env, refs[i]);
     }
     return supported;
+}
+
+bool mp_jni_display_supports_dolby_vision(struct mp_log *log)
+{
+    return mp_jni_display_hdr_types(log) & MP_JNI_HDR_DOLBY_VISION;
+}
+
+static int max_profile_bits(JNIEnv *env, jobject caps, jfieldID levels_field,
+                            jfieldID profile_field)
+{
+    int bits = 0;
+    jobjectArray levels = (*env)->GetObjectField(env, caps, levels_field);
+    if (!levels)
+        return 0;
+    jsize n = (*env)->GetArrayLength(env, levels);
+    for (jsize i = 0; i < n; i++) {
+        jobject pl = (*env)->GetObjectArrayElement(env, levels, i);
+        if (!pl)
+            continue;
+        bits |= (*env)->GetIntField(env, pl, profile_field);
+        (*env)->DeleteLocalRef(env, pl);
+    }
+    (*env)->DeleteLocalRef(env, levels);
+    return bits;
+}
+
+static void add_codec_caps(struct mp_jni_video_caps *caps, const char *type,
+                           int profiles)
+{
+    if (!strcmp(type, "video/avc")) {
+        caps->h264 = true;
+    } else if (!strcmp(type, "video/hevc")) {
+        caps->hevc = true;
+        caps->hevc_10bit |= profiles & 0x3002;
+    } else if (!strcmp(type, "video/av01")) {
+        caps->av1 = true;
+        caps->av1_10bit |= profiles & 0x3002;
+    } else if (!strcmp(type, "video/x-vnd.on2.vp9")) {
+        caps->vp9 = true;
+        caps->vp9_10bit |= profiles & 0xf00c;
+    } else if (!strcmp(type, "video/dolby-vision")) {
+        caps->dv_profiles |= profiles & 0x7ff;
+    }
+}
+
+void mp_jni_video_caps(struct mp_log *log, struct mp_jni_video_caps *caps)
+{
+    *caps = (struct mp_jni_video_caps){0};
+    JNIEnv *env = mp_jni_get_env(log);
+    if (!env || (*env)->PushLocalFrame(env, 64) < 0)
+        return;
+
+    jclass list_class = (*env)->FindClass(env, "android/media/MediaCodecList");
+    jclass info_class = (*env)->FindClass(env, "android/media/MediaCodecInfo");
+    jclass caps_class = (*env)->FindClass(env, "android/media/MediaCodecInfo$CodecCapabilities");
+    jclass pl_class = (*env)->FindClass(env, "android/media/MediaCodecInfo$CodecProfileLevel");
+    if (!list_class || !info_class || !caps_class || !pl_class)
+        goto done;
+    jmethodID list_init = (*env)->GetMethodID(env, list_class, "<init>", "(I)V");
+    jmethodID get_infos = (*env)->GetMethodID(env, list_class, "getCodecInfos",
+        "()[Landroid/media/MediaCodecInfo;");
+    jmethodID is_encoder = (*env)->GetMethodID(env, info_class, "isEncoder", "()Z");
+    jmethodID get_types = (*env)->GetMethodID(env, info_class, "getSupportedTypes",
+        "()[Ljava/lang/String;");
+    jmethodID get_caps = (*env)->GetMethodID(env, info_class, "getCapabilitiesForType",
+        "(Ljava/lang/String;)Landroid/media/MediaCodecInfo$CodecCapabilities;");
+    jmethodID is_hw = android_get_device_api_level() >= 29 ?
+        (*env)->GetMethodID(env, info_class, "isHardwareAccelerated", "()Z") : NULL;
+    jfieldID levels_field = (*env)->GetFieldID(env, caps_class, "profileLevels",
+        "[Landroid/media/MediaCodecInfo$CodecProfileLevel;");
+    jfieldID profile_field = (*env)->GetFieldID(env, pl_class, "profile", "I");
+    if (!list_init || !get_infos || !is_encoder || !get_types || !get_caps ||
+        !levels_field || !profile_field)
+        goto done;
+
+    jobject list = (*env)->NewObject(env, list_class, list_init, 0);
+    jobjectArray infos = list ? (*env)->CallObjectMethod(env, list, get_infos) : NULL;
+    if (mp_jni_exception_check(env, 0, NULL) < 0 || !infos)
+        goto done;
+
+    jsize n = (*env)->GetArrayLength(env, infos);
+    for (jsize i = 0; i < n; i++) {
+        if ((*env)->PushLocalFrame(env, 32) < 0)
+            break;
+        jobject info = (*env)->GetObjectArrayElement(env, infos, i);
+        if (!info || (*env)->CallBooleanMethod(env, info, is_encoder))
+            goto next;
+        if (is_hw && !(*env)->CallBooleanMethod(env, info, is_hw))
+            goto next;
+        jobjectArray types = (*env)->CallObjectMethod(env, info, get_types);
+        if (mp_jni_exception_check(env, 0, NULL) < 0 || !types)
+            goto next;
+        jsize ntypes = (*env)->GetArrayLength(env, types);
+        for (jsize t = 0; t < ntypes; t++) {
+            jstring jtype = (*env)->GetObjectArrayElement(env, types, t);
+            const char *type = jtype ? (*env)->GetStringUTFChars(env, jtype, NULL) : NULL;
+            if (!type)
+                continue;
+            jobject c = (*env)->CallObjectMethod(env, info, get_caps, jtype);
+            if (mp_jni_exception_check(env, 0, NULL) >= 0 && c) {
+                add_codec_caps(caps, type,
+                               max_profile_bits(env, c, levels_field, profile_field));
+                (*env)->DeleteLocalRef(env, c);
+            }
+            (*env)->ReleaseStringUTFChars(env, jtype, type);
+            (*env)->DeleteLocalRef(env, jtype);
+        }
+    next:
+        mp_jni_exception_check(env, 0, NULL);
+        (*env)->PopLocalFrame(env, NULL);
+    }
+
+done:
+    mp_jni_exception_check(env, 0, NULL);
+    (*env)->PopLocalFrame(env, NULL);
+    mp_verbose(log, "Video decoder caps: h264=%d hevc=%d/%d av1=%d/%d vp9=%d/%d dv=0x%x\n",
+               caps->h264, caps->hevc, caps->hevc_10bit, caps->av1, caps->av1_10bit,
+               caps->vp9, caps->vp9_10bit, caps->dv_profiles);
 }
 
 enum {
