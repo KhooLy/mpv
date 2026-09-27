@@ -3607,6 +3607,44 @@ static int mp_property_fps(void *ctx, struct m_property *prop,
     return m_property_float_ro(action, arg, fps);
 }
 
+static int mp_property_display_mode_hint(void *ctx, struct m_property *prop,
+                                         int action, void *arg)
+{
+    MPContext *mpctx = ctx;
+    struct vo_chain *vo_c = mpctx->vo_chain;
+    if (!vo_c || !vo_c->track)
+        return M_PROPERTY_UNAVAILABLE;
+
+    struct mp_image_params p = {0};
+    mp_decoder_wrapper_get_video_dec_params(vo_c->track->dec, &p);
+    if (!p.imgfmt)
+        return M_PROPERTY_UNAVAILABLE;
+
+    double fps = vo_c->filter->container_fps;
+    if (fps < 0.1 || !isfinite(fps)) {
+        double avg = calc_average_frame_duration(mpctx);
+        fps = avg > 0 ? 1.0 / avg : 0;
+    }
+
+    int w, h;
+    mp_image_params_get_dsize(&p, &w, &h);
+
+    const char *range = "sdr";
+    if (p.color.transfer == PL_COLOR_TRC_PQ)
+        range = "pq";
+    else if (p.color.transfer == PL_COLOR_TRC_HLG)
+        range = "hlg";
+
+    struct m_sub_property props[] = {
+        {"width", SUB_PROP_INT(w)},
+        {"height", SUB_PROP_INT(h)},
+        {"refresh-rate", SUB_PROP_DOUBLE(fps), .unavailable = fps <= 0},
+        {"dynamic-range", SUB_PROP_STR(range)},
+        {0}
+    };
+    return m_property_read_sub(props, action, arg);
+}
+
 static int mp_property_vf_fps(void *ctx, struct m_property *prop,
                               int action, void *arg)
 {
@@ -5026,6 +5064,7 @@ static const struct m_property mp_properties_base[] = {
     {"current-vo", mp_property_vo},
     {"current-gpu-context", mp_property_gpu_context},
     {"container-fps", mp_property_fps},
+    {"display-mode-hint", mp_property_display_mode_hint},
     {"estimated-vf-fps", mp_property_vf_fps},
     {"video-aspect-override", mp_property_video_aspect_override},
     {"vid", mp_property_switch_track, .priv = (void *)(const int[]){0, STREAM_VIDEO}},
@@ -5169,7 +5208,7 @@ static const char *const *const mp_event_property_change[] = {
     E(MP_EVENT_DURATION_UPDATE, "duration"),
     E(MPV_EVENT_VIDEO_RECONFIG, "video-out-params", "video-params",
       "video-format", "video-codec", "video-bitrate", "dwidth", "dheight",
-      "width", "height", "container-fps", "aspect", "aspect-name", "vo-configured", "current-vo",
+      "width", "height", "container-fps", "display-mode-hint", "aspect", "aspect-name", "vo-configured", "current-vo",
       "video-dec-params", "osd-dimensions", "hwdec", "hwdec-current", "hwdec-interop",
       "window-id", "track-list", "current-tracks"),
     E(MPV_EVENT_AUDIO_RECONFIG, "audio-format", "audio-codec", "audio-bitrate",

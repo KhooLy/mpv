@@ -3118,6 +3118,14 @@ Property list
 
     (Renamed from ``fps``.)
 
+``display-mode-hint``
+    The display mode that best matches the current video, for hosts that
+    switch the display mode themselves (for example Android TV via
+    ``WindowManager.LayoutParams.preferredDisplayModeId``). Has the sub-properties
+    ``width``, ``height``, ``refresh-rate`` and ``dynamic-range`` (``sdr``,
+    ``pq`` or ``hlg``). ``refresh-rate`` falls back to the measured frame rate
+    when the container does not provide one.
+
 ``estimated-vf-fps``
     Estimated/measured FPS of the video filter chain output. (If no filters
     are used, this corresponds to decoder output.) This uses the average of
