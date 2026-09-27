@@ -3579,6 +3579,11 @@ Property list
     ``track-list/N/lang``
         Track language as identified by the file. Not always available.
 
+    ``track-list/N/format-label``
+        Short human-readable description of the track format, like
+        ``TrueHD Atmos 7.1``, ``DTS-HD MA 5.1``, ``HEVC 2160p DV P8 HDR10`` or
+        ``PGS``.
+
     ``track-list/N/image``
         ``yes``/true if this is a video track that consists of a single
         picture, ``no``/false or unavailable otherwise. The heuristic used to
@@ -3595,7 +3600,10 @@ Property list
 
     ``track-list/N/forced``
         ``yes``/true if the track has the forced flag set in the file,
-        ``no``/false or unavailable otherwise.
+        ``no``/false or unavailable otherwise. For audio and subtitle tracks,
+        the ``forced``, ``hearing-impaired`` and ``commentary`` flags are also
+        set if the track title contains the word ``forced``, ``SDH`` or ``CC``,
+        or ``commentary``, respectively.
 
     ``track-list/N/dependent``
         ``yes``/true if the track has the dependent flag set in the file,

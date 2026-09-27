@@ -2166,6 +2166,59 @@ static int track_channels(struct track *track)
     return track->stream ? track->stream->codec->channels.num : 0;
 }
 
+static const char *const codec_labels[][2] = {
+    {"h264", "H.264"}, {"hevc", "HEVC"}, {"av1", "AV1"}, {"vp9", "VP9"},
+    {"mpeg2video", "MPEG-2"}, {"vc1", "VC-1"},
+    {"ac3", "Dolby Digital"}, {"eac3", "Dolby Digital Plus"},
+    {"truehd", "TrueHD"}, {"aac", "AAC"}, {"flac", "FLAC"}, {"opus", "Opus"},
+    {"mp3", "MP3"}, {"vorbis", "Vorbis"},
+    {"subrip", "SRT"}, {"ass", "ASS"}, {"ssa", "SSA"}, {"webvtt", "WebVTT"},
+    {"hdmv_pgs_subtitle", "PGS"}, {"dvd_subtitle", "VobSub"},
+    {"dvb_subtitle", "DVB"}, {"mov_text", "Text"},
+};
+
+static char *track_label(void *ta, struct mp_codec_params *p)
+{
+    if (!p->codec)
+        return NULL;
+    const char *codec = p->codec;
+    const char *profile = p->codec_profile ? p->codec_profile : "";
+    const char *name = NULL;
+    for (int n = 0; n < MP_ARRAY_SIZE(codec_labels); n++) {
+        if (!strcmp(codec, codec_labels[n][0]))
+            name = codec_labels[n][1];
+    }
+    if (!strcmp(codec, "dts")) {
+        name = strstr(profile, "DTS:X") ? "DTS:X" :
+               strstr(profile, "MA") ? "DTS-HD MA" :
+               strstr(profile, "HRA") ? "DTS-HD HRA" : "DTS";
+    } else if (!strncmp(codec, "pcm_", 4)) {
+        name = "PCM";
+    }
+    char *res = talloc_strdup(ta, name ? name : codec);
+    if (strstr(profile, "Atmos"))
+        res = talloc_strdup_append(res, " Atmos");
+
+    if (p->type == STREAM_VIDEO && p->disp_h > 0) {
+        int h = MPMAX(p->disp_h, p->disp_w * 9 / 16);
+        const char *res_name = h > 1600 ? "2160p" : h > 900 ? "1080p" :
+                               h > 600 ? "720p" : "SD";
+        res = talloc_asprintf_append(res, " %s", res_name);
+        if (p->dovi)
+            res = talloc_asprintf_append(res, " DV P%d", p->dv_profile);
+        if (p->color.transfer == PL_COLOR_TRC_PQ && !(p->dovi && p->dv_profile == 5))
+            res = talloc_strdup_append(res, " HDR10");
+        if (p->color.transfer == PL_COLOR_TRC_HLG)
+            res = talloc_strdup_append(res, " HLG");
+    } else if (p->type == STREAM_AUDIO && p->channels.num) {
+        int lfe = 0;
+        for (int n = 0; n < p->channels.num; n++)
+            lfe += p->channels.speaker[n] == MP_SPEAKER_ID_LFE;
+        res = talloc_asprintf_append(res, " %d.%d", p->channels.num - lfe, lfe);
+    }
+    return res;
+}
+
 static int get_track_entry(int item, int action, void *arg, void *ctx)
 {
     struct MPContext *mpctx = ctx;
@@ -2202,6 +2255,7 @@ static int get_track_entry(int item, int action, void *arg, void *ctx)
     }
 
     bool has_crop = mp_rect_w(p.crop) > 0 && mp_rect_h(p.crop) > 0;
+    char *label = track_label(NULL, &p);
     struct m_sub_property props[] = {
         {"id",          SUB_PROP_INT(track->user_tid)},
         {"type",        SUB_PROP_STR(stream_type_name(track->type)),
@@ -2212,6 +2266,7 @@ static int get_track_entry(int item, int action, void *arg, void *ctx)
                         .unavailable = !track->title},
         {"lang",        SUB_PROP_STR(track->lang),
                         .unavailable = !track->lang},
+        {"format-label", SUB_PROP_STR(label), .unavailable = !label},
         {"audio-channels", SUB_PROP_INT(track_channels(track)),
                         .unavailable = track_channels(track) <= 0},
         {"image",       SUB_PROP_BOOL(track->image)},
@@ -2306,6 +2361,7 @@ static int get_track_entry(int item, int action, void *arg, void *ctx)
 
 done:
     talloc_free(tag_list);
+    talloc_free(label);
     return ret;
 }
 

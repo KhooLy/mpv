@@ -25,6 +25,7 @@
 
 #include "mpv_talloc.h"
 
+#include "misc/ctype.h"
 #include "misc/thread_pool.h"
 #include "misc/thread_tools.h"
 #include "osdep/io.h"
@@ -453,6 +454,30 @@ static int find_new_tid(struct MPContext *mpctx, enum stream_type t)
     return new_id + 1;
 }
 
+static bool title_has_word(const char *title, const char *word)
+{
+    int len = strlen(word);
+    for (const char *s = title; *s; s++) {
+        if (!bstr_case_startswith(bstr0(s), bstr0(word)))
+            continue;
+        bool start = s == title || !mp_isalnum(s[-1]);
+        bool end = !mp_isalnum(s[len]);
+        if (start && end)
+            return true;
+    }
+    return false;
+}
+
+static void flags_from_title(struct track *t)
+{
+    if (!t->title || t->type == STREAM_VIDEO)
+        return;
+    t->forced_track |= title_has_word(t->title, "forced");
+    t->hearing_impaired_track |= title_has_word(t->title, "sdh") ||
+                                 title_has_word(t->title, "cc");
+    t->commentary_track |= title_has_word(t->title, "commentary");
+}
+
 static struct track *add_stream_track(struct MPContext *mpctx,
                                       struct demuxer *demuxer,
                                       struct sh_stream *stream)
@@ -484,6 +509,7 @@ static struct track *add_stream_track(struct MPContext *mpctx,
         .demuxer = demuxer,
         .stream = stream,
     };
+    flags_from_title(track);
     MP_TARRAY_APPEND(mpctx, mpctx->tracks, mpctx->num_tracks, track);
 
     mp_notify(mpctx, MP_EVENT_TRACKS_CHANGED, NULL);
