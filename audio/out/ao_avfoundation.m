@@ -336,11 +336,13 @@ static int init(struct ao *ao)
 
 #if TARGET_OS_IPHONE
     AVAudioSession *instance = AVAudioSession.sharedInstance;
-    NSInteger maxChannels = instance.maximumOutputNumberOfChannels;
-    NSInteger prefChannels = MIN(maxChannels, ao->channels.num);
     [instance setCategory:AVAudioSessionCategoryPlayback error:nil];
     [instance setMode:AVAudioSessionModeMoviePlayback error:nil];
+    if (@available(iOS 15.0, tvOS 15.0, *))
+        [instance setSupportsMultichannelContent:YES error:nil];
     [instance setActive:YES error:nil];
+    NSInteger maxChannels = instance.maximumOutputNumberOfChannels;
+    NSInteger prefChannels = MIN(maxChannels, ao->channels.num);
     [instance setPreferredOutputNumberOfChannels:prefChannels error:nil];
 #endif
 

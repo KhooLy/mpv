@@ -109,10 +109,6 @@ static bool init_audiounit(struct ao *ao)
     AudioChannelLayout *layout = NULL;
     struct priv *p = ao->priv;
     AVAudioSession *instance = AVAudioSession.sharedInstance;
-    NSInteger maxChannels = instance.maximumOutputNumberOfChannels;
-    NSInteger prefChannels = MIN(maxChannels, ao->channels.num);
-
-    MP_VERBOSE(ao, "max channels: %ld, requested: %d\n", maxChannels, (int)ao->channels.num);
 
     AVAudioSessionCategoryOptions options = 0;
     if (!(ao->init_flags & AO_INIT_EXCLUSIVE)) {
@@ -121,7 +117,13 @@ static bool init_audiounit(struct ao *ao)
 
     [instance setCategory:AVAudioSessionCategoryPlayback withOptions:options error:nil];
     [instance setMode:AVAudioSessionModeMoviePlayback error:nil];
+    if (@available(iOS 15.0, tvOS 15.0, *))
+        [instance setSupportsMultichannelContent:YES error:nil];
     [instance setActive:YES error:nil];
+
+    NSInteger maxChannels = instance.maximumOutputNumberOfChannels;
+    NSInteger prefChannels = MIN(maxChannels, ao->channels.num);
+    MP_VERBOSE(ao, "max channels: %ld, requested: %d\n", maxChannels, (int)ao->channels.num);
     [instance setPreferredOutputNumberOfChannels:prefChannels error:nil];
 
     AudioComponentDescription desc = (AudioComponentDescription) {
