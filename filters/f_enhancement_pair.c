@@ -161,10 +161,16 @@ static void pair_process(struct mp_filter *f)
         if (!p->el_eof && !p->num_el_pending)
             return;
 
-        MP_VERBOSE(f, "emitting BL %.6f alone (%s)\n", bl->pts,
-                   p->el_eof ? "el_eof" : "el_newer");
         take_head(&p->bl_pending, &p->num_bl_pending);
         bl->enhancement_layer = NULL;
+        if (p->num_el_pending && !bl->params.no_enhancement_layer) {
+            struct mp_image *el = p->el_pending[0];
+            MP_VERBOSE(f, "BL %.6f has no EL, using metadata of %.6f\n",
+                       bl->pts, el->pts);
+            inherit_dovi_from_el(bl, el);
+        } else {
+            MP_VERBOSE(f, "emitting BL %.6f alone\n", bl->pts);
+        }
         mp_pin_in_write(out, MAKE_FRAME(MP_FRAME_VIDEO, bl));
     }
 }

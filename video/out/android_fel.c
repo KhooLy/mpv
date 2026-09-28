@@ -727,9 +727,10 @@ void android_fel_render(struct android_fel *f, struct mp_image *img,
     }
 
     const struct pl_dovi_metadata *dovi = img->params.repr.dovi;
-    bool use_el = eb && dovi && dovi->nlq_active;
+    bool use_el = dovi && dovi->nlq_active && (eb || f->el.hist[0]);
     if (!use_el)
         release(eb, 0);
+    bool new_el = use_el && eb;
 
     mp_mutex_lock(&f->bl.lock);
     f->bl.available = false;
@@ -739,11 +740,11 @@ void android_fel_render(struct android_fel *f, struct mp_image *img,
     mp_mutex_unlock(&f->el.lock);
 
     release(bb, 1);
-    if (use_el)
+    if (new_el)
         release(eb, 1);
     if (!layer_acquire(f, &f->bl))
         return;
-    if (use_el && !layer_acquire(f, &f->el))
+    if (new_el && !layer_acquire(f, &f->el))
         use_el = false;
 
     if (f->vid_w != img->params.w || f->vid_h != img->params.h) {
