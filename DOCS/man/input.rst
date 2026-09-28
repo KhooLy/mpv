@@ -2887,7 +2887,9 @@ Property list
 
 ``hwdec-dolby-vision-current``
     How the current Dolby Vision video is being hardware decoded: ``native``,
-    ``convert`` (profile 7 as 8.1) or ``base-layer``. Unavailable for other
+    ``convert`` (profile 7 as 8.1), ``base-layer``, or ``unsupported`` when the
+    video has no compatible base layer (profile 5) and the device has no Dolby
+    Vision decoder that can take it, so colors are wrong. Unavailable for other
     videos, software decoding and hwdecs other than ``mediacodec``. See
     ``--hwdec-dolby-vision``.
 

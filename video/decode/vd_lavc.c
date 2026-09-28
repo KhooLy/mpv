@@ -114,6 +114,7 @@ static void add_container_hdr_metadata(AVCodecContext *avctx,
 
 static void init_avctx(struct mp_filter *vd);
 static void init_dovi(struct mp_filter *vd);
+static const AVDOVIDecoderConfigurationRecord *dovi_conf(AVCodecContext *avctx);
 static void uninit_avctx(struct mp_filter *vd);
 
 static int get_buffer2_direct(AVCodecContext *avctx, AVFrame *pic, int flags);
@@ -943,6 +944,13 @@ static void init_avctx(struct mp_filter *vd)
     uint8_t *path = NULL;
     if (av_opt_get(avctx, "dovi_path", AV_OPT_SEARCH_CHILDREN, &path) >= 0 && path && *path) {
         ctx->dovi_path = talloc_strdup(ctx, path);
+        const AVDOVIDecoderConfigurationRecord *conf = dovi_conf(avctx);
+        if (!strcmp(path, "base_layer") && conf && !conf->dv_bl_signal_compatibility_id) {
+            MP_WARN(vd, "Dolby Vision profile %d has no compatible base layer and "
+                    "this device cannot decode it; colors will be wrong.\n",
+                    conf->dv_profile);
+            talloc_replace(ctx, ctx->dovi_path, "unsupported");
+        }
         MP_VERBOSE(vd, "Dolby Vision path: %s\n", ctx->dovi_path);
     }
     av_free(path);
