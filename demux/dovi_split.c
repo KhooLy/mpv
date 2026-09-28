@@ -114,6 +114,8 @@ struct mp_dovi_split *mp_dovi_split_create(struct demuxer *demuxer,
         el->codec->dv_el_present = cfg->el_present_flag;
         break;
     }
+    el->codec->dovi_layer = 2;
+    bl->codec->dovi_layer = 1;
     el->title = talloc_strdup(el, "Dolby Vision enhancement layer");
     el->dependent_track = true;
 

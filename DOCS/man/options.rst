@@ -1880,20 +1880,26 @@ Video
     the number of packets that could not be decoded. Values below an unspecified
     count will not have this problem, because mpv retains the packets.
 
-``--hwdec-dolby-vision=<auto|native|convert|base-layer>``
+``--hwdec-dolby-vision=<auto|native|convert|base-layer|compose>``
     How Dolby Vision is decoded with ``--hwdec=mediacodec`` on Android. Other
     hwdecs and software decoding ignore this.
 
     :auto:       Use the Dolby Vision decoder if the display supports Dolby
                  Vision, and the backward-compatible base layer (HDR10, HLG or
                  SDR) otherwise. Profile 7 is converted to 8.1 when the
-                 decoder only supports profile 8. (Default)
+                 decoder only supports profile 8. On displays without Dolby
+                 Vision, profile 7 is composed like ``compose`` when the VO
+                 supports it. (Default)
     :native:     Always use the Dolby Vision decoder with the stream's own
                  profile.
     :convert:    Like ``native``, but always convert profile 7 to 8.1, dropping
                  the enhancement layer. Useful for decoders that claim profile 7
                  but play it badly.
     :base-layer: Always decode the base layer, ignoring Dolby Vision metadata.
+    :compose:    Decode the profile 7 base and enhancement layers as plain HEVC
+                 and compose them on the GPU, applying the RPU reshaping and
+                 the full enhancement layer residual. Needs libdovi and
+                 ``--vo=mediacodec_embed`` with GLES 3 support.
 
     Converting needs mpv built with libdovi; without it, profile 7 falls back
     to the base layer whenever a conversion would be needed. When the device

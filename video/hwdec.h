@@ -55,6 +55,9 @@ struct mp_hwdec_ctx *hwdec_devices_get_by_imgfmt_and_type(struct mp_hwdec_device
                                                           int hw_imgfmt,
                                                           enum AVHWDeviceType device_type);
 
+struct mp_hwdec_ctx *hwdec_devices_get_by_name(struct mp_hwdec_devices *devs,
+                                               const char *name);
+
 // For code which still strictly assumes there is 1 (or none) device.
 struct mp_hwdec_ctx *hwdec_devices_get_first(struct mp_hwdec_devices *devs);
 
@@ -74,6 +77,7 @@ void hwdec_devices_remove(struct mp_hwdec_devices *devs, struct mp_hwdec_ctx *ct
 struct hwdec_imgfmt_request {
     int imgfmt;
     bool probing;
+    const char *driver;
 };
 
 // Can be used to enable lazy loading of an API with hwdec_devices_request().

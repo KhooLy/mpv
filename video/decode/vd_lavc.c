@@ -15,6 +15,7 @@
  * License along with mpv.  If not, see <http://www.gnu.org/licenses/>.
  */
 
+#include <math.h>
 #include <float.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -60,6 +61,7 @@
 
 #if HAVE_LIBDOVI
 #include <libdovi/rpu_parser.h>
+#include "dovi_rpu.h"
 #endif
 
 #if HAVE_ANDROID
@@ -219,7 +221,7 @@ const struct m_sub_options hwdec_conf = {
             .flags = UPDATE_HWDEC},
         {"hwdec-threads", OPT_INT(hwdec_threads), M_RANGE(0, DBL_MAX)},
         {"hwdec-dolby-vision", OPT_CHOICE(dolby_vision,
-            {"auto", 0}, {"native", 1}, {"convert", 2}, {"base-layer", 3}),
+            {"auto", 0}, {"native", 1}, {"convert", 2}, {"base-layer", 3}, {"compose", 4}),
             .flags = UPDATE_HWDEC},
         {"vd-lavc-software-fallback", OPT_REPLACED("hwdec-software-fallback")},
         {0}
@@ -281,6 +283,14 @@ typedef struct lavc_ctx {
     int nal_len;
     AVPacket *dovi_pkt;
     bstr dovi_buf;
+    int fel_layer;
+    struct mp_dovi_rpu *rpu;
+    double rpu_pts;
+    struct {
+        double pts;
+        AVBufferRef *buf;
+    } rpus[32];
+    int rpu_idx;
     bool force_eof;
     int wait_for_keyframe; // max number of frames to wait for keyframe after reset
 
@@ -525,6 +535,22 @@ static bool hwdec_codec_allowed(struct mp_filter *vd, const char *codec)
     return false;
 }
 
+static const char *fel_driver(struct mp_filter *vd)
+{
+#if HAVE_ANDROID && HAVE_LIBDOVI
+    vd_ffmpeg_ctx *ctx = vd->priv;
+    struct mp_codec_params *c = ctx->codec;
+    if (!c->dovi_layer || c->dv_profile != 7)
+        return NULL;
+    int mode = ctx->hwdec_opts->dolby_vision;
+    if (mode != 4 && (mode || mp_jni_display_supports_dolby_vision(vd->log)))
+        return NULL;
+    return c->dovi_layer == 1 ? "mediacodec_fel_bl" : "mediacodec_fel_el";
+#else
+    return NULL;
+#endif
+}
+
 static AVBufferRef *hwdec_create_dev(struct mp_filter *vd,
                                      struct hwdec_info *hwdec,
                                      bool autoprobe)
@@ -547,15 +573,23 @@ static AVBufferRef *hwdec_create_dev(struct mp_filter *vd,
         }
     } else if (ctx->hwdec_devs) {
         int imgfmt = pixfmt2imgfmt(hwdec->pix_fmt);
+        const char *driver = hwdec->lavc_device == AV_HWDEVICE_TYPE_MEDIACODEC
+                             ? fel_driver(vd) : NULL;
         struct hwdec_imgfmt_request params = {
             .imgfmt = imgfmt,
             .probing = autoprobe,
+            .driver = driver,
         };
         hwdec_devices_request_for_img_fmt(ctx->hwdec_devs, &params);
 
-        const struct mp_hwdec_ctx *hw_ctx =
-            hwdec_devices_get_by_imgfmt_and_type(ctx->hwdec_devs, imgfmt,
-                                                 hwdec->lavc_device);
+        const struct mp_hwdec_ctx *hw_ctx = NULL;
+        if (driver)
+            hw_ctx = hwdec_devices_get_by_name(ctx->hwdec_devs, driver);
+        ctx->fel_layer = hw_ctx ? ctx->codec->dovi_layer : 0;
+        if (!hw_ctx) {
+            hw_ctx = hwdec_devices_get_by_imgfmt_and_type(ctx->hwdec_devs, imgfmt,
+                                                          hwdec->lavc_device);
+        }
 
         if (hw_ctx && hw_ctx->av_device_ref)
             return av_buffer_ref(hw_ctx->av_device_ref);
@@ -571,6 +605,7 @@ static void select_and_set_hwdec(struct mp_filter *vd)
     const char *codec = ctx->codec->codec;
 
     m_config_cache_update(ctx->hwdec_opts_cache);
+    ctx->fel_layer = 0;
 
     struct hwdec_info *hwdecs = NULL;
     int num_hwdecs = 0;
@@ -952,6 +987,10 @@ static void init_avctx(struct mp_filter *vd)
                     conf->dv_profile);
             talloc_replace(ctx, ctx->dovi_path, "unsupported");
         }
+        if (ctx->fel_layer == 1) {
+            talloc_free(ctx->dovi_path);
+            ctx->dovi_path = talloc_strdup(ctx, "compose");
+        }
         MP_VERBOSE(vd, "Dolby Vision path: %s\n", ctx->dovi_path);
     }
     av_free(path);
@@ -1037,11 +1076,18 @@ static void init_dovi(struct mp_filter *vd)
     static const char *const modes[] = {"auto", "native", "p81", "base_layer"};
     const AVDOVIDecoderConfigurationRecord *conf = dovi_conf(avctx);
     int profile = conf ? conf->dv_profile : -1;
-    int mode = resolve_dovi_mode(vd, profile, conf ? conf->dv_level : 0);
+    int mode = ctx->fel_layer ? 3 : resolve_dovi_mode(vd, profile, conf ? conf->dv_level : 0);
     av_opt_set(avctx, "dovi_mode", modes[mode], AV_OPT_SEARCH_CHILDREN);
 
-    if (avctx->codec_id != AV_CODEC_ID_HEVC || (profile != 7 && profile != 8))
+    if (avctx->codec_id != AV_CODEC_ID_HEVC || (profile != 7 && profile != 8) ||
+        ctx->fel_layer == 2)
         return;
+#if HAVE_LIBDOVI
+    if (ctx->fel_layer == 1 && !ctx->rpu) {
+        ctx->rpu = mp_dovi_rpu_create(ctx);
+        MP_VERBOSE(vd, "Composing the Dolby Vision enhancement layer.\n");
+    }
+#endif
     if (mode == 3) {
         ctx->dovi_strip = 2;
 #if HAVE_LIBDOVI
@@ -1088,6 +1134,21 @@ static void filter_nal(struct mp_filter *vd, const uint8_t *nal, size_t len)
     if (!len)
         return;
     int type = (nal[0] >> 1) & 0x3f;
+#if HAVE_LIBDOVI
+    if (type == 62 && ctx->rpu) {
+        const char *err = NULL;
+        AVBufferRef *buf = mp_dovi_rpu_parse(ctx->rpu, nal, len, &err);
+        if (!buf) {
+            MP_WARN(vd, "Dropping Dolby Vision RPU: %s\n", err ? err : "?");
+            return;
+        }
+        int i = ctx->rpu_idx++ % MP_ARRAY_SIZE(ctx->rpus);
+        av_buffer_unref(&ctx->rpus[i].buf);
+        ctx->rpus[i].pts = ctx->rpu_pts;
+        ctx->rpus[i].buf = buf;
+        return;
+    }
+#endif
     if (type == 63 || (type == 62 && ctx->dovi_strip == 2))
         return;
 #if HAVE_LIBDOVI
@@ -1119,6 +1180,7 @@ static AVPacket *filter_dovi(struct mp_filter *vd, AVPacket *pkt)
     const uint8_t *p = pkt->data, *end = pkt->data + pkt->size;
 
     ctx->dovi_buf.len = 0;
+    ctx->rpu_pts = mp_pts_from_av(pkt->pts, &ctx->codec_timebase);
     if (ctx->nal_len) {
         while (end - p >= ctx->nal_len) {
             size_t len = 0;
@@ -1193,6 +1255,9 @@ static void uninit_avctx(struct mp_filter *vd)
     avcodec_free_context(&ctx->avctx);
     av_packet_free(&ctx->dovi_pkt);
     ctx->dovi_strip = 0;
+    for (int n = 0; n < MP_ARRAY_SIZE(ctx->rpus); n++)
+        av_buffer_unref(&ctx->rpus[n].buf);
+    TA_FREEP(&ctx->rpu);
     TA_FREEP(&ctx->dovi_path);
 
     av_buffer_unref(&ctx->hwdec_dev);
@@ -1543,6 +1608,17 @@ static int decode_frame(struct mp_filter *vd)
     // If something was decoded successfully, it must return a frame with valid
     // data.
     mp_assert(ctx->pic->buf[0]);
+
+    double pic_pts = mp_pts_from_av(ctx->pic->pts, &ctx->codec_timebase);
+    for (int n = 0; ctx->rpu && n < MP_ARRAY_SIZE(ctx->rpus); n++) {
+        if (ctx->rpus[n].buf && fabs(ctx->rpus[n].pts - pic_pts) < 1e-4) {
+            if (!av_frame_new_side_data_from_buf(ctx->pic, AV_FRAME_DATA_DOVI_METADATA,
+                                                 ctx->rpus[n].buf))
+                av_buffer_unref(&ctx->rpus[n].buf);
+            ctx->rpus[n].buf = NULL;
+            break;
+        }
+    }
 
     struct mp_image *mpi = mp_image_from_av_frame(ctx->pic);
     if (!mpi) {

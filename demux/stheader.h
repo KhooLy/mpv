@@ -176,6 +176,7 @@ struct mp_codec_params {
     uint8_t dv_profile;
     uint8_t dv_level;
     bool dv_el_present;     // BL and EL interleaved in this stream (Profile 7)
+    uint8_t dovi_layer;     // 1: split base layer, 2: split enhancement layer
 
     // STREAM_VIDEO + STREAM_AUDIO
     int bits_per_coded_sample;
