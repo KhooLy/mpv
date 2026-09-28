@@ -325,6 +325,11 @@ jobs:
       - name: Install dependencies
         run: sudo apt-get update && sudo apt-get install -y meson ninja-build nasm pkg-config gcc-multilib
 
+      - name: Install Rust targets and cargo-c
+        run: |
+          rustup target add aarch64-linux-android armv7-linux-androideabi x86_64-linux-android
+          cargo install cargo-c --locked
+
       - uses: actions/cache@v4
         with:
           path: android-build/${{ matrix.abi }}

@@ -5,9 +5,9 @@ ndk=${ANDROID_NDK_HOME:-${ANDROID_NDK:-$HOME/Android/Sdk/ndk/27.1.12297006}}
 api=28
 abi=${ABI:-arm64-v8a}
 case $abi in
-    arm64-v8a) target=aarch64-linux-android; triple=$target; family=aarch64; cpu=arm64; ffarch=aarch64 ;;
-    armeabi-v7a) target=armv7a-linux-androideabi; triple=arm-linux-androideabi; family=arm; cpu=armv7; ffarch=arm ;;
-    x86_64) target=x86_64-linux-android; triple=$target; family=x86_64; cpu=x86_64; ffarch=x86_64 ;;
+    arm64-v8a) target=aarch64-linux-android; triple=$target; rtarget=$target; family=aarch64; cpu=arm64; ffarch=aarch64 ;;
+    armeabi-v7a) target=armv7a-linux-androideabi; triple=arm-linux-androideabi; rtarget=armv7-linux-androideabi; family=arm; cpu=armv7; ffarch=arm ;;
+    x86_64) target=x86_64-linux-android; triple=$target; rtarget=$target; family=x86_64; cpu=x86_64; ffarch=x86_64 ;;
     *) echo "unknown abi $abi"; exit 2 ;;
 esac
 host=$(uname -s | tr '[:upper:]' '[:lower:]')-x86_64
@@ -100,6 +100,14 @@ if [ ! -f "$work/luajit/.done" ]; then
     touch "$work/luajit/.done"
 fi
 
+fetch dovi_tool https://github.com/quietvoid/dovi_tool.git libdovi-3.4.0
+if [ ! -f "$work/dovi_tool/.done" ]; then
+    (cd "$work/dovi_tool/dolby_vision" &&
+        cargo cinstall --release --target $rtarget --prefix "$prefix" --libdir lib \
+            --library-type staticlib)
+    touch "$work/dovi_tool/.done"
+fi
+
 fetch ffmpeg https://github.com/FFmpeg/FFmpeg.git n9.0.1 ffmpeg-mediacodec.patch
 if [ ! -f "$work/ffmpeg/.done" ]; then
     mkdir -p "$work/ffmpeg/build"
@@ -147,7 +155,7 @@ meson_dep libplacebo -Dtests=false -Ddemos=false -Dbench=false -Dfuzz=false \
     -Dglslang=disabled -Dlcms=disabled -Dlibdovi=disabled -Dxxhash=disabled \
     -Dunwind=disabled
 
-static="libdav1d.a:libxml2.a:libmbedtls.a:libmbedx509.a:libmbedcrypto.a:libluajit-5.1.a"
+static="libdovi.a:libdav1d.a:libxml2.a:libmbedtls.a:libmbedx509.a:libmbedcrypto.a:libluajit-5.1.a"
 [ -f "$work/mpv/build.ninja" ] || meson setup "$work/mpv" "$src" \
     --cross-file "$work/cross.ini" --prefix "$prefix" --libdir lib \
     --buildtype release --default-library shared \
@@ -155,7 +163,7 @@ static="libdav1d.a:libxml2.a:libmbedtls.a:libmbedx509.a:libmbedcrypto.a:libluaji
     -Dlua=luajit -Djavascript=disabled -Dcplugins=disabled -Diconv=disabled \
     -Dlcms2=disabled -Dlibarchive=disabled -Dlibavdevice=disabled \
     -Dlibbluray=disabled -Ddvdnav=disabled -Dcdda=disabled -Dlibcurl=disabled \
-    -Drubberband=disabled -Duchardet=disabled -Dvapoursynth=disabled \
+    -Dlibdovi=enabled -Drubberband=disabled -Duchardet=disabled -Dvapoursynth=disabled \
     -Dzimg=disabled -Dzlib=disabled -Djpeg=disabled -Dsdl2-gamepad=disabled \
     -Dsdl2-audio=disabled -Dsdl2-video=disabled -Dalsa=disabled -Djack=disabled \
     -Dopenal=disabled -Dpipewire=disabled -Dpulse=disabled -Dsndio=disabled \
@@ -166,7 +174,7 @@ static="libdav1d.a:libxml2.a:libmbedtls.a:libmbedx509.a:libmbedcrypto.a:libluaji
     -Dx11=disabled -Dx11-clipboard=disabled -Dandroid-media-ndk=enabled \
     -Dcuda-hwaccel=disabled -Dcuda-interop=disabled -Dmanpage-build=disabled \
     -Dhtml-build=disabled -Dpdf-build=disabled \
-    "-Dc_link_args=-lc++_shared -L$prefix/lib -Wl,--exclude-libs,$static -ldav1d -lxml2 -lmbedtls -lmbedx509 -lmbedcrypto -lm"
+    "-Dc_link_args=-lc++_shared -L$prefix/lib -Wl,--exclude-libs,$static -ldovi -ldav1d -lxml2 -lmbedtls -lmbedx509 -lmbedcrypto -lm"
 meson compile -C "$work/mpv"
 
 out=$work/out/jni/$abi
