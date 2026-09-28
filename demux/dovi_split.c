@@ -20,7 +20,6 @@
 #include <libavcodec/avcodec.h>
 #include <libavcodec/bsf.h>
 #include <libavutil/dovi_meta.h>
-#include <libavutil/intreadwrite.h>
 #include <libavutil/opt.h>
 
 #include "common/av_common.h"
@@ -40,25 +39,7 @@ struct mp_dovi_split {
     struct sh_stream *el;
     AVBSFContext *bsf;
     AVPacket *staging;
-    bool have_ps;
 };
-
-static void strip_ps(struct demux_packet *dp)
-{
-    int o = 0;
-    while (o + 5 <= dp->len) {
-        int l = AV_RB32(dp->buffer + o);
-        if (l < 0 || l > dp->len - o - 4)
-            return;
-        int type = (dp->buffer[o + 4] >> 1) & 63;
-        if (type == 32 || type == 33) {
-            memmove(dp->buffer + o, dp->buffer + o + 4 + l, dp->len - o - 4 - l);
-            dp->len -= 4 + l;
-        } else {
-            o += 4 + l;
-        }
-    }
-}
 
 static void mp_dovi_split_destructor(void *p)
 {
@@ -163,7 +144,6 @@ void mp_dovi_split_reset(struct mp_dovi_split *s)
     if (!s || !s->bsf)
         return;
     av_bsf_flush(s->bsf);
-    s->have_ps = false;
 }
 
 struct sh_stream *mp_dovi_split_el_stream(struct mp_dovi_split *s)
@@ -219,9 +199,6 @@ struct demux_packet *mp_dovi_split_dispatch(struct mp_dovi_split *s,
         dp->duration = bl_dp->duration;
         dp->keyframe = bl_dp->keyframe;
         dp->stream = s->el->index;
-        if (s->have_ps)
-            strip_ps(dp);
-        s->have_ps = true;
     }
     av_packet_unref(s->staging);
     return dp;
