@@ -786,6 +786,12 @@ if features['uchardet']
     dependencies += uchardet
 endif
 
+libdovi = dependency('dovi', version: '>= 3.3.0', required: get_option('libdovi'))
+features += {'libdovi': libdovi.found()}
+if features['libdovi']
+    dependencies += libdovi
+endif
+
 vapoursynth = dependency('vapoursynth', version: '>= 56', required: get_option('vapoursynth'))
 features += {'vapoursynth': vapoursynth.found()}
 if features['vapoursynth']

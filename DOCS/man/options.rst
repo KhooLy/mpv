@@ -1895,6 +1895,11 @@ Video
                  but play it badly.
     :base-layer: Always decode the base layer, ignoring Dolby Vision metadata.
 
+    Converting needs mpv built with libdovi; without it, profile 7 falls back
+    to the base layer whenever a conversion would be needed. When the device
+    has no Dolby Vision decoder that can take the chosen path, the base layer
+    is used as well.
+
     Streams without a base layer (profile 5, and profile 7 with no compatible
     base layer) always use the Dolby Vision decoder, and fall back to software
     decoding if there is none. The ``hwdec-dolby-vision-current`` property

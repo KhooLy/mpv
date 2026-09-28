@@ -22,7 +22,6 @@
 #include <stdbool.h>
 
 #include <libavcodec/avcodec.h>
-#include <libavcodec/bsf.h>
 #include <libavformat/version.h>
 #include <libavutil/common.h>
 #include <libavutil/dovi_meta.h>
@@ -39,6 +38,7 @@
 #include "misc/bstr.h"
 #include "common/av_common.h"
 #include "common/codecs.h"
+#include "config.h"
 
 #include "video/fmt-conversion.h"
 
@@ -57,6 +57,10 @@
 #include "video/out/vo.h"
 
 #include "options/m_option.h"
+
+#if HAVE_LIBDOVI
+#include <libdovi/rpu_parser.h>
+#endif
 
 #if HAVE_ANDROID
 #include <libavutil/mastering_display_metadata.h>
@@ -109,7 +113,7 @@ static void add_container_hdr_metadata(AVCodecContext *avctx,
 #endif
 
 static void init_avctx(struct mp_filter *vd);
-static int init_dovi_bsf(struct mp_filter *vd);
+static void init_dovi(struct mp_filter *vd);
 static void uninit_avctx(struct mp_filter *vd);
 
 static int get_buffer2_direct(AVCodecContext *avctx, AVFrame *pic, int flags);
@@ -272,9 +276,10 @@ typedef struct lavc_ctx {
     bool hwdec_notified;
     char *hwdec_codec;
     char *dovi_path;
-    AVBSFContext *bsf;
-    AVPacket *bsf_pkt;
-    bool bsf_eof;
+    int dovi_strip;
+    int nal_len;
+    AVPacket *dovi_pkt;
+    bstr dovi_buf;
     bool force_eof;
     int wait_for_keyframe; // max number of frames to wait for keyframe after reset
 
@@ -917,8 +922,7 @@ static void init_avctx(struct mp_filter *vd)
         goto error;
     }
 
-    if (init_dovi_bsf(vd) < 0)
-        goto error;
+    init_dovi(vd);
 
 #if HAVE_ANDROID
     if (ctx->hwdec.lavc_device == AV_HWDEVICE_TYPE_MEDIACODEC)
@@ -988,103 +992,142 @@ static int resolve_dovi_mode(struct mp_filter *vd, int profile)
         }
         mode = profile == 7 && !(dv & 0x80) && p8 ? 2 : 1;
     }
-    if ((mode == 1 && !dv) || (mode == 2 && profile == 7 && !p8)) {
+    if (!dv || (mode == 2 && profile == 7 && !p8)) {
         MP_VERBOSE(vd, "No usable Dolby Vision decoder; using the base layer.\n");
         return 3;
     }
-    if (mode == 2 && profile == 7)
+    if (mode == 2 && profile == 7) {
+        if (!HAVE_LIBDOVI) {
+            MP_VERBOSE(vd, "Built without libdovi; using the base layer.\n");
+            return 3;
+        }
         MP_VERBOSE(vd, "Converting profile 7 to 8.1.\n");
+    }
 #endif
     return mode ? mode : 1;
 }
 
-static int init_dovi_bsf(struct mp_filter *vd)
+static void init_dovi(struct mp_filter *vd)
 {
     vd_ffmpeg_ctx *ctx = vd->priv;
     AVCodecContext *avctx = ctx->avctx;
 
     if (!ctx->codec->dovi || !ctx->use_hwdec ||
         ctx->hwdec.lavc_device != AV_HWDEVICE_TYPE_MEDIACODEC)
-        return 0;
+        return;
 
     static const char *const modes[] = {"auto", "native", "p81", "base_layer"};
     int profile = dovi_profile(avctx);
     int mode = resolve_dovi_mode(vd, profile);
     av_opt_set(avctx, "dovi_mode", modes[mode], AV_OPT_SEARCH_CHILDREN);
 
-    const char *filter = NULL, *opts = NULL;
-    if (mode == 2 && profile == 7) {
-        filter = "dovi_rpu";
-        opts = "p81=1:compression=none";
-    } else if (mode == 3 && avctx->codec_id == AV_CODEC_ID_HEVC &&
-               (profile == 7 || profile == 8)) {
-        filter = "filter_units";
-        opts = "remove_types=62|63";
+    if (avctx->codec_id != AV_CODEC_ID_HEVC || (profile != 7 && profile != 8))
+        return;
+    if (mode == 3) {
+        ctx->dovi_strip = 2;
+#if HAVE_LIBDOVI
+    } else if (mode == 2 && profile == 7) {
+        ctx->dovi_strip = 1;
+#endif
     }
-    if (!filter)
-        return 0;
+    if (!ctx->dovi_strip)
+        return;
 
-    const AVBitStreamFilter *f = av_bsf_get_by_name(filter);
-    if (!f || av_bsf_alloc(f, &ctx->bsf) < 0 ||
-        av_set_options_string(ctx->bsf->priv_data, opts, "=", ":") < 0 ||
-        avcodec_parameters_from_context(ctx->bsf->par_in, avctx) < 0)
-        goto error;
-    ctx->bsf->time_base_in = ctx->codec_timebase;
-    if (av_bsf_init(ctx->bsf) < 0 ||
-        avcodec_parameters_to_context(avctx, ctx->bsf->par_out) < 0)
-        goto error;
-    ctx->bsf_pkt = av_packet_alloc();
-    if (!ctx->bsf_pkt)
-        goto error;
-    return 0;
-
-error:
-    MP_ERR(vd, "Could not set up the %s bitstream filter.\n", filter);
-    return -1;
+    ctx->nal_len = 0;
+    if (avctx->extradata_size >= 23 && avctx->extradata[0] == 1)
+        ctx->nal_len = (avctx->extradata[21] & 3) + 1;
+    ctx->dovi_pkt = av_packet_alloc();
+    if (!ctx->dovi_pkt)
+        ctx->dovi_strip = 0;
 }
 
-static int send_avpkt(vd_ffmpeg_ctx *ctx, AVPacket *pkt)
+static const uint8_t *next_start_code(const uint8_t *p, const uint8_t *end)
 {
-    if (!ctx->bsf)
-        return avcodec_send_packet(ctx->avctx, pkt);
-
-    if (ctx->bsf_pkt->data) {
-        int ret = avcodec_send_packet(ctx->avctx, ctx->bsf_pkt);
-        if (ret == AVERROR(EAGAIN))
-            return ret;
-        av_packet_unref(ctx->bsf_pkt);
+    for (; end - p >= 3; p++) {
+        if (!p[0] && !p[1] && p[2] == 1)
+            return p;
     }
+    return end;
+}
 
-    if (ctx->bsf_eof)
-        return avcodec_send_packet(ctx->avctx, NULL);
-
-    AVPacket *in = NULL;
-    if (pkt) {
-        in = av_packet_clone(pkt);
-        if (!in)
-            return AVERROR(ENOMEM);
+static void append_nal(vd_ffmpeg_ctx *ctx, const uint8_t *nal, size_t len)
+{
+    uint8_t hdr[4] = {0, 0, 0, 1};
+    int n = 4;
+    if (ctx->nal_len) {
+        n = ctx->nal_len;
+        for (int i = 0; i < n; i++)
+            hdr[i] = len >> (8 * (n - 1 - i));
     }
-    int ret = av_bsf_send_packet(ctx->bsf, in);
-    av_packet_free(&in);
-    if (ret < 0)
-        return ret;
-    while (1) {
-        ret = av_bsf_receive_packet(ctx->bsf, ctx->bsf_pkt);
-        if (ret == AVERROR(EAGAIN))
-            return 0;
-        if (ret == AVERROR_EOF) {
-            ctx->bsf_eof = true;
-            return avcodec_send_packet(ctx->avctx, NULL);
+    bstr_xappend(ctx, &ctx->dovi_buf, (bstr){hdr, n});
+    bstr_xappend(ctx, &ctx->dovi_buf, (bstr){(uint8_t *)nal, len});
+}
+
+static void filter_nal(struct mp_filter *vd, const uint8_t *nal, size_t len)
+{
+    vd_ffmpeg_ctx *ctx = vd->priv;
+    if (!len)
+        return;
+    int type = (nal[0] >> 1) & 0x3f;
+    if (type == 63 || (type == 62 && ctx->dovi_strip == 2))
+        return;
+#if HAVE_LIBDOVI
+    if (type == 62) {
+        DoviRpuOpaque *rpu = dovi_parse_unspec62_nalu(nal, len);
+        const DoviData *out = NULL;
+        const char *err = dovi_rpu_get_error(rpu);
+        if (!err && dovi_convert_rpu_with_mode(rpu, 2) == 0)
+            out = dovi_write_unspec62_nalu(rpu);
+        if (!err)
+            err = dovi_rpu_get_error(rpu);
+        if (out && !err) {
+            append_nal(ctx, out->data, out->len);
+        } else {
+            MP_WARN(vd, "Dropping Dolby Vision RPU: %s\n", err ? err : "?");
         }
-        if (ret < 0)
-            return ret;
-        ret = avcodec_send_packet(ctx->avctx, ctx->bsf_pkt);
-        if (ret == AVERROR(EAGAIN))
-            return 0;
-        av_packet_unref(ctx->bsf_pkt);
-        if (ret < 0)
-            return ret;
+        if (out)
+            dovi_data_free(out);
+        dovi_rpu_free(rpu);
+        return;
     }
+#endif
+    append_nal(ctx, nal, len);
+}
+
+static AVPacket *filter_dovi(struct mp_filter *vd, AVPacket *pkt)
+{
+    vd_ffmpeg_ctx *ctx = vd->priv;
+    const uint8_t *p = pkt->data, *end = pkt->data + pkt->size;
+
+    ctx->dovi_buf.len = 0;
+    if (ctx->nal_len) {
+        while (end - p >= ctx->nal_len) {
+            size_t len = 0;
+            for (int i = 0; i < ctx->nal_len; i++)
+                len = (len << 8) | *p++;
+            if (len > end - p)
+                return pkt;
+            filter_nal(vd, p, len);
+            p += len;
+        }
+    } else {
+        p = next_start_code(p, end);
+        while (p < end) {
+            const uint8_t *nal = p + 3;
+            p = next_start_code(nal, end);
+            const uint8_t *nal_end = p;
+            while (nal_end > nal && !nal_end[-1])
+                nal_end--;
+            filter_nal(vd, nal, nal_end - nal);
+        }
+    }
+
+    AVPacket *out = ctx->dovi_pkt;
+    av_packet_unref(out);
+    if (av_new_packet(out, ctx->dovi_buf.len) < 0 || av_packet_copy_props(out, pkt) < 0)
+        return pkt;
+    memcpy(out->data, ctx->dovi_buf.start, ctx->dovi_buf.len);
+    return out;
 }
 
 static void reset_avctx(struct mp_filter *vd)
@@ -1093,11 +1136,6 @@ static void reset_avctx(struct mp_filter *vd)
 
     if (ctx->avctx && avcodec_is_open(ctx->avctx))
         avcodec_flush_buffers(ctx->avctx);
-    if (ctx->bsf) {
-        av_bsf_flush(ctx->bsf);
-        av_packet_unref(ctx->bsf_pkt);
-        ctx->bsf_eof = false;
-    }
     ctx->flushing = false;
     ctx->hwdec_request_reinit = false;
     // Wait for the first keyframe after reset to ensure the decoder state is
@@ -1134,9 +1172,8 @@ static void uninit_avctx(struct mp_filter *vd)
     av_buffer_unref(&ctx->cached_hw_frames_ctx);
 
     avcodec_free_context(&ctx->avctx);
-    av_bsf_free(&ctx->bsf);
-    av_packet_free(&ctx->bsf_pkt);
-    ctx->bsf_eof = false;
+    av_packet_free(&ctx->dovi_pkt);
+    ctx->dovi_strip = 0;
     TA_FREEP(&ctx->dovi_path);
 
     av_buffer_unref(&ctx->hwdec_dev);
@@ -1419,7 +1456,10 @@ static int send_packet(struct mp_filter *vd, struct demux_packet *pkt)
 
     mp_set_av_packet(ctx->avpkt, pkt, &ctx->codec_timebase);
 
-    int ret = send_avpkt(ctx, pkt ? ctx->avpkt : NULL);
+    AVPacket *avpkt = pkt ? ctx->avpkt : NULL;
+    if (avpkt && ctx->dovi_strip)
+        avpkt = filter_dovi(vd, avpkt);
+    int ret = avcodec_send_packet(avctx, avpkt);
     if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF)
         return ret;
 
