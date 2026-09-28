@@ -43,7 +43,6 @@ struct priv {
 
     bool bl_eof;
     bool el_eof;
-    bool el_seen;
 };
 
 static int pts_cmp(double a, double b)
@@ -55,25 +54,23 @@ static int pts_cmp(double a, double b)
     return 0;
 }
 
-// Pull available frames from `pin` into `queue` until either no data is
-// ready or the queue is full. Sets *eof if the upstream signaled EOF.
-static void drain_pin(struct mp_filter *f, struct mp_pin *pin,
-                      struct mp_image ***queue, int *num, bool *eof)
+static bool pull(struct mp_filter *f, struct mp_pin *pin,
+                 struct mp_image ***queue, int *num, bool *eof)
 {
-    while (!*eof && *num < QUEUE_MAX) {
-        if (!mp_pin_out_request_data(pin))
-            return;
+    while (!*eof && *num < QUEUE_MAX && mp_pin_out_request_data(pin)) {
         struct mp_frame fr = mp_pin_out_read(pin);
         if (fr.type == MP_FRAME_EOF) {
             *eof = true;
-            return;
+            return false;
         }
         if (fr.type != MP_FRAME_VIDEO) {
             mp_frame_unref(&fr);
             continue;
         }
         MP_TARRAY_APPEND(f->priv, *queue, *num, fr.data);
+        return true;
     }
+    return false;
 }
 
 static void pop_head(struct mp_image ***queue, int *num)
@@ -121,13 +118,10 @@ static void pair_process(struct mp_filter *f)
     struct mp_pin *in = f->ppins[0];
     struct mp_pin *out = f->ppins[1];
 
-    drain_pin(f, in, &p->bl_pending, &p->num_bl_pending, &p->bl_eof);
-    drain_pin(f, p->el_in, &p->el_pending, &p->num_el_pending, &p->el_eof);
-    if (p->num_el_pending > 0)
-        p->el_seen = true;
-
     while (mp_pin_in_needs_data(out)) {
-        if (p->num_bl_pending == 0) {
+        if (p->num_bl_pending == 0 &&
+            !pull(f, in, &p->bl_pending, &p->num_bl_pending, &p->bl_eof))
+        {
             if (p->bl_eof) {
                 while (p->num_el_pending)
                     pop_head(&p->el_pending, &p->num_el_pending);
@@ -137,18 +131,21 @@ static void pair_process(struct mp_filter *f)
         }
 
         struct mp_image *bl = p->bl_pending[0];
-        int cmp = p->num_el_pending > 0
-                ? pts_cmp(p->el_pending[0]->pts, bl->pts) : 0;
 
-        // EL older than BL: its BL partner already left or never arrived.
-        if (p->num_el_pending > 0 && cmp < 0) {
+        while (p->num_el_pending > 0 || pull(f, p->el_in, &p->el_pending,
+                                             &p->num_el_pending, &p->el_eof))
+        {
+            if (pts_cmp(p->el_pending[0]->pts, bl->pts) >= 0)
+                break;
+            // EL older than BL: its BL partner already left or never arrived.
             MP_VERBOSE(f, "dropping stale EL %.6f (oldest BL %.6f)\n",
                        p->el_pending[0]->pts, bl->pts);
             pop_head(&p->el_pending, &p->num_el_pending);
-            continue;
         }
 
-        if (p->num_el_pending > 0 && cmp == 0) {
+        if (p->num_el_pending > 0 &&
+            pts_cmp(p->el_pending[0]->pts, bl->pts) == 0)
+        {
             struct mp_image *el = take_head(&p->el_pending, &p->num_el_pending);
             take_head(&p->bl_pending, &p->num_bl_pending);
             inherit_dovi_from_el(bl, el);
@@ -161,21 +158,11 @@ static void pair_process(struct mp_filter *f)
             continue;
         }
 
-        // No EL match for the oldest BL. Hold BL unless we have affirmative
-        // evidence no EL is coming.
-        bool give_up = p->el_eof ||
-                       (p->num_el_pending > 0 && cmp > 0) ||
-                       (p->num_bl_pending >= QUEUE_MAX && p->el_seen);
-        if (!give_up)
+        if (!p->el_eof && !p->num_el_pending)
             return;
 
-        MP_VERBOSE(f, "emitting BL %.6f alone (%s; bl_pending=%d el_pending=%d"
-                   " el head %.6f)\n", bl->pts,
-                   p->el_eof ? "el_eof" :
-                   (p->num_el_pending > 0 && cmp > 0) ? "el_newer" : "queue_full",
-                   p->num_bl_pending, p->num_el_pending,
-                   p->num_el_pending > 0 ? p->el_pending[0]->pts : -1.0);
-
+        MP_VERBOSE(f, "emitting BL %.6f alone (%s)\n", bl->pts,
+                   p->el_eof ? "el_eof" : "el_newer");
         take_head(&p->bl_pending, &p->num_bl_pending);
         bl->enhancement_layer = NULL;
         mp_pin_in_write(out, MAKE_FRAME(MP_FRAME_VIDEO, bl));
@@ -191,7 +178,6 @@ static void pair_reset(struct mp_filter *f)
         pop_head(&p->el_pending, &p->num_el_pending);
     p->bl_eof = false;
     p->el_eof = false;
-    p->el_seen = false;
 }
 
 static void pair_destroy(struct mp_filter *f)
