@@ -966,15 +966,25 @@ error:
     uninit_avctx(vd);
 }
 
-static int dovi_profile(AVCodecContext *avctx)
+static const AVDOVIDecoderConfigurationRecord *dovi_conf(AVCodecContext *avctx)
 {
     const AVPacketSideData *sd =
         av_packet_side_data_get(avctx->coded_side_data, avctx->nb_coded_side_data,
                                 AV_PKT_DATA_DOVI_CONF);
-    return sd ? ((AVDOVIDecoderConfigurationRecord *)sd->data)->dv_profile : -1;
+    return sd ? (const AVDOVIDecoderConfigurationRecord *)sd->data : NULL;
 }
 
-static int resolve_dovi_mode(struct mp_filter *vd, int profile)
+#if HAVE_ANDROID
+static bool dovi_decodable(struct mp_jni_video_caps *caps, int profile, int level)
+{
+    if (profile < 0 || profile > 10 || !(caps->dv_profiles & (1 << profile)))
+        return false;
+    int max = caps->dv_levels[profile];
+    return !max || level < 1 || level > 11 || max >= 1 << (level - 1);
+}
+#endif
+
+static int resolve_dovi_mode(struct mp_filter *vd, int profile, int level)
 {
     vd_ffmpeg_ctx *ctx = vd->priv;
     int mode = ctx->hwdec_opts->dolby_vision;
@@ -983,24 +993,23 @@ static int resolve_dovi_mode(struct mp_filter *vd, int profile)
         return mode;
     struct mp_jni_video_caps caps;
     mp_jni_video_caps(vd->log, &caps);
-    int dv = caps.dv_profiles;
-    bool p8 = dv & 0x100;
+    bool native = dovi_decodable(&caps, profile, level);
+    bool p81 = profile == 7 && HAVE_LIBDOVI && dovi_decodable(&caps, 8, level);
     if (!mode) {
         if (!mp_jni_display_supports_dolby_vision(vd->log)) {
             MP_VERBOSE(vd, "Display lacks Dolby Vision; using the base layer.\n");
             return 3;
         }
-        mode = profile == 7 && !(dv & 0x80) && p8 ? 2 : 1;
+        mode = native ? 1 : p81 ? 2 : 3;
     }
-    if (!dv || (mode == 2 && profile == 7 && !p8)) {
-        MP_VERBOSE(vd, "No usable Dolby Vision decoder; using the base layer.\n");
-        return 3;
-    }
-    if (mode == 2 && profile == 7) {
-        if (!HAVE_LIBDOVI) {
-            MP_VERBOSE(vd, "Built without libdovi; using the base layer.\n");
-            return 3;
-        }
+    if (mode == 1 && !caps.dv_profiles)
+        mode = 3;
+    if (mode == 2 && profile == 7 && !p81)
+        mode = 3;
+    if (mode == 3) {
+        MP_VERBOSE(vd, "No Dolby Vision decoder for profile %d level %d; "
+                   "using the base layer.\n", profile, level);
+    } else if (mode == 2 && profile == 7) {
         MP_VERBOSE(vd, "Converting profile 7 to 8.1.\n");
     }
 #endif
@@ -1017,8 +1026,9 @@ static void init_dovi(struct mp_filter *vd)
         return;
 
     static const char *const modes[] = {"auto", "native", "p81", "base_layer"};
-    int profile = dovi_profile(avctx);
-    int mode = resolve_dovi_mode(vd, profile);
+    const AVDOVIDecoderConfigurationRecord *conf = dovi_conf(avctx);
+    int profile = conf ? conf->dv_profile : -1;
+    int mode = resolve_dovi_mode(vd, profile, conf ? conf->dv_level : 0);
     av_opt_set(avctx, "dovi_mode", modes[mode], AV_OPT_SEARCH_CHILDREN);
 
     if (avctx->codec_id != AV_CODEC_ID_HEVC || (profile != 7 && profile != 8))

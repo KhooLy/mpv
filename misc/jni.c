@@ -562,7 +562,8 @@ bool mp_jni_display_supports_dolby_vision(struct mp_log *log)
 }
 
 static int max_profile_bits(JNIEnv *env, jobject caps, jfieldID levels_field,
-                            jfieldID profile_field)
+                            jfieldID profile_field, jfieldID level_field,
+                            int *dv_levels)
 {
     int bits = 0;
     jobjectArray levels = (*env)->GetObjectField(env, caps, levels_field);
@@ -573,7 +574,10 @@ static int max_profile_bits(JNIEnv *env, jobject caps, jfieldID levels_field,
         jobject pl = (*env)->GetObjectArrayElement(env, levels, i);
         if (!pl)
             continue;
-        bits |= (*env)->GetIntField(env, pl, profile_field);
+        int profile = (*env)->GetIntField(env, pl, profile_field);
+        bits |= profile;
+        if (dv_levels && profile > 0 && profile < 0x800 && !(profile & (profile - 1)))
+            dv_levels[__builtin_ctz(profile)] |= (*env)->GetIntField(env, pl, level_field);
         (*env)->DeleteLocalRef(env, pl);
     }
     (*env)->DeleteLocalRef(env, levels);
@@ -625,8 +629,9 @@ void mp_jni_video_caps(struct mp_log *log, struct mp_jni_video_caps *caps)
     jfieldID levels_field = (*env)->GetFieldID(env, caps_class, "profileLevels",
         "[Landroid/media/MediaCodecInfo$CodecProfileLevel;");
     jfieldID profile_field = (*env)->GetFieldID(env, pl_class, "profile", "I");
+    jfieldID level_field = (*env)->GetFieldID(env, pl_class, "level", "I");
     if (!list_init || !get_infos || !is_encoder || !get_types || !get_caps ||
-        !levels_field || !profile_field)
+        !levels_field || !profile_field || !level_field)
         goto done;
 
     jobject list = (*env)->NewObject(env, list_class, list_init, 0);
@@ -654,8 +659,10 @@ void mp_jni_video_caps(struct mp_log *log, struct mp_jni_video_caps *caps)
                 continue;
             jobject c = (*env)->CallObjectMethod(env, info, get_caps, jtype);
             if (mp_jni_exception_check(env, 0, NULL) >= 0 && c) {
+                bool dv = !strcmp(type, "video/dolby-vision");
                 add_codec_caps(caps, type,
-                               max_profile_bits(env, c, levels_field, profile_field));
+                               max_profile_bits(env, c, levels_field, profile_field,
+                                                level_field, dv ? caps->dv_levels : NULL));
                 (*env)->DeleteLocalRef(env, c);
             }
             (*env)->ReleaseStringUTFChars(env, jtype, type);

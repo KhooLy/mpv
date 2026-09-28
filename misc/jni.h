@@ -182,6 +182,7 @@ bool mp_jni_display_supports_dolby_vision(struct mp_log *log);
 struct mp_jni_video_caps {
     bool h264, hevc, hevc_10bit, av1, av1_10bit, vp9, vp9_10bit;
     int dv_profiles;
+    int dv_levels[11];
 };
 
 void mp_jni_video_caps(struct mp_log *log, struct mp_jni_video_caps *caps);
