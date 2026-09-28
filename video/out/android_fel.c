@@ -93,7 +93,7 @@ struct layer {
 
 struct program {
     GLuint id;
-    GLint bl, el, blc, elc, pivots, coeffs, mmr, lo, hi, active;
+    GLint bl, el, blc, elc, pivots, coeffs, mmr, lo, hi, act;
     GLint ycc, ycc_off, lms, nlq_off, nlq_slope, nlq_thr;
 };
 
@@ -144,7 +144,7 @@ static const char frag_src[] =
     "uniform vec4 pivots[6];\n"
     "uniform vec4 coeffs[24];\n"
     "uniform vec4 mmr[48];\n"
-    "uniform vec3 lo, hi, active;\n"
+    "uniform vec3 lo, hi, act;\n"
     "uniform mat3 lms;\n"
     "const float M1 = 0.1593017578125, M2 = 78.84375;\n"
     "const float C1 = 0.8359375, C2 = 18.8515625, C3 = 18.6875;\n"
@@ -178,7 +178,7 @@ static const char frag_src[] =
     "#ifdef DV\n"
     "    vec3 sig = clamp(c, 0.0, 1.0);\n"
     "    vec3 r = vec3(reshape(0, sig), reshape(1, sig), reshape(2, sig));\n"
-    "    c = mix(c, clamp(r, lo, hi), active);\n"
+    "    c = mix(c, clamp(r, lo, hi), act);\n"
     "#endif\n"
     "#ifdef EL\n"
     "    vec3 e = texture(el, elc.xy + pos * elc.zw).rgb - nlq_off;\n"
@@ -332,7 +332,7 @@ static bool build_program(struct android_fel *f, struct program *p, bool dv, boo
     }
 #define LOC(x) p->x = glGetUniformLocation(p->id, #x)
     LOC(bl); LOC(el); LOC(blc); LOC(elc); LOC(pivots); LOC(coeffs); LOC(mmr);
-    LOC(lo); LOC(hi); LOC(active); LOC(ycc); LOC(ycc_off); LOC(lms);
+    LOC(lo); LOC(hi); LOC(act); LOC(ycc); LOC(ycc_off); LOC(lms);
     LOC(nlq_off); LOC(nlq_slope); LOC(nlq_thr);
 #undef LOC
     glUseProgram(p->id);
@@ -632,7 +632,7 @@ static void upload_dovi(struct android_fel *f, struct program *p,
         glUniform4fv(p->mmr, midx, &mmr[0][0]);
     glUniform3fv(p->lo, 1, lo);
     glUniform3fv(p->hi, 1, hi);
-    glUniform3fv(p->active, 1, active);
+    glUniform3fv(p->act, 1, active);
 
     static const float lms2rgb[3][3] = {
         { 3.06441879, -2.16597676,  0.10155818},
