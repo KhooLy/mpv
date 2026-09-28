@@ -15,6 +15,7 @@
  * License along with mpv.  If not, see <http://www.gnu.org/licenses/>.
  */
 
+#include <math.h>
 #include <string.h>
 
 #include <EGL/egl.h>
@@ -109,6 +110,8 @@ struct android_fel {
     bool hdr_md;
     struct pl_hdr_metadata hdr;
     int win_w, win_h;
+    int vid_w, vid_h;
+    int disp_w, disp_h;
 
     EGLImageKHR (*CreateImageKHR)(EGLDisplay, EGLContext, EGLenum,
                                   EGLClientBuffer, const EGLint *);
@@ -428,6 +431,9 @@ static bool attach(struct android_fel *f)
     if (f->surface != EGL_NO_SURFACE)
         return true;
     ANativeWindow *win = vo_android_native_window(f->vo);
+    ANativeWindow_setBuffersGeometry(win, 0, 0, 0);
+    if (!vo_android_surface_size(f->vo, &f->disp_w, &f->disp_h))
+        f->disp_w = f->disp_h = 0;
     const EGLint attrs[] = {
         EGL_GL_COLORSPACE_KHR, EGL_GL_COLORSPACE_BT2020_PQ_EXT,
         EGL_NONE,
@@ -439,7 +445,7 @@ static bool attach(struct android_fel *f)
     }
     eglMakeCurrent(f->dpy, f->surface, f->surface, f->ctx);
     eglSwapInterval(f->dpy, 0);
-    f->win_w = f->win_h = 0;
+    f->win_w = f->win_h = f->vid_w = f->vid_h = 0;
     f->hdr = (struct pl_hdr_metadata){0};
     MP_VERBOSE(f, "Composing Dolby Vision FEL on the GPU\n");
     return true;
@@ -740,9 +746,17 @@ void android_fel_render(struct android_fel *f, struct mp_image *img,
     if (use_el && !layer_acquire(f, &f->el))
         use_el = false;
 
-    if (f->win_w != img->params.w || f->win_h != img->params.h) {
-        f->win_w = img->params.w;
-        f->win_h = img->params.h;
+    if (f->vid_w != img->params.w || f->vid_h != img->params.h) {
+        f->vid_w = img->params.w;
+        f->vid_h = img->params.h;
+        double scale = 1;
+        if (f->disp_w > 0 && f->disp_h > 0) {
+            int dw = MPMAX(f->disp_w, f->disp_h), dh = MPMIN(f->disp_w, f->disp_h);
+            scale = MPMIN(1.0, MPMIN(dw / (double)f->vid_w, dh / (double)f->vid_h));
+        }
+        f->win_w = MPMAX(2, lrint(f->vid_w * scale)) & ~1;
+        f->win_h = MPMAX(2, lrint(f->vid_h * scale)) & ~1;
+        MP_VERBOSE(f, "Rendering %dx%d at %dx%d\n", f->vid_w, f->vid_h, f->win_w, f->win_h);
         ANativeWindow_setBuffersGeometry(vo_android_native_window(f->vo),
                                          f->win_w, f->win_h, 0);
     }
