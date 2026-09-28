@@ -974,21 +974,28 @@ static int resolve_dovi_mode(struct mp_filter *vd, int profile)
 {
     vd_ffmpeg_ctx *ctx = vd->priv;
     int mode = ctx->hwdec_opts->dolby_vision;
-    if (mode)
-        return mode;
 #if HAVE_ANDROID
-    if (!mp_jni_display_supports_dolby_vision(vd->log)) {
-        MP_VERBOSE(vd, "Display lacks Dolby Vision; using the base layer.\n");
-        return 3;
-    }
+    if (mode == 3)
+        return mode;
     struct mp_jni_video_caps caps;
     mp_jni_video_caps(vd->log, &caps);
-    if (profile == 7 && !(caps.dv_profiles & 0x80) && (caps.dv_profiles & 0x100)) {
-        MP_VERBOSE(vd, "No profile 7 decoder; converting to profile 8.1.\n");
-        return 2;
+    int dv = caps.dv_profiles;
+    bool p8 = dv & 0x100;
+    if (!mode) {
+        if (!mp_jni_display_supports_dolby_vision(vd->log)) {
+            MP_VERBOSE(vd, "Display lacks Dolby Vision; using the base layer.\n");
+            return 3;
+        }
+        mode = profile == 7 && !(dv & 0x80) && p8 ? 2 : 1;
     }
+    if ((mode == 1 && !dv) || (mode == 2 && profile == 7 && !p8)) {
+        MP_VERBOSE(vd, "No usable Dolby Vision decoder; using the base layer.\n");
+        return 3;
+    }
+    if (mode == 2 && profile == 7)
+        MP_VERBOSE(vd, "Converting profile 7 to 8.1.\n");
 #endif
-    return 1;
+    return mode ? mode : 1;
 }
 
 static int init_dovi_bsf(struct mp_filter *vd)
