@@ -125,10 +125,12 @@ module Libmpv {
     link "bz2"
     link "iconv"
     link framework "AVFoundation"
+    link framework "AVKit"
     link framework "AudioToolbox"
     link framework "CoreMedia"
     link framework "CoreText"
     link framework "CoreVideo"
+    link framework "UIKit"
     link framework "VideoToolbox"
     export *
 }

@@ -855,7 +855,7 @@ if features['avfoundation']
                      'audio/decode/ad_avfoundation.m',
                      'video/decode/vd_apple_native.m',
                      'video/out/vo_apple_native.m')
-    if host_machine.subsystem() == 'tvos'
+    if host_machine.subsystem().startswith('tvos')
         dependencies += dependency('appleframeworks', modules: ['AVKit', 'UIKit'])
     endif
 endif
