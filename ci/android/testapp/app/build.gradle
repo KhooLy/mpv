@@ -34,7 +34,7 @@ android {
     }
 
     sourceSets {
-        main.jniLibs.srcDirs = [mpvOut]
+        main.jniLibs.srcDirs = ["$mpvOut/jni"]
     }
 
     externalNativeBuild {

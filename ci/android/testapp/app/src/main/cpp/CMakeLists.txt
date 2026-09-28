@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.22.1)
 project(mpv_android_test C)
 
 set(MPV_OUT "" CACHE PATH "ci/android/build.sh output directory")
-set(MPV_LIB "${MPV_OUT}/${ANDROID_ABI}/libmpv.so")
+set(MPV_LIB "${MPV_OUT}/jni/${ANDROID_ABI}/libmpv.so")
 
 if(NOT EXISTS "${MPV_LIB}")
     message(FATAL_ERROR "Missing ${MPV_LIB}. Run ci/android/build.sh first.")
