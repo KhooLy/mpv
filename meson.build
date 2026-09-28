@@ -1434,6 +1434,18 @@ if features['android-media-ndk']
     sources += files('video/out/hwdec/hwdec_aimagereader.c')
 endif
 
+android_fel = features['android-media-ndk'] and features['egl-android']
+if android_fel
+    mediandk = cc.find_library('mediandk', required: false)
+    glesv3 = cc.find_library('GLESv3', required: false)
+    android_fel = mediandk.found() and glesv3.found()
+endif
+features += {'android-fel': android_fel}
+if features['android-fel']
+    dependencies += [mediandk, glesv3]
+    sources += files('video/out/android_fel.c')
+endif
+
 d3d_hwaccel = get_option('d3d-hwaccel').require(
     win32,
     error_message: 'the os is not win32!',
