@@ -792,6 +792,7 @@ libdovi = dependency('dovi', version: '>= 3.3.0', required: get_option('libdovi'
 features += {'libdovi': libdovi.found()}
 if features['libdovi']
     dependencies += libdovi
+    sources += files('video/decode/dovi_rpu.c')
 endif
 
 vapoursynth = dependency('vapoursynth', version: '>= 56', required: get_option('vapoursynth'))
