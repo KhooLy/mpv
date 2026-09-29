@@ -38,12 +38,21 @@
 #include "video/hwdec.h"
 #include "video/mp_image.h"
 #include "apple_native.h"
+#include "apple_shader_chain.h"
+#include "options/m_option.h"
 #include "vo.h"
 
 #define QUEUE_AHEAD_NS MP_TIME_MS_TO_NS(100)
+#define SHADER_QUEUE_AHEAD_NS MP_TIME_MS_TO_NS(250)
 #define MAX_DRIFT 0.02
 
+struct apple_opts {
+    char **shaders;
+};
+
 struct priv {
+    struct apple_opts opts;
+    struct apple_shader_chain *chain;
     struct apple_native_sink sink;
     struct mp_hwdec_ctx vt;
     AVSampleBufferDisplayLayer *layer;
@@ -133,6 +142,47 @@ static void enqueue_pixel_buffer(struct vo *vo, struct mp_image *mpi)
         MP_VERBOSE(vo, "Could not wrap CVPixelBuffer in a sample buffer\n");
     }
     CFRelease(format);
+}
+
+static void enqueue_shaded(struct vo *vo, struct mp_image *mpi)
+{
+    struct priv *p = vo->priv;
+    if (!p->chain || !apple_shader_chain_ready(p->chain))
+        return;
+    CVPixelBufferRef input = (CVPixelBufferRef)mpi->planes[3];
+    double pts = mpi->pts;
+    if (!input || pts == MP_NOPTS_VALUE)
+        return;
+
+    AVSampleBufferDisplayLayer *layer = [p->layer retain];
+    bool queued = apple_shader_chain_run(p->chain, input, vo->dwidth, vo->dheight,
+                                         ^(CVPixelBufferRef output) {
+        CMVideoFormatDescriptionRef format = NULL;
+        if (CMVideoFormatDescriptionCreateForImageBuffer(kCFAllocatorDefault, output,
+                                                         &format) == noErr)
+        {
+            CMSampleTimingInfo timing = {
+                .duration = kCMTimeInvalid,
+                .presentationTimeStamp = CMTimeMake(llrint(pts * 1e6), 1000000),
+                .decodeTimeStamp = kCMTimeInvalid,
+            };
+            CMSampleBufferRef sample = NULL;
+            if (CMSampleBufferCreateReadyWithImageBuffer(kCFAllocatorDefault, output, format,
+                                                         &timing, &sample) == noErr)
+            {
+                [layer enqueueSampleBuffer:sample];
+                CFRelease(sample);
+            }
+            CFRelease(format);
+        }
+        [layer release];
+    });
+    if (queued) {
+        p->pixel_buffers = true;
+    } else {
+        [layer release];
+        enqueue_pixel_buffer(vo, mpi);
+    }
 }
 
 static void set_display_criteria(AVSampleBufferDisplayLayer *layer,
@@ -293,8 +343,12 @@ static bool draw_frame(struct vo *vo, struct vo_frame *frame)
         return true;
 
     @autoreleasepool {
-        if (mpi->imgfmt == IMGFMT_VIDEOTOOLBOX)
-            enqueue_pixel_buffer(vo, mpi);
+        if (mpi->imgfmt == IMGFMT_VIDEOTOOLBOX) {
+            if (p->chain)
+                enqueue_shaded(vo, mpi);
+            else
+                enqueue_pixel_buffer(vo, mpi);
+        }
         update_display_criteria(vo, mpi);
         if (mpi->pts != MP_NOPTS_VALUE)
             sync_clock(vo, mpi->pts, frame->pts);
@@ -408,12 +462,17 @@ static int preinit(struct vo *vo)
         .hw_imgfmt = IMGFMT_VIDEOTOOLBOX,
     };
 
+    char **shaders = p->opts.shaders;
+    if (shaders && shaders[0] && p->vt.av_device_ref)
+        p->chain = apple_shader_chain_create(vo->global, vo->log, shaders);
+
     vo->hwdec_devs = hwdec_devices_create();
-    hwdec_devices_add(vo->hwdec_devs, &p->sink.hwctx);
+    if (!p->chain)
+        hwdec_devices_add(vo->hwdec_devs, &p->sink.hwctx);
     if (p->vt.av_device_ref)
         hwdec_devices_add(vo->hwdec_devs, &p->vt);
 
-    vo_set_queue_params(vo, QUEUE_AHEAD_NS, 1);
+    vo_set_queue_params(vo, p->chain ? SHADER_QUEUE_AHEAD_NS : QUEUE_AHEAD_NS, 1);
     return 0;
 }
 
@@ -421,8 +480,10 @@ static void uninit(struct vo *vo)
 {
     struct priv *p = vo->priv;
 
+    apple_shader_chain_destroy(p->chain);
     if (vo->hwdec_devs) {
-        hwdec_devices_remove(vo->hwdec_devs, &p->sink.hwctx);
+        if (!p->chain)
+            hwdec_devices_remove(vo->hwdec_devs, &p->sink.hwctx);
         hwdec_devices_remove(vo->hwdec_devs, &p->vt);
         hwdec_devices_destroy(vo->hwdec_devs);
     }
@@ -457,4 +518,9 @@ const struct vo_driver video_out_apple_native = {
     .reconfig = reconfig,
     .uninit = uninit,
     .priv_size = sizeof(struct priv),
+    .options = (const m_option_t[]) {
+        {"shaders", OPT_STRINGLIST(opts.shaders)},
+        {0}
+    },
+    .options_prefix = "vo-apple-native",
 };

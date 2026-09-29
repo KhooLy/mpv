@@ -846,7 +846,7 @@ endif
 
 avfoundation = dependency('appleframeworks',
                           modules: ['CoreMedia', 'CoreVideo', 'CoreGraphics', 'QuartzCore',
-                                   'AVFoundation', 'AudioToolbox', 'VideoToolbox'],
+                                   'AVFoundation', 'AudioToolbox', 'VideoToolbox', 'Metal'],
                           required: get_option('avfoundation'))
 features += {'avfoundation': avfoundation.found()}
 if features['avfoundation']
@@ -854,6 +854,8 @@ if features['avfoundation']
     sources += files('audio/out/ao_avfoundation.m',
                      'audio/decode/ad_avfoundation.m',
                      'video/decode/vd_apple_native.m',
+                     'video/out/apple_shader_chain.m',
+                     'video/out/apple_shaders.c',
                      'video/out/vo_apple_native.m')
     if host_machine.subsystem().startswith('tvos')
         dependencies += dependency('appleframeworks', modules: ['AVKit', 'UIKit'])

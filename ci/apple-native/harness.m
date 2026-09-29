@@ -41,7 +41,7 @@ int main(int argc, char **argv)
     mpv_set_option_string(mpv, "ao", "avfoundation,null");
     int64_t wid = (int64_t)(intptr_t)layer;
     mpv_set_option(mpv, "wid", MPV_FORMAT_INT64, &wid);
-    bool expect_overlay = false;
+    bool expect_overlay = false, expect_shaded = false;
     const char *expect_gamma = NULL, *expect_audio = NULL;
     for (int i = 2; i < argc; i++) {
         if (strncmp(argv[i], "expect-gamma=", 13) == 0) {
@@ -50,6 +50,10 @@ int main(int argc, char **argv)
         }
         if (strncmp(argv[i], "expect-audio=", 13) == 0) {
             expect_audio = argv[i] + 13;
+            continue;
+        }
+        if (strcmp(argv[i], "expect-shaded=yes") == 0) {
+            expect_shaded = true;
             continue;
         }
         if (strcmp(argv[i], "expect-overlay=yes") == 0) {
@@ -65,6 +69,10 @@ int main(int argc, char **argv)
     }
     if (mpv_initialize(mpv) < 0)
         return 1;
+    mpv_request_log_messages(mpv, "info");
+    int chain_frames = 0, chain_skipped = 0, chain_checked = 0, chain_passes = 0;
+    double chain_in = 0, chain_out = 0, chain_std = 0;
+    bool chain_reported = false, chain_error = false;
 
     const char *cmd[] = {"loadfile", argv[1], NULL};
     mpv_command(mpv, cmd);
@@ -79,6 +87,19 @@ int main(int argc, char **argv)
             start = now();
             mpv_get_property(mpv, "duration", MPV_FORMAT_DOUBLE, &duration);
             mpv_get_property(mpv, "time-pos", MPV_FORMAT_DOUBLE, &start_pos);
+        }
+        if (ev->event_id == MPV_EVENT_LOG_MESSAGE) {
+            mpv_event_log_message *lm = ev->data;
+            fputs(lm->text, stdout);
+            const char *line = strstr(lm->text, "shader-chain: ");
+            if (line && sscanf(line, "shader-chain: frames=%d skipped=%d checked=%d in_luma=%lf "
+                               "out_luma=%lf out_std=%lf passes=%d", &chain_frames,
+                               &chain_skipped, &chain_checked, &chain_in, &chain_out,
+                               &chain_std, &chain_passes) >= 3)
+                chain_reported = true;
+            if (strstr(lm->text, "Metal compile failed") || strstr(lm->text, "Pipeline failed") ||
+                strstr(lm->text, "Metal command buffer failed"))
+                chain_error = true;
         }
         if (ev->event_id == MPV_EVENT_END_FILE) {
             mpv_event_end_file *ef = ev->data;
@@ -139,7 +160,32 @@ int main(int argc, char **argv)
         printf("FAIL: display layer failed\n");
         fail = 1;
     }
-    if (!native) {
+    if (expect_shaded) {
+        printf("shader chain: reported=%d frames=%d skipped=%d checked=%d passes=%d "
+               "in_luma=%.4f out_luma=%.4f out_std=%.4f\n", chain_reported, chain_frames,
+               chain_skipped, chain_checked, chain_passes, chain_in, chain_out, chain_std);
+        if (!chain_reported || chain_passes < 1) {
+            printf("FAIL: shader chain did not start\n");
+            fail = 1;
+        } else {
+            if (chain_error) {
+                printf("FAIL: Metal reported an error\n");
+                fail = 1;
+            }
+            if (chain_frames < duration * 8) {
+                printf("FAIL: too few frames went through the shaders\n");
+                fail = 1;
+            }
+            if (chain_checked < 1 || chain_std < 0.05) {
+                printf("FAIL: shaded output is blank or flat\n");
+                fail = 1;
+            }
+            if (fabs(chain_in - chain_out) > 0.08) {
+                printf("FAIL: shaded output brightness differs from the source\n");
+                fail = 1;
+            }
+        }
+    } else if (!native) {
         printf("FAIL: video did not use the native decoder\n");
         fail = 1;
     }

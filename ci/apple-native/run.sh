@@ -30,6 +30,17 @@ $ff $video $audio -filter_complex "[1:a]pan=5.1|c0=c0|c1=c0|c2=c0|c3=c0|c4=c0|c5
     -map 0:v -map "[a]" -c:v libx264 -pix_fmt yuv420p -c:a eac3 "$dir/eac3.mkv"
 printf '[Script Info]\nScriptType: v4.00+\nPlayResX: 1280\nPlayResY: 720\n\n[V4+ Styles]\nFormat: Name, Fontsize, PrimaryColour\nStyle: Default,48,&H00FFFFFF\n\n[Events]\nFormat: Layer, Start, End, Style, Text\nDialogue: 0,0:00:00.00,0:00:05.00,Default,subtitle test\n' > "$dir/sub.ass"
 
+base=https://raw.githubusercontent.com/bloc97/Anime4K/master/glsl
+shaders="$dir/shaders"
+mkdir -p "$shaders"
+for f in Restore/Anime4K_Clamp_Highlights Restore/Anime4K_Restore_CNN_S \
+         Restore/Anime4K_Restore_CNN_M Upscale/Anime4K_Upscale_CNN_x2_S \
+         Upscale/Anime4K_Upscale_CNN_x2_M; do
+    curl -fsSL "$base/$f.glsl" -o "$shaders/$(basename "$f").glsl" || exit 1
+done
+mode_a="$shaders/Anime4K_Clamp_Highlights.glsl:$shaders/Anime4K_Restore_CNN_S.glsl:$shaders/Anime4K_Upscale_CNN_x2_S.glsl"
+mode_b="$shaders/Anime4K_Clamp_Highlights.glsl:$shaders/Anime4K_Restore_CNN_M.glsl:$shaders/Anime4K_Upscale_CNN_x2_M.glsl"
+
 status=0
 run() {
     name=$1; shift
@@ -52,6 +63,8 @@ run "E-AC3 5.1 PCM" "$dir/eac3.mkv"
 run "E-AC3 5.1 passthrough" "$dir/eac3.mkv" audio-spdif=eac3 expect-audio=spdif-eac3
 run "E-AC3 auto passthrough" "$dir/eac3.mkv" audio-spdif=auto expect-audio=spdif-eac3
 run "ASS subtitles" "$dir/h264.mkv" sub-files="$dir/sub.ass" expect-overlay=yes
+run "Anime4K fast" "$dir/h264.mkv" hwdec=videotoolbox vo-apple-native-shaders="$mode_a" expect-shaded=yes
+run "Anime4K quality" "$dir/h264.mkv" hwdec=videotoolbox vo-apple-native-shaders="$mode_b" expect-shaded=yes
 run "Seek and pause" "$dir/hdr10.mkv" start=2 pause=no
 
 exit $status
