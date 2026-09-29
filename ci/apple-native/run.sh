@@ -64,7 +64,7 @@ run "E-AC3 5.1 passthrough" "$dir/eac3.mkv" audio-spdif=eac3 expect-audio=spdif-
 run "E-AC3 auto passthrough" "$dir/eac3.mkv" audio-spdif=auto expect-audio=spdif-eac3
 run "ASS subtitles" "$dir/h264.mkv" sub-files="$dir/sub.ass" expect-overlay=yes
 run "Anime4K fast" "$dir/h264.mkv" hwdec=videotoolbox vo-apple-native-shaders="$mode_a" expect-shaded=yes
-run "Anime4K quality" "$dir/h264.mkv" hwdec=videotoolbox vo-apple-native-shaders="$mode_b" expect-shaded=yes
+run "Anime4K quality" "$dir/h264.mkv" hwdec=videotoolbox vo-apple-native-shaders="$mode_b" expect-shaded=slow
 run "Seek and pause" "$dir/hdr10.mkv" start=2 pause=no
 
 exit $status

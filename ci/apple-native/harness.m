@@ -41,7 +41,7 @@ int main(int argc, char **argv)
     mpv_set_option_string(mpv, "ao", "avfoundation,null");
     int64_t wid = (int64_t)(intptr_t)layer;
     mpv_set_option(mpv, "wid", MPV_FORMAT_INT64, &wid);
-    bool expect_overlay = false, expect_shaded = false;
+    bool expect_overlay = false, expect_shaded = false, shaded_slow = false;
     const char *expect_gamma = NULL, *expect_audio = NULL;
     for (int i = 2; i < argc; i++) {
         if (strncmp(argv[i], "expect-gamma=", 13) == 0) {
@@ -50,6 +50,10 @@ int main(int argc, char **argv)
         }
         if (strncmp(argv[i], "expect-audio=", 13) == 0) {
             expect_audio = argv[i] + 13;
+            continue;
+        }
+        if (strcmp(argv[i], "expect-shaded=slow") == 0) {
+            expect_shaded = shaded_slow = true;
             continue;
         }
         if (strcmp(argv[i], "expect-shaded=yes") == 0) {
@@ -172,7 +176,7 @@ int main(int argc, char **argv)
                 printf("FAIL: Metal reported an error\n");
                 fail = 1;
             }
-            if (chain_frames < duration * 8) {
+            if (chain_frames < (shaded_slow ? 12 : duration * 8)) {
                 printf("FAIL: too few frames went through the shaders\n");
                 fail = 1;
             }

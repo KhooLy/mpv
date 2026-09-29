@@ -715,7 +715,7 @@ bool apple_shader_chain_run(struct apple_shader_chain *c, void *pixbuf, int out_
                     int n = atomic_fetch_add(&c->frames, 1);
                     if (n % 12 == 0)
                         sample_frame(c, in, out, ten_bit);
-                    if (n % 60 == 59)
+                    if (n % 12 == 11)
                         log_stats(c);
                     callback(out);
                 } else {
