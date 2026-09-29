@@ -506,6 +506,8 @@ static void uninit(struct vo *vo)
         CFRelease(p->criteria_format);
 }
 
+#define OPT_BASE_STRUCT struct priv
+
 const struct vo_driver video_out_apple_native = {
     .description = "Apple AVSampleBufferDisplayLayer output",
     .name = "apple_native",
