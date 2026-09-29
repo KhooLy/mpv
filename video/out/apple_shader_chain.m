@@ -128,7 +128,7 @@ static bool add_hook(void *priv, const char *path,
     struct apple_shader_chain *c = priv;
     struct pass pass = {.hook = *hook, .stage = pass_stage(hook)};
     if (pass.stage == STAGE_NONE) {
-        MP_WARN(c->log, "Skipping pass '%.*s': only MAIN and PREKERNEL hooks are supported\n",
+        MP_WARN(c, "Skipping pass '%.*s': only MAIN and PREKERNEL hooks are supported\n",
                 BSTR_P(hook->pass_desc));
         return true;
     }
@@ -174,7 +174,7 @@ static bool compile_pass(struct apple_shader_chain *c, struct pass *pass)
     free(msl);
     id<MTLLibrary> lib = [c->device newLibraryWithSource:source options:nil error:&error];
     if (!lib) {
-        MP_ERR(c->log, "Metal compile failed for '%.*s': %s\n", BSTR_P(h->pass_desc),
+        MP_ERR(c, "Metal compile failed for '%.*s': %s\n", BSTR_P(h->pass_desc),
                error.localizedDescription.UTF8String);
         return false;
     }
@@ -186,7 +186,7 @@ static bool compile_pass(struct apple_shader_chain *c, struct pass *pass)
     [desc release];
     [lib release];
     if (!pass->pipeline)
-        MP_ERR(c->log, "Pipeline failed for '%.*s': %s\n", BSTR_P(h->pass_desc),
+        MP_ERR(c, "Pipeline failed for '%.*s': %s\n", BSTR_P(h->pass_desc),
                error.localizedDescription.UTF8String);
     return pass->pipeline != nil;
 }
@@ -204,7 +204,7 @@ static id<MTLRenderPipelineState> builtin_pipeline(struct apple_shader_chain *c,
         [c->device newRenderPipelineStateWithDescriptor:desc error:&error];
     [desc release];
     if (!state)
-        MP_ERR(c->log, "Pipeline '%s' failed: %s\n", fragment.UTF8String,
+        MP_ERR(c, "Pipeline '%s' failed: %s\n", fragment.UTF8String,
                error.localizedDescription.UTF8String);
     return state;
 }
@@ -220,7 +220,7 @@ struct apple_shader_chain *apple_shader_chain_create(struct mpv_global *global,
     c->ta = c;
     c->device = MTLCreateSystemDefaultDevice();
     if (!c->device) {
-        MP_ERR(log, "No Metal device\n");
+        mp_err(log, "No Metal device\n");
         goto fail;
     }
     c->queue = [c->device newCommandQueue];
@@ -235,7 +235,7 @@ struct apple_shader_chain *apple_shader_chain_create(struct mpv_global *global,
         struct bstr body = stream_read_file(fname, c, global, 100000000);
         talloc_free(fname);
         if (!body.len) {
-            MP_ERR(log, "Could not read shader %s\n", paths[n]);
+            mp_err(log, "Could not read shader %s\n", paths[n]);
             continue;
         }
         parse_user_shader(log, NULL, body, paths[n], c, add_hook, add_tex);
@@ -250,7 +250,7 @@ struct apple_shader_chain *apple_shader_chain_create(struct mpv_global *global,
         NSString *source = [NSString stringWithUTF8String:builtin_source];
         id<MTLLibrary> lib = [c->device newLibraryWithSource:source options:nil error:&error];
         if (!lib) {
-            MP_ERR(c->log, "Builtin Metal source failed: %s\n",
+            MP_ERR(c, "Builtin Metal source failed: %s\n",
                    error.localizedDescription.UTF8String);
             return;
         }
@@ -260,7 +260,7 @@ struct apple_shader_chain *apple_shader_chain_create(struct mpv_global *global,
         int compiled = 0;
         for (int i = 0; i < c->num_passes; i++)
             compiled += compile_pass(c, &c->passes[i]);
-        MP_VERBOSE(c->log, "Compiled %d of %d shader passes\n", compiled, c->num_passes);
+        MP_VERBOSE(c, "Compiled %d of %d shader passes\n", compiled, c->num_passes);
         atomic_store(&c->ready, c->convert && c->copy && compiled == c->num_passes);
     });
     return c;
@@ -536,7 +536,7 @@ static void log_stats(struct apple_shader_chain *c)
 {
     @synchronized (c->stats_lock) {
         double n = MPMAX(c->checked, 1);
-        MP_INFO(c->log, "shader-chain: frames=%d skipped=%d checked=%d in_luma=%.4f "
+        MP_INFO(c, "shader-chain: frames=%d skipped=%d checked=%d in_luma=%.4f "
                 "out_luma=%.4f out_std=%.4f passes=%d\n",
                 atomic_load(&c->frames), atomic_load(&c->skipped), c->checked,
                 c->in_luma / n, c->out_luma / n, c->out_std / n, c->num_passes);
@@ -719,7 +719,7 @@ bool apple_shader_chain_run(struct apple_shader_chain *c, void *pixbuf, int out_
                         log_stats(c);
                     callback(out);
                 } else {
-                    MP_ERR(c->log, "Metal command buffer failed: %s\n",
+                    MP_ERR(c, "Metal command buffer failed: %s\n",
                            buffer.error.localizedDescription.UTF8String);
                 }
                 Block_release(callback);
