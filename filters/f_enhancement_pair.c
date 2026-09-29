@@ -30,6 +30,7 @@
 
 // Number of frames hold for matching.
 #define QUEUE_MAX MP_ENHANCEMENT_PAIR_QUEUE_MAX
+#define EL_REORDER_MAX 4
 
 struct priv {
     struct mp_decoder_wrapper *el_dec;
@@ -82,14 +83,16 @@ static void pop_head(struct mp_image ***queue, int *num)
     *num = remain;
 }
 
+static struct mp_image *take_at(struct mp_image ***queue, int *num, int i)
+{
+    struct mp_image *img = (*queue)[i];
+    MP_TARRAY_REMOVE_AT(*queue, *num, i);
+    return img;
+}
+
 static struct mp_image *take_head(struct mp_image ***queue, int *num)
 {
-    struct mp_image *img = (*queue)[0];
-    int remain = *num - 1;
-    if (remain > 0)
-        memmove(&(*queue)[0], &(*queue)[1], remain * sizeof((*queue)[0]));
-    *num = remain;
-    return img;
+    return take_at(queue, num, 0);
 }
 
 // Downstream code expects the DV RPU and the related color/repr/HDR fields on
@@ -132,21 +135,29 @@ static void pair_process(struct mp_filter *f)
 
         struct mp_image *bl = p->bl_pending[0];
 
-        while (p->num_el_pending > 0 || pull(f, p->el_in, &p->el_pending,
-                                             &p->num_el_pending, &p->el_eof))
-        {
-            if (pts_cmp(p->el_pending[0]->pts, bl->pts) >= 0)
+        int match = -1;
+        while (1) {
+            for (int i = p->num_el_pending - 1; i >= 0; i--) {
+                int c = pts_cmp(p->el_pending[i]->pts, bl->pts);
+                if (c == 0) {
+                    match = i;
+                } else if (c < 0) {
+                    // EL older than BL: its BL partner already left or never arrived.
+                    MP_VERBOSE(f, "dropping stale EL %.6f (oldest BL %.6f)\n",
+                               p->el_pending[i]->pts, bl->pts);
+                    talloc_free(take_at(&p->el_pending, &p->num_el_pending, i));
+                    if (match > i)
+                        match--;
+                }
+            }
+            if (match >= 0 || p->num_el_pending >= EL_REORDER_MAX)
                 break;
-            // EL older than BL: its BL partner already left or never arrived.
-            MP_VERBOSE(f, "dropping stale EL %.6f (oldest BL %.6f)\n",
-                       p->el_pending[0]->pts, bl->pts);
-            pop_head(&p->el_pending, &p->num_el_pending);
+            if (!pull(f, p->el_in, &p->el_pending, &p->num_el_pending, &p->el_eof))
+                break;
         }
 
-        if (p->num_el_pending > 0 &&
-            pts_cmp(p->el_pending[0]->pts, bl->pts) == 0)
-        {
-            struct mp_image *el = take_head(&p->el_pending, &p->num_el_pending);
+        if (match >= 0) {
+            struct mp_image *el = take_at(&p->el_pending, &p->num_el_pending, match);
             take_head(&p->bl_pending, &p->num_bl_pending);
             inherit_dovi_from_el(bl, el);
             if (bl->params.no_enhancement_layer) {
@@ -158,7 +169,7 @@ static void pair_process(struct mp_filter *f)
             continue;
         }
 
-        if (!p->el_eof && !p->num_el_pending)
+        if (!p->el_eof && p->num_el_pending < EL_REORDER_MAX)
             return;
 
         take_head(&p->bl_pending, &p->num_bl_pending);
