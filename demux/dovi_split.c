@@ -20,6 +20,7 @@
 #include <libavcodec/avcodec.h>
 #include <libavcodec/bsf.h>
 #include <libavutil/dovi_meta.h>
+#include <libavutil/intreadwrite.h>
 #include <libavutil/opt.h>
 
 #include "common/av_common.h"
@@ -39,7 +40,40 @@ struct mp_dovi_split {
     struct sh_stream *el;
     AVBSFContext *bsf;
     AVPacket *staging;
+    bool annexb;
 };
+
+static bool hvcc_to_annexb(void *ta, const uint8_t *d, int size,
+                           uint8_t **out, int *out_size)
+{
+    if (size < 23 || d[0] != 1 || (d[21] & 3) != 3)
+        return false;
+    uint8_t *buf = NULL;
+    int len = 0;
+    int o = 23;
+    for (int i = 0; i < d[22]; i++) {
+        if (o + 3 > size)
+            return false;
+        int n = AV_RB16(d + o + 1);
+        o += 3;
+        for (int j = 0; j < n; j++) {
+            if (o + 2 > size)
+                return false;
+            int l = AV_RB16(d + o);
+            o += 2;
+            if (o + l > size)
+                return false;
+            MP_TARRAY_GROW(ta, buf, len + 4 + l);
+            AV_WB32(buf + len, 1);
+            memcpy(buf + len + 4, d + o, l);
+            len += 4 + l;
+            o += l;
+        }
+    }
+    *out = buf;
+    *out_size = len;
+    return len > 0;
+}
 
 static void mp_dovi_split_destructor(void *p)
 {
@@ -98,7 +132,10 @@ struct mp_dovi_split *mp_dovi_split_create(struct demuxer *demuxer,
     el->codec->fps = bl->codec->fps;
     el->codec->disp_w = par_out->width;
     el->codec->disp_h = par_out->height;
-    if (par_out->extradata_size > 0) {
+    s->annexb = hvcc_to_annexb(el->codec, par_out->extradata,
+                               par_out->extradata_size, &el->codec->extradata,
+                               &el->codec->extradata_size);
+    if (!s->annexb && par_out->extradata_size > 0) {
         el->codec->extradata = talloc_memdup(el->codec, par_out->extradata,
                                              par_out->extradata_size);
         el->codec->extradata_size = par_out->extradata_size;
@@ -199,6 +236,11 @@ struct demux_packet *mp_dovi_split_dispatch(struct mp_dovi_split *s,
         dp->duration = bl_dp->duration;
         dp->keyframe = bl_dp->keyframe;
         dp->stream = s->el->index;
+        for (int o = 0; s->annexb && o + 4 <= dp->len;) {
+            uint32_t l = AV_RB32(dp->buffer + o);
+            AV_WB32(dp->buffer + o, 1);
+            o += 4 + l;
+        }
     }
     av_packet_unref(s->staging);
     return dp;
