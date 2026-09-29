@@ -521,7 +521,7 @@ const struct vo_driver video_out_apple_native = {
     .uninit = uninit,
     .priv_size = sizeof(struct priv),
     .options = (const m_option_t[]) {
-        {"shaders", OPT_STRINGLIST(opts.shaders)},
+        {"shaders", OPT_PATHLIST(opts.shaders), .flags = M_OPT_FILE},
         {0}
     },
     .options_prefix = "vo-apple-native",
