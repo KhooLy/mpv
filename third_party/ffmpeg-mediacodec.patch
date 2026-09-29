@@ -773,7 +773,7 @@ index bc176d8..23a17aa 100644
 +DECLARE_MEDIACODEC_ADEC(ac4, "AC-4", AV_CODEC_ID_AC4, NULL)
 +#endif
 diff --git a/libavcodec/mediacodecdec_common.c b/libavcodec/mediacodecdec_common.c
-index 9a627c0..e73dd91 100644
+index 9a627c0..068c139 100644
 --- a/libavcodec/mediacodecdec_common.c
 +++ b/libavcodec/mediacodecdec_common.c
 @@ -23,6 +23,7 @@
@@ -801,10 +801,13 @@ index 9a627c0..e73dd91 100644
      if (!s->codec_name) {
          // getCodecNameByType() can fail due to missing JVM, while NDK
          // mediacodec can be used without JVM.
-@@ -847,6 +849,12 @@ int ff_mediacodec_dec_init(AVCodecContext *avctx, MediaCodecDecContext *s,
+@@ -847,6 +849,15 @@ int ff_mediacodec_dec_init(AVCodecContext *avctx, MediaCodecDecContext *s,
      if (ret < 0)
          goto fail;
  
++    if (s->surface && !strncmp(s->codec_name, "c2.exynos.", 10))
++        ff_AMediaFormat_setInt32(format, "vendor.sec-ext-dec-compressed-color-format.value", 0);
++
 +    {
 +        char *desc = ff_AMediaFormat_toString(format);
 +        av_log(avctx, AV_LOG_VERBOSE, "Configuring %s with format %s\n",
@@ -814,7 +817,7 @@ index 9a627c0..e73dd91 100644
      status = ff_AMediaCodec_configure(s->codec, format, s->surface, NULL, 0);
      if (status < 0) {
          char *desc = ff_AMediaFormat_toString(format);
-@@ -891,10 +899,33 @@ fail:
+@@ -891,10 +902,33 @@ fail:
      return ret;
  }
  
@@ -848,7 +851,7 @@ index 9a627c0..e73dd91 100644
      int need_draining = 0;
      uint8_t *data;
      size_t size;
-@@ -966,11 +997,27 @@ int ff_mediacodec_dec_send(AVCodecContext *avctx, MediaCodecDecContext *s,
+@@ -966,11 +1000,27 @@ int ff_mediacodec_dec_send(AVCodecContext *avctx, MediaCodecDecContext *s,
              return 0;
          }
  
