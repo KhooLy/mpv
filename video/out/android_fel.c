@@ -525,7 +525,7 @@ static bool attach(struct android_fel *f)
     else if (f->vo->opts->android_display_peak > 0)
         f->display_peak = f->vo->opts->android_display_peak;
     else if (f->display_peak < 100)
-        f->display_peak = 1000;
+        f->display_peak = 400;
     const EGLint attrs[] = {
         EGL_GL_COLORSPACE_KHR, f->sdr ? EGL_GL_COLORSPACE_LINEAR_KHR
                                       : EGL_GL_COLORSPACE_BT2020_PQ_EXT,
