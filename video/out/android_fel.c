@@ -26,6 +26,7 @@
 #include <android/native_window_jni.h>
 #include <media/NdkImageReader.h>
 #include <libavcodec/mediacodec.h>
+#include <libavutil/hdr_dynamic_metadata.h>
 #include <libavutil/hwcontext.h>
 #include <libavutil/hwcontext_mediacodec.h>
 #include <libplacebo/colorspace.h>
@@ -109,6 +110,7 @@ struct android_fel {
     EGLSurface surface;
     bool hdr_md;
     struct pl_hdr_metadata hdr;
+    float hdr10p_peak, hdr10p_avg;
 
     EGLImageKHR (*CreateImageKHR)(EGLDisplay, EGLContext, EGLenum,
                                   EGLClientBuffer, const EGLint *);
@@ -441,6 +443,7 @@ static bool attach(struct android_fel *f)
     eglMakeCurrent(f->dpy, f->surface, f->surface, f->ctx);
     eglSwapInterval(f->dpy, 0);
     f->hdr = (struct pl_hdr_metadata){0};
+    f->hdr10p_peak = f->hdr10p_avg = -1;
     MP_VERBOSE(f, "Composing Dolby Vision FEL on the GPU\n");
     return true;
 }
@@ -701,6 +704,67 @@ static void update_hdr(struct android_fel *f, const struct pl_hdr_metadata *hdr)
     }
 }
 
+struct native_window {
+    struct {
+        int magic, version;
+        void *reserved[4];
+        void (*inc_ref)(void *);
+        void (*dec_ref)(void *);
+    } common;
+    uint32_t flags;
+    int min_swap, max_swap;
+    float xdpi, ydpi;
+    intptr_t oem[4];
+    void *fns[5];
+    int (*perform)(struct native_window *, int, ...);
+};
+
+static void update_hdr10p(struct android_fel *f, const struct pl_hdr_metadata *hdr)
+{
+    if (hdr->max_pq_y <= 0)
+        return;
+    float peak = pl_hdr_rescale(PL_HDR_PQ, PL_HDR_NITS, hdr->max_pq_y);
+    float avg = pl_hdr_rescale(PL_HDR_PQ, PL_HDR_NITS, hdr->avg_pq_y);
+    if (peak == f->hdr10p_peak && avg == f->hdr10p_avg)
+        return;
+    f->hdr10p_peak = peak;
+    f->hdr10p_avg = avg;
+
+    AVDynamicHDRPlus d = {
+        .itu_t_t35_country_code = 0xB5,
+        .application_version = 1,
+        .num_windows = 1,
+        .targeted_system_display_maximum_luminance =
+            av_make_q(lrintf(hdr->max_luma > 0 ? hdr->max_luma : 1000), 1),
+    };
+    AVHDRPlusColorTransformParams *p = &d.params[0];
+    for (int i = 0; i < 3; i++)
+        p->maxscl[i] = av_make_q(lrintf(peak * 10), 100000);
+    p->average_maxrgb = av_make_q(lrintf(avg * 10), 100000);
+    static const uint8_t pct[] = {1, 5, 10, 25, 50, 75, 90, 95, 99};
+    static const float scale[] = {0.05, 0.15, 0.3, 0.6, 0.9, 1.3, 2.2, 3.2, 6};
+    p->num_distribution_maxrgb_percentiles = MP_ARRAY_SIZE(pct);
+    for (int i = 0; i < MP_ARRAY_SIZE(pct); i++) {
+        p->distribution_maxrgb[i].percentage = pct[i];
+        p->distribution_maxrgb[i].percentile =
+            av_make_q(lrintf(MPMIN(avg * scale[i], peak) * 10), 100000);
+    }
+    p->fraction_bright_pixels = av_make_q(0, 1000);
+
+    uint8_t *payload = NULL;
+    size_t size = 0;
+    if (av_dynamic_hdr_plus_to_t35(&d, &payload, &size) < 0)
+        return;
+    uint8_t buf[512] = {0xB5, 0x00, 0x3C, 0x00, 0x01, 0x04};
+    if (size + 6 <= sizeof(buf)) {
+        memcpy(buf + 6, payload, size);
+        struct native_window *win = (void *)vo_android_native_window(f->vo);
+        int r = win->perform(win, 34, size + 6, buf);
+        MP_VERBOSE(f, "HDR10+ scene peak %.0f avg %.0f nits -> %d\n", peak, avg, r);
+    }
+    av_free(payload);
+}
+
 static void release(AVMediaCodecBuffer *buf, int render)
 {
     if (buf)
@@ -742,6 +806,7 @@ void android_fel_render(struct android_fel *f, struct mp_image *img,
         use_el = false;
 
     update_hdr(f, &img->params.color.hdr);
+    update_hdr10p(f, &img->params.color.hdr);
 
     EGLint sw = 0, sh = 0;
     eglQuerySurface(f->dpy, f->surface, EGL_WIDTH, &sw);
