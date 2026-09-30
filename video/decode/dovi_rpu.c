@@ -177,7 +177,7 @@ static void free_metadata(void *opaque, uint8_t *data)
 }
 
 struct AVBufferRef *mp_dovi_rpu_parse(struct mp_dovi_rpu *s,
-                                      const uint8_t *nal, size_t len,
+                                      const uint8_t *nal, size_t len, bool obu,
                                       const char **err)
 {
     AVBufferRef *buf = NULL;
@@ -185,7 +185,8 @@ struct AVBufferRef *mp_dovi_rpu_parse(struct mp_dovi_rpu *s,
     const DoviRpuDataMapping *map = NULL;
     const DoviVdrDmData *dm = NULL;
 
-    DoviRpuOpaque *rpu = dovi_parse_unspec62_nalu(nal, len);
+    DoviRpuOpaque *rpu = obu ? dovi_parse_itu_t35_dovi_metadata_obu(nal, len)
+                             : dovi_parse_unspec62_nalu(nal, len);
     *err = dovi_rpu_get_error(rpu);
     if (*err)
         goto done;

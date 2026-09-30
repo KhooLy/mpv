@@ -549,7 +549,7 @@ static int fel_layer(struct mp_filter *vd)
         return 0;
     if (c->dovi_layer && (c->dv_profile == 7 || c->dv_profile == 5))
         return c->dovi_layer;
-    if (!c->dovi || c->dv_el_present || c->dv_profile != 8)
+    if (!c->dovi || c->dv_el_present || (c->dv_profile != 8 && c->dv_profile != 10))
         return 0;
     struct mp_vo_opts *vo = mp_get_config_group(NULL, vd->global, &vo_sub_opts);
     int tm = vo->android_dovi_tonemap;
@@ -1099,6 +1099,12 @@ static void init_dovi(struct mp_filter *vd)
     int mode = ctx->fel_layer ? 3 : resolve_dovi_mode(vd, profile, conf ? conf->dv_level : 0);
     av_opt_set(avctx, "dovi_mode", modes[mode], AV_OPT_SEARCH_CHILDREN);
 
+    if (avctx->codec_id == AV_CODEC_ID_AV1 && ctx->fel_layer == 1) {
+#if HAVE_LIBDOVI
+        ctx->rpu = mp_dovi_rpu_create(ctx);
+#endif
+        return;
+    }
     if (avctx->codec_id != AV_CODEC_ID_HEVC || (profile != 5 && profile != 7 && profile != 8) ||
         ctx->fel_layer == 2)
         return;
@@ -1160,7 +1166,7 @@ static void filter_nal(struct mp_filter *vd, const uint8_t *nal, size_t len)
 #if HAVE_LIBDOVI
     if (type == 62 && ctx->rpu) {
         const char *err = NULL;
-        AVBufferRef *buf = mp_dovi_rpu_parse(ctx->rpu, nal, len, &err);
+        AVBufferRef *buf = mp_dovi_rpu_parse(ctx->rpu, nal, len, false, &err);
         if (!buf) {
             MP_WARN(vd, "Dropping Dolby Vision RPU: %s\n", err ? err : "?");
             return;
@@ -1199,6 +1205,51 @@ static void filter_nal(struct mp_filter *vd, const uint8_t *nal, size_t len)
     }
 #endif
     append_nal(ctx, nal, len);
+}
+
+static bool leb128(const uint8_t **p, const uint8_t *end, uint64_t *v)
+{
+    *v = 0;
+    for (int i = 0; i < 8 && *p < end; i++) {
+        uint8_t b = *(*p)++;
+        *v |= (uint64_t)(b & 0x7f) << (7 * i);
+        if (!(b & 0x80))
+            return true;
+    }
+    return false;
+}
+
+static void scan_obus(struct mp_filter *vd, AVPacket *pkt)
+{
+#if HAVE_LIBDOVI
+    vd_ffmpeg_ctx *ctx = vd->priv;
+    const uint8_t *p = pkt->data, *end = pkt->data + pkt->size;
+    while (p < end) {
+        uint8_t h = *p++;
+        if (h & 4)
+            p++;
+        uint64_t len = end - p;
+        if ((h & 2) && !leb128(&p, end, &len))
+            return;
+        if (p > end || len > end - p)
+            return;
+        const uint8_t *obu = p, *obu_end = p + len;
+        p = obu_end;
+        uint64_t type;
+        if (((h >> 3) & 15) != 5 || !leb128(&obu, obu_end, &type) || type != 4)
+            continue;
+        const char *err = NULL;
+        AVBufferRef *buf = mp_dovi_rpu_parse(ctx->rpu, obu, obu_end - obu, true, &err);
+        if (!buf) {
+            MP_DBG(vd, "Skipping T.35 metadata: %s\n", err ? err : "?");
+            continue;
+        }
+        int i = ctx->rpu_idx++ % MP_ARRAY_SIZE(ctx->rpus);
+        av_buffer_unref(&ctx->rpus[i].buf);
+        ctx->rpus[i].pts = mp_pts_from_av(pkt->pts, &ctx->codec_timebase);
+        ctx->rpus[i].buf = buf;
+    }
+#endif
 }
 
 static AVPacket *filter_dovi(struct mp_filter *vd, AVPacket *pkt)
@@ -1580,6 +1631,8 @@ static int send_packet(struct mp_filter *vd, struct demux_packet *pkt)
     AVPacket *avpkt = pkt ? ctx->avpkt : NULL;
     if (avpkt && ctx->dovi_strip)
         avpkt = filter_dovi(vd, avpkt);
+    else if (avpkt && ctx->rpu && avctx->codec_id == AV_CODEC_ID_AV1)
+        scan_obus(vd, avpkt);
     int ret = avcodec_send_packet(avctx, avpkt);
     if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF)
         return ret;
