@@ -2331,6 +2331,26 @@ Property list
         ``av1``, ``av1-10bit``, ``vp9``, ``vp9-10bit``, and ``dolby-vision``,
         an array of supported Dolby Vision profile numbers.
 
+``audio-status``
+    How the current audio track reaches the output. Map with these entries:
+
+    ``source``
+        Map of ``codec``, ``profile`` (if known), ``channels`` and
+        ``samplerate`` of the track.
+    ``mode``
+        ``passthrough`` (sent compressed as-is), ``transcode`` (decoded and
+        re-encoded, see ``--audio-ac3-transcode``) or ``decode`` (sent as PCM).
+    ``transcode-codec``
+        ``ac3`` or ``eac3``, only when ``mode`` is ``transcode``.
+    ``decoder``, ``reason``
+        Decoder in use, and a short English explanation of why this mode was
+        chosen.
+    ``passthrough-failed``
+        Whether passthrough was tried and rejected by the output.
+    ``output``
+        Map of ``format``, ``channels``, ``samplerate`` and ``ao`` as opened.
+        Compressed formats show as ``spdif-*`` with 2 or 8 carrier channels.
+
 ``last-error``
     Report about the last file that failed to play, or that ended more than 5
     seconds before its duration. It is set before the ``end-file`` event is

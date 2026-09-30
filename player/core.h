@@ -188,6 +188,7 @@ struct ao_chain {
     struct MPContext *mpctx;
 
     bool spdif_passthrough, spdif_failed, spdif_strict;
+    const char *transcode;
 
     struct mp_output_chain *filter;
 
