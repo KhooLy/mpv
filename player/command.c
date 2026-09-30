@@ -66,6 +66,8 @@
 #include "options/m_config_frontend.h"
 #include "options/parse_configfile.h"
 #include "osdep/getpid.h"
+#include "common/global.h"
+#include "video/dovi_stats.h"
 #include "video/out/vo.h"
 #include "video/csputils.h"
 #include "video/hwdec.h"
@@ -873,6 +875,40 @@ static int mp_property_platform_caps(void *ctx, struct m_property *prop,
 #else
     return M_PROPERTY_UNAVAILABLE;
 #endif
+}
+
+static int mp_property_dovi_status(void *ctx, struct m_property *prop,
+                                   int action, void *arg)
+{
+    MPContext *mpctx = ctx;
+    struct mp_dovi_stats *s = mpctx->global->dovi;
+    if (!mpctx->vo_chain || !s->path[0])
+        return M_PROPERTY_UNAVAILABLE;
+    if (action == M_PROPERTY_GET_TYPE) {
+        *(struct m_option *)arg = (struct m_option){.type = CONF_TYPE_NODE};
+        return M_PROPERTY_OK;
+    }
+    if (action != M_PROPERTY_GET)
+        return M_PROPERTY_NOT_IMPLEMENTED;
+    mp_dovi_stats_live(s, arg);
+    return M_PROPERTY_OK;
+}
+
+static int mp_property_dovi_summary(void *ctx, struct m_property *prop,
+                                    int action, void *arg)
+{
+    MPContext *mpctx = ctx;
+    struct mp_dovi_stats *s = mpctx->global->dovi;
+    if (!s->path[0])
+        return M_PROPERTY_UNAVAILABLE;
+    if (action == M_PROPERTY_GET_TYPE) {
+        *(struct m_option *)arg = (struct m_option){.type = CONF_TYPE_NODE};
+        return M_PROPERTY_OK;
+    }
+    if (action != M_PROPERTY_GET)
+        return M_PROPERTY_NOT_IMPLEMENTED;
+    mp_dovi_stats_summary(s, arg);
+    return M_PROPERTY_OK;
 }
 
 static int mp_property_file_format(void *ctx, struct m_property *prop,
@@ -5121,6 +5157,8 @@ static const struct m_property mp_properties_base[] = {
     {"hwdec-current", mp_property_hwdec_current},
     {"hwdec-codec", mp_property_hwdec_codec},
     {"hwdec-dolby-vision-current", mp_property_hwdec_dolby_vision_current},
+    {"dolby-vision-status", mp_property_dovi_status},
+    {"dolby-vision-summary", mp_property_dovi_summary},
     {"hwdec-interop", mp_property_hwdec_interop},
 
     {"estimated-frame-count", mp_property_frame_count},

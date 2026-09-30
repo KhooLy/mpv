@@ -12,6 +12,7 @@
 #include "common/common.h"
 #include "mpv_talloc.h"
 #include "dovi_rpu.h"
+#include "video/dovi_stats.h"
 
 #define MAX_VDR_ID 16
 
@@ -19,6 +20,7 @@ struct mp_dovi_rpu {
     AVDOVIDataMapping vdr[MAX_VDR_ID];
     bool vdr_valid[MAX_VDR_ID];
     AVDOVIColorMetadata color;
+    struct mp_dovi_stats *stats;
 };
 
 static const AVDOVIColorMetadata color_default = {
@@ -44,10 +46,11 @@ static const AVDOVIColorMetadata color_default = {
     .source_diagonal = 42,
 };
 
-struct mp_dovi_rpu *mp_dovi_rpu_create(void *ta_parent)
+struct mp_dovi_rpu *mp_dovi_rpu_create(void *ta_parent, struct mp_dovi_stats *stats)
 {
     struct mp_dovi_rpu *s = talloc_zero(ta_parent, struct mp_dovi_rpu);
     s->color = color_default;
+    s->stats = stats;
     return s;
 }
 
@@ -243,6 +246,7 @@ struct AVBufferRef *mp_dovi_rpu_parse(struct mp_dovi_rpu *s,
     *err = dovi_rpu_get_error(rpu);
     if (*err)
         goto done;
+    mp_dovi_stats_rpu(s->stats, rpu);
     hdr = dovi_rpu_get_header(rpu);
     if (!hdr) {
         *err = "missing header";
@@ -338,13 +342,15 @@ static float pq_nits(int pq)
     return pl_hdr_rescale(PL_HDR_PQ, PL_HDR_NITS, pq / 4095.0f);
 }
 
-bool mp_dovi_rpu_l1(const uint8_t *nal, size_t len, float *peak, float *avg,
-                    float *max_luma)
+bool mp_dovi_rpu_l1(struct mp_dovi_stats *stats, const uint8_t *nal, size_t len,
+                    float *peak, float *avg, float *max_luma)
 {
     DoviRpuOpaque *rpu = dovi_parse_unspec62_nalu(nal, len);
     const DoviVdrDmData *dm = NULL;
-    if (!dovi_rpu_get_error(rpu))
+    if (!dovi_rpu_get_error(rpu)) {
+        mp_dovi_stats_rpu(stats, rpu);
         dm = dovi_rpu_get_vdr_dm_data(rpu);
+    }
     bool ok = dm && dm->dm_data.level1 && dm->dm_data.level1->max_pq;
     if (ok) {
         *peak = pq_nits(dm->dm_data.level1->max_pq);
@@ -383,4 +389,61 @@ AVDynamicHDRPlus *mp_dovi_hdr10p(float peak, float avg, float max_luma,
     }
     p->fraction_bright_pixels = av_make_q(0, 1000);
     return d;
+}
+
+void mp_dovi_stats_rpu(struct mp_dovi_stats *st, const DoviRpuOpaque *rpu)
+{
+    if (!st)
+        return;
+    const DoviRpuDataHeader *hdr = dovi_rpu_get_header(rpu);
+    const DoviVdrDmData *dm = hdr && hdr->vdr_dm_metadata_present_flag
+                            ? dovi_rpu_get_vdr_dm_data(rpu) : NULL;
+    mp_mutex_lock(&st->lock);
+    st->rpus++;
+    if (hdr && hdr->el_type)
+        snprintf(st->el_type, sizeof(st->el_type), "%s", hdr->el_type);
+    if (dm) {
+        const DoviDmData *d = &dm->dm_data;
+        st->scenes += !!dm->scene_refresh_flag;
+        snprintf(st->cm, sizeof(st->cm), "%s", d->level254 ? "4.0" : "2.9");
+        if (d->level1 && d->level1->max_pq) {
+            st->l1[0] = pq_nits(d->level1->max_pq);
+            st->l1[1] = pq_nits(d->level1->avg_pq);
+            st->l1[2] = pq_nits(d->level1->min_pq);
+            st->l1_peak = MPMAX(st->l1_peak, st->l1[0]);
+            st->l1_sum += st->l1[1];
+            st->l1_n++;
+        }
+        if (d->level6) {
+            st->mastering_max = d->level6->max_display_mastering_luminance;
+            st->mastering_min = d->level6->min_display_mastering_luminance / 10000.0f;
+            st->max_cll = d->level6->max_content_light_level;
+            st->max_fall = d->level6->max_frame_average_light_level;
+        } else if (!st->mastering_max) {
+            st->mastering_max = pq_nits(dm->source_max_pq);
+            st->mastering_min = pq_nits(dm->source_min_pq);
+        }
+        char *t = st->trims;
+        size_t left = sizeof(st->trims);
+        t[0] = 0;
+        for (size_t i = 0; i < d->level2.len && left > 1; i++) {
+            int n = snprintf(t, left, "%sL2 %.0f", t == st->trims ? "" : ", ",
+                             pq_nits(d->level2.list[i]->target_max_pq));
+            n = MPMIN(n, (int)left - 1);
+            t += n;
+            left -= n;
+        }
+        for (size_t i = 0; i < d->level8.len && left > 1; i++) {
+            int n = snprintf(t, left, "%sL8 #%d", t == st->trims ? "" : ", ",
+                             d->level8.list[i]->target_display_index);
+            n = MPMIN(n, (int)left - 1);
+            t += n;
+            left -= n;
+        }
+    }
+    mp_mutex_unlock(&st->lock);
+    if (dm)
+        dovi_rpu_free_vdr_dm_data(dm);
+    if (hdr)
+        dovi_rpu_free_header(hdr);
 }

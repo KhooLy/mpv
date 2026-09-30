@@ -217,6 +217,7 @@ sources = files(
 
     ## Video
     'video/csputils.c',
+    'video/dovi_stats.c',
     'video/decode/vd_lavc.c',
     'video/filter/refqueue.c',
     'video/filter/vf_format.c',

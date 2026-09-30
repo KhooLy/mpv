@@ -57,6 +57,8 @@
 #include "stream/stream.h"
 #include "sub/dec_sub.h"
 #include "external_files.h"
+#include "common/global.h"
+#include "video/dovi_stats.h"
 #include "video/out/vo.h"
 
 #include "core.h"
@@ -1787,6 +1789,7 @@ static void play_current_file(struct MPContext *mpctx)
     mp_notify(mpctx, MPV_EVENT_START_FILE, &start_event);
 
     mp_cancel_reset(mpctx->playback_abort);
+    mp_dovi_stats_reset(mpctx->global->dovi);
 
     mpctx->error_playing = MPV_ERROR_LOADING_FAILED;
     mpctx->filename = NULL;

@@ -49,6 +49,7 @@
 #include "common/msg.h"
 #include "common/msg_control.h"
 #include "common/stats.h"
+#include "video/dovi_stats.h"
 #include "common/global.h"
 #include "filters/f_decoder_wrapper.h"
 #include "options/parse_configfile.h"
@@ -316,6 +317,7 @@ struct MPContext *mp_create(void)
 
     demux_packet_pool_init(mpctx->global);
     stats_global_init(mpctx->global);
+    mp_dovi_stats_init(mpctx->global);
 #if HAVE_LIBCURL
     mp_curl_global_init(mpctx->global);
 #endif

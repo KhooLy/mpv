@@ -39,7 +39,9 @@
 #include "osdep/threads.h"
 #include "osdep/timer.h"
 #include "video/hwdec.h"
+#include "common/global.h"
 #include "video/decode/dovi_rpu.h"
+#include "video/dovi_stats.h"
 #include "video/mp_image.h"
 #include "android_common.h"
 #include "android_fel.h"
@@ -122,6 +124,10 @@ struct android_fel {
     bool sdr;
 
     GLuint stat_fbo, stat_tex, stat_pbo[2];
+    GLuint gpu_q[3];
+    bool gpu_pending[3];
+    int gpu_idx;
+    bool tonemapping;
     int stat_scene[2];
     bool stat_pending[2];
     int stat_idx;
@@ -463,6 +469,8 @@ static bool egl_init(struct android_fel *f)
     glGenTextures(1, &f->stat_tex);
     glBindTexture(GL_TEXTURE_2D, f->stat_tex);
     glTexStorage2D(GL_TEXTURE_2D, 1, GL_RGB10_A2, STAT_W, STAT_H);
+    if (has_ext((const char *)glGetString(GL_EXTENSIONS), "GL_EXT_disjoint_timer_query"))
+        glGenQueries(MP_ARRAY_SIZE(f->gpu_q), f->gpu_q);
     glGenFramebuffers(1, &f->stat_fbo);
     glBindFramebuffer(GL_FRAMEBUFFER, f->stat_fbo);
     glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D,
@@ -750,6 +758,49 @@ static void upload_dovi(struct android_fel *f, struct program *p,
     }
 }
 
+static void gpu_time(struct android_fel *f, bool begin)
+{
+    if (!f->gpu_q[0])
+        return;
+    int i = f->gpu_idx;
+    if (!begin) {
+        glEndQuery(GL_TIME_ELAPSED_EXT);
+        f->gpu_pending[i] = true;
+        f->gpu_idx = (i + 1) % MP_ARRAY_SIZE(f->gpu_q);
+        return;
+    }
+    if (f->gpu_pending[i]) {
+        GLuint ns = 0;
+        GLint disjoint = 0;
+        glGetIntegerv(GL_GPU_DISJOINT_EXT, &disjoint);
+        glGetQueryObjectuiv(f->gpu_q[i], GL_QUERY_RESULT, &ns);
+        f->gpu_pending[i] = false;
+        if (!disjoint) {
+            struct mp_dovi_stats *st = f->vo->global->dovi;
+            mp_mutex_lock(&st->lock);
+            mp_dovi_stats_gpu(st, ns / 1e6);
+            mp_mutex_unlock(&st->lock);
+        }
+    }
+    glBeginQuery(GL_TIME_ELAPSED_EXT, f->gpu_q[i]);
+}
+
+static void render_stats(struct android_fel *f, bool dovi, bool tonemap)
+{
+    struct mp_dovi_stats *st = f->vo->global->dovi;
+    mp_mutex_lock(&st->lock);
+    f->tonemapping = tonemap;
+    st->frames++;
+    st->missing += !dovi;
+    snprintf(st->output, sizeof(st->output), "%s",
+             f->sdr ? "SDR" : tonemap || !f->display_hdr10p ? "HDR10" : "HDR10+");
+    if (!tonemap) {
+        st->tm_src = st->tm_dst = 0;
+        st->trim[0] = 0;
+    }
+    mp_mutex_unlock(&st->lock);
+}
+
 static float l8_target(const AVDOVIMetadata *md, int index)
 {
     for (int i = 0; i < md->num_ext_blocks; i++) {
@@ -788,6 +839,7 @@ static void upload_tonemap(struct android_fel *f, struct program *p,
     }
     uint16_t trim[4];
     bool found = false;
+    int trim_level = 0, trim_index = 0;
     float best = INFINITY;
     for (int i = 0; md && i < md->num_ext_blocks; i++) {
         const AVDOVIDmData *ext = av_dovi_get_ext(md, i);
@@ -797,6 +849,8 @@ static void upload_tonemap(struct android_fel *f, struct program *p,
         if (d < best) {
             best = d;
             found = true;
+            trim_level = 8;
+            trim_index = ext->l8.target_display_index;
             memcpy(trim, (uint16_t[]){ext->l8.trim_slope, ext->l8.trim_offset,
                    ext->l8.trim_power, ext->l8.trim_saturation_gain}, sizeof(trim));
         }
@@ -809,9 +863,26 @@ static void upload_tonemap(struct android_fel *f, struct program *p,
         if (d < best) {
             best = d;
             found = true;
+            trim_level = 2;
+            trim_index = ext->l2.target_max_pq;
             memcpy(trim, (uint16_t[]){ext->l2.trim_slope, ext->l2.trim_offset,
                    ext->l2.trim_power, ext->l2.trim_saturation_gain}, sizeof(trim));
         }
+    }
+    if (f->tonemapping) {
+        struct mp_dovi_stats *st = f->vo->global->dovi;
+        mp_mutex_lock(&st->lock);
+        st->tm_src = pl_hdr_rescale(PL_HDR_PQ, PL_HDR_NITS, MPMAX(src, 0.01f));
+        st->tm_dst = f->display_peak;
+        st->trim[0] = 0;
+        if (found && trim_level == 8) {
+            snprintf(st->trim, sizeof(st->trim), "L8 #%d", trim_index);
+        } else if (found) {
+            snprintf(st->trim, sizeof(st->trim), "L2 %.0f nits",
+                     pl_hdr_rescale(PL_HDR_PQ, PL_HDR_NITS, trim_index / 4095.0f));
+        }
+        st->trim_frames += found;
+        mp_mutex_unlock(&st->lock);
     }
     if (found) {
         glUniform4f(p->trim, trim[0] / 4096.0f + 0.5f, trim[1] / 4096.0f - 0.5f,
@@ -894,6 +965,12 @@ static void send_hdr10p(struct android_fel *f, float peak, float avg,
         memcpy(buf + 6, payload, size);
         struct native_window *win = (void *)vo_android_native_window(f->vo);
         int r = win->perform(win, 34, size + 6, buf);
+        struct mp_dovi_stats *st = f->vo->global->dovi;
+        mp_mutex_lock(&st->lock);
+        st->hdr10p[0] = peak;
+        st->hdr10p[1] = pct ? pct[4] : avg;
+        st->hdr10p[2] = pct ? pct[8] : peak;
+        mp_mutex_unlock(&st->lock);
         if (pct) {
             MP_VERBOSE(f, "HDR10+ measured peak %.0f avg %.0f p50 %.0f p99 %.0f nits -> %d\n",
                    peak, avg, pct[4], pct[8], r);
@@ -1020,6 +1097,7 @@ void android_fel_render(struct android_fel *f, struct mp_image *img,
 
     int opt = f->vo->opts->android_dovi_tonemap;
     bool tonemap = dovi && (f->sdr || (opt < 0 ? !f->display_hdr10p : opt));
+    render_stats(f, dovi, tonemap);
     if (tonemap && !f->sdr) {
         struct pl_hdr_metadata hdr = img->params.color.hdr;
         hdr.max_luma = hdr.max_cll = f->display_peak;
@@ -1071,8 +1149,10 @@ void android_fel_render(struct android_fel *f, struct mp_image *img,
         glBindTexture(GL_TEXTURE_EXTERNAL_OES, f->el.tex);
         glUniform4fv(p->elc, 1, elc);
     }
+    gpu_time(f, true);
     glDrawArrays(GL_TRIANGLES, 0, 3);
     measure(f);
+    gpu_time(f, false);
 
     if (present_ns > 0)
         f->PresentationTime(f->dpy, f->surface, present_ns);
