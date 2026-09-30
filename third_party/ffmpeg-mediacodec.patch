@@ -47,6 +47,49 @@ index 47eded2..cf1581c 100644
  extern const FFCodec ff_mp3_mf_encoder;
  extern const FFCodec ff_mpeg1_cuvid_decoder;
  extern const FFCodec ff_mpeg2_cuvid_decoder;
+diff --git a/libavcodec/mediacodec.c b/libavcodec/mediacodec.c
+index 33bde81..405e92c 100644
+--- a/libavcodec/mediacodec.c
++++ b/libavcodec/mediacodec.c
+@@ -101,6 +101,13 @@ int av_mediacodec_release_buffer(AVMediaCodecBuffer *buffer, int render)
+     return 0;
+ }
+ 
++int av_mediacodec_buffer_is_current(AVMediaCodecBuffer *buffer)
++{
++    MediaCodecDecContext *ctx = buffer->ctx;
++    return !atomic_load(&buffer->released) &&
++           (ctx->delay_flush || buffer->serial == atomic_load(&ctx->serial));
++}
++
+ int av_mediacodec_render_buffer_at_time(AVMediaCodecBuffer *buffer, int64_t time)
+ {
+     MediaCodecDecContext *ctx = buffer->ctx;
+@@ -140,6 +147,11 @@ int av_mediacodec_release_buffer(AVMediaCodecBuffer *buffer, int render)
+     return AVERROR(ENOSYS);
+ }
+ 
++int av_mediacodec_buffer_is_current(AVMediaCodecBuffer *buffer)
++{
++    return 0;
++}
++
+ int av_mediacodec_render_buffer_at_time(AVMediaCodecBuffer *buffer, int64_t time)
+ {
+     return AVERROR(ENOSYS);
+diff --git a/libavcodec/mediacodec.h b/libavcodec/mediacodec.h
+index 4e9b56a..4c2024d 100644
+--- a/libavcodec/mediacodec.h
++++ b/libavcodec/mediacodec.h
+@@ -85,6 +85,8 @@ typedef struct MediaCodecBuffer AVMediaCodecBuffer;
+  */
+ int av_mediacodec_release_buffer(AVMediaCodecBuffer *buffer, int render);
+ 
++int av_mediacodec_buffer_is_current(AVMediaCodecBuffer *buffer);
++
+ /**
+  * Release a MediaCodec buffer and render it at the given time to the surface
+  * that is associated with the decoder. The timestamp must be within one second
 diff --git a/libavcodec/mediacodec_wrapper.c b/libavcodec/mediacodec_wrapper.c
 index 283bbe7..d8e5b4e 100644
 --- a/libavcodec/mediacodec_wrapper.c

@@ -764,7 +764,7 @@ void android_fel_render(struct android_fel *f, struct mp_image *img,
     struct mp_image *eli = img->enhancement_layer;
     AVMediaCodecBuffer *eb = eli && eli->imgfmt == IMGFMT_MEDIACODEC
                              ? (AVMediaCodecBuffer *)eli->planes[3] : NULL;
-    if (drop || !android_fel_active(f)) {
+    if (drop || !android_fel_active(f) || !av_mediacodec_buffer_is_current(bb)) {
         release(bb, 0);
         release(eb, 0);
         return;
