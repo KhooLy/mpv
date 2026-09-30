@@ -2173,7 +2173,9 @@ Audio
     passthrough. This is useful for S/PDIF or HDMI ARC receivers that accept
     AC3 but not multichannel PCM. Audio that is already passed through is not
     affected. ``auto`` enables it on Android when the output accepts AC3 but
-    reports at most 2 PCM channels. ``eac3`` encodes to E-AC3 instead, for
+    reports at most 2 PCM channels, or reports no DTS support. The latter
+    usually means a TV forwarding audio over ARC, which downmixes multichannel
+    PCM to stereo even when its EDID claims more channels. ``eac3`` encodes to E-AC3 instead, for
     outputs that take E-AC3 but not AC3 or multichannel PCM. Requires FFmpeg's
     ``ac3`` or ``eac3`` encoder (default: no).
 

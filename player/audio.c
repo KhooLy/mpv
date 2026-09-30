@@ -115,7 +115,7 @@ static bool want_ac3_transcode(struct MPContext *mpctx)
 #if HAVE_ANDROID
         struct mp_jni_audio_caps caps;
         mp_jni_audio_caps(mpctx->log, &caps);
-        return caps.ac3 && caps.max_channels <= 2;
+        return caps.ac3 && (caps.max_channels <= 2 || !(caps.dts || caps.dtshd));
 #endif
     }
     }
