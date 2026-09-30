@@ -87,6 +87,7 @@ typedef struct mp_vo_opts {
 
     struct m_geometry android_surface_size;
     int android_frame_rate_switch;
+    int android_dovi_tonemap;
 
     struct m_geometry d3d11_composition_size;
 

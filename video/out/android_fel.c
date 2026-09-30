@@ -26,6 +26,7 @@
 #include <android/native_window_jni.h>
 #include <media/NdkImageReader.h>
 #include <libavcodec/mediacodec.h>
+#include <libavutil/dovi_meta.h>
 #include <libavutil/hdr_dynamic_metadata.h>
 #include <libavutil/hwcontext.h>
 #include <libavutil/hwcontext_mediacodec.h>
@@ -33,6 +34,7 @@
 
 #include "common/common.h"
 #include "common/msg.h"
+#include "options/options.h"
 #include "misc/jni.h"
 #include "osdep/threads.h"
 #include "osdep/timer.h"
@@ -100,7 +102,7 @@ struct layer {
 struct program {
     GLuint id;
     GLint bl, el, blc, elc, pivots, coeffs, mmr, lo, hi, act;
-    GLint ycc, ycc_off, lms, nlq_off, nlq_slope, nlq_thr;
+    GLint ycc, ycc_off, lms, nlq_off, nlq_slope, nlq_thr, tm, trim;
 };
 
 struct android_fel {
@@ -115,6 +117,8 @@ struct android_fel {
     bool hdr_md;
     struct pl_hdr_metadata hdr;
     float hdr10p_peak, hdr10p_avg;
+    float display_peak;
+    bool display_hdr10p;
 
     GLuint stat_fbo, stat_tex, stat_pbo[2];
     int stat_scene[2];
@@ -161,8 +165,37 @@ static const char frag_src[] =
     "uniform vec4 mmr[48];\n"
     "uniform vec3 lo, hi, act;\n"
     "uniform mat3 lms;\n"
+    "uniform vec4 tm, trim;\n"
     "const float M1 = 0.1593017578125, M2 = 78.84375;\n"
     "const float C1 = 0.8359375, C2 = 18.8515625, C3 = 18.6875;\n"
+    "float pq_enc(float x) {\n"
+    "    x = pow(max(x, 0.0), M1);\n"
+    "    return pow((C1 + C2 * x) / (1.0 + C3 * x), M2);\n"
+    "}\n"
+    "float pq_dec(float x) {\n"
+    "    x = pow(max(x, 0.0), 1.0 / M2);\n"
+    "    return pow(max(x - C1, 0.0) / (C2 - C3 * x), 1.0 / M1);\n"
+    "}\n"
+    "vec3 tonemap(vec3 c) {\n"
+    "    float y = dot(c, vec3(0.2627, 0.6780, 0.0593));\n"
+    "    float e = clamp((pq_enc(y) - tm.x) / (tm.y - tm.x), 0.0, 1.0);\n"
+    "    float maxl = (tm.z - tm.x) / (tm.y - tm.x);\n"
+    "    float ks = max(1.5 * maxl - 0.5, 0.0);\n"
+    "    if (e > ks) {\n"
+    "        float t = (e - ks) / (1.0 - ks), t2 = t * t, t3 = t2 * t;\n"
+    "        e = (2.0 * t3 - 3.0 * t2 + 1.0) * ks + (t3 - 2.0 * t2 + t) * (1.0 - ks) +\n"
+    "            (3.0 * t2 - 2.0 * t3) * maxl;\n"
+    "    }\n"
+    "    float x = (e * (tm.y - tm.x) + tm.x) / tm.z;\n"
+    "    x = pow(clamp(x * trim.x + trim.y, 0.0, 1.0), trim.z);\n"
+    "    float y2 = pq_dec(x * tm.z);\n"
+    "    c = y > 0.0 ? c * (y2 / y) : vec3(0.0);\n"
+    "    c = y2 + (c - y2) * trim.w;\n"
+    "    float peak = pq_dec(tm.z), m = max(max(c.r, c.g), c.b);\n"
+    "    if (m > peak)\n"
+    "        c = mix(vec3(y2), c, (peak - y2) / (m - y2));\n"
+    "    return max(c, 0.0);\n"
+    "}\n"
     "float reshape(int c, vec3 sig) {\n"
     "    float s = sig[c];\n"
     "    int i = int(dot(vec4(greaterThanEqual(vec4(s), pivots[2 * c])), vec4(1.0)) +\n"
@@ -204,6 +237,8 @@ static const char frag_src[] =
     "    c = pow(max(c, 0.0), vec3(1.0 / M2));\n"
     "    c = max(c - C1, 0.0) / (C2 - C3 * c);\n"
     "    c = lms * pow(c, vec3(1.0 / M1));\n"
+    "    if (tm.w > 0.0)\n"
+    "        c = tonemap(c);\n"
     "    c = pow(max(c, 0.0), vec3(M1));\n"
     "    c = pow((C1 + C2 * c) / (1.0 + C3 * c), vec3(M2));\n"
     "#endif\n"
@@ -348,7 +383,7 @@ static bool build_program(struct android_fel *f, struct program *p, bool dv, boo
 #define LOC(x) p->x = glGetUniformLocation(p->id, #x)
     LOC(bl); LOC(el); LOC(blc); LOC(elc); LOC(pivots); LOC(coeffs); LOC(mmr);
     LOC(lo); LOC(hi); LOC(act); LOC(ycc); LOC(ycc_off); LOC(lms);
-    LOC(nlq_off); LOC(nlq_slope); LOC(nlq_thr);
+    LOC(nlq_off); LOC(nlq_slope); LOC(nlq_thr); LOC(tm); LOC(trim);
 #undef LOC
     glUseProgram(p->id);
     glUniform1i(p->bl, 0);
@@ -480,6 +515,11 @@ static bool attach(struct android_fel *f)
     f->hdr = (struct pl_hdr_metadata){0};
     f->hdr10p_peak = f->hdr10p_avg = -1;
     f->stat_pending[0] = f->stat_pending[1] = false;
+    int hdr_types = mp_jni_display_hdr_types(f->log, &f->display_peak);
+    f->display_hdr10p = hdr_types & MP_JNI_HDR_HDR10_PLUS;
+    if (!(hdr_types & MP_JNI_HDR_HDR10) || f->display_peak <= 0)
+        f->display_peak = 203;
+    MP_VERBOSE(f, "Display peak %.0f nits\n", f->display_peak);
     MP_VERBOSE(f, "Composing Dolby Vision FEL on the GPU\n");
     return true;
 }
@@ -700,6 +740,41 @@ static void upload_dovi(struct android_fel *f, struct program *p,
     }
 }
 
+static void upload_tonemap(struct android_fel *f, struct program *p,
+                           struct mp_image *img)
+{
+    const struct pl_hdr_metadata *hdr = &img->params.color.hdr;
+    float dst = pl_hdr_rescale(PL_HDR_NITS, PL_HDR_PQ, f->display_peak);
+    float src = hdr->max_pq_y > 0 ? hdr->max_pq_y
+              : pl_hdr_rescale(PL_HDR_NITS, PL_HDR_PQ, hdr->max_luma > 0 ? hdr->max_luma : 1000);
+    int opt = f->vo->opts->android_dovi_tonemap;
+    bool on = opt < 0 ? !f->display_hdr10p : opt;
+    glUniform4f(p->tm, 0, MPMAX(src, 0.01f), dst, on);
+
+    const AVDOVIDmLevel2 *best = NULL;
+    for (int n = 0; on && n < img->num_ff_side_data; n++) {
+        if (img->ff_side_data[n].type != AV_FRAME_DATA_DOVI_METADATA)
+            continue;
+        const AVDOVIMetadata *md = (void *)img->ff_side_data[n].buf->data;
+        for (int i = 0; i < md->num_ext_blocks; i++) {
+            const AVDOVIDmData *ext = av_dovi_get_ext(md, i);
+            if (ext->level != 2)
+                continue;
+            if (!best || fabsf(ext->l2.target_max_pq / 4095.0f - dst) <
+                         fabsf(best->target_max_pq / 4095.0f - dst))
+                best = &ext->l2;
+        }
+    }
+    if (best) {
+        glUniform4f(p->trim, best->trim_slope / 4096.0f + 0.5f,
+                    best->trim_offset / 4096.0f - 0.5f,
+                    best->trim_power / 4096.0f + 0.5f,
+                    best->trim_saturation_gain / 4096.0f + 0.5f);
+    } else {
+        glUniform4f(p->trim, 1, 0, 1, 1);
+    }
+}
+
 static void upload_bt2020(struct program *p)
 {
     const float ys = 1023.0f / 876, cs = 1023.0f / 896;
@@ -897,8 +972,18 @@ void android_fel_render(struct android_fel *f, struct mp_image *img,
     if (new_el && !layer_acquire(f, &f->el))
         use_el = false;
 
-    update_hdr(f, &img->params.color.hdr);
-    update_hdr10p(f, &img->params.color.hdr);
+    int opt = f->vo->opts->android_dovi_tonemap;
+    bool tonemap = dovi && (opt < 0 ? !f->display_hdr10p : opt);
+    if (tonemap) {
+        struct pl_hdr_metadata hdr = img->params.color.hdr;
+        hdr.max_luma = hdr.max_cll = f->display_peak;
+        hdr.max_fall = MPMIN(hdr.max_fall > 0 ? hdr.max_fall : f->display_peak, f->display_peak);
+        hdr.min_luma = MPMAX(hdr.min_luma, 0.005f);
+        update_hdr(f, &hdr);
+    } else {
+        update_hdr(f, &img->params.color.hdr);
+        update_hdr10p(f, &img->params.color.hdr);
+    }
 
     EGLint sw = 0, sh = 0;
     eglQuerySurface(f->dpy, f->surface, EGL_WIDTH, &sw);
@@ -927,6 +1012,7 @@ void android_fel_render(struct android_fel *f, struct mp_image *img,
     glUniform4fv(p->blc, 1, f->bl.crop);
     if (dovi) {
         upload_dovi(f, p, dovi);
+        upload_tonemap(f, p, img);
     } else {
         upload_bt2020(p);
     }

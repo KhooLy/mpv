@@ -486,13 +486,15 @@ const char *mp_jni_ca_bundle(struct mp_log *log)
     return bundle;
 }
 
-int mp_jni_display_hdr_types(struct mp_log *log)
+int mp_jni_display_hdr_types(struct mp_log *log, float *peak)
 {
     JNIEnv *env = mp_jni_get_env(log);
     if (!env)
         return 0;
 
     int supported = 0;
+    if (peak)
+        *peak = 0;
     jobject ctx = get_app_context(env);
     jobject manager = NULL, display = NULL, caps = NULL;
     jintArray types = NULL;
@@ -517,7 +519,8 @@ int mp_jni_display_hdr_types(struct mp_log *log)
     jmethodID get_caps = (*env)->GetMethodID(env, display_class, "getHdrCapabilities",
                                              "()Landroid/view/Display$HdrCapabilities;");
     jmethodID get_types = (*env)->GetMethodID(env, caps_class, "getSupportedHdrTypes", "()[I");
-    if (!get_service || !get_display || !is_hdr || !get_caps || !get_types)
+    jmethodID get_peak = (*env)->GetMethodID(env, caps_class, "getDesiredMaxLuminance", "()F");
+    if (!get_service || !get_display || !is_hdr || !get_caps || !get_types || !get_peak)
         goto done;
 
     service = (*env)->NewStringUTF(env, "display");
@@ -532,6 +535,8 @@ int mp_jni_display_hdr_types(struct mp_log *log)
     caps = (*env)->CallObjectMethod(env, display, get_caps);
     if (mp_jni_exception_check(env, 0, NULL) < 0 || !caps)
         goto done;
+    if (peak)
+        *peak = (*env)->CallFloatMethod(env, caps, get_peak);
     types = (*env)->CallObjectMethod(env, caps, get_types);
     if (mp_jni_exception_check(env, 0, NULL) < 0 || !types)
         goto done;
@@ -558,7 +563,7 @@ done:
 
 bool mp_jni_display_supports_dolby_vision(struct mp_log *log)
 {
-    return mp_jni_display_hdr_types(log) & MP_JNI_HDR_DOLBY_VISION;
+    return mp_jni_display_hdr_types(log, NULL) & MP_JNI_HDR_DOLBY_VISION;
 }
 
 static int max_profile_bits(JNIEnv *env, jobject caps, jfieldID levels_field,

@@ -835,7 +835,8 @@ static int mp_property_platform_caps(void *ctx, struct m_property *prop,
     mp_jni_audio_caps(mpctx->log, &ac);
     struct mp_jni_video_caps vc;
     mp_jni_video_caps(mpctx->log, &vc);
-    int hdr = mp_jni_display_hdr_types(mpctx->log);
+    float peak;
+    int hdr = mp_jni_display_hdr_types(mpctx->log, &peak);
 
     struct mpv_node *res = arg;
     node_init(res, MPV_FORMAT_NODE_MAP, NULL);
@@ -853,6 +854,7 @@ static int mp_property_platform_caps(void *ctx, struct m_property *prop,
     node_map_add_flag(d, "hdr10", hdr & MP_JNI_HDR_HDR10);
     node_map_add_flag(d, "hdr10-plus", hdr & MP_JNI_HDR_HDR10_PLUS);
     node_map_add_flag(d, "hlg", hdr & MP_JNI_HDR_HLG);
+    node_map_add_double(d, "peak", peak);
 
     struct mpv_node *v = node_map_add(res, "hwdec", MPV_FORMAT_NODE_MAP);
     node_map_add_flag(v, "h264", vc.h264);
