@@ -539,20 +539,36 @@ static bool hwdec_codec_allowed(struct mp_filter *vd, const char *codec)
     return false;
 }
 
-static const char *fel_driver(struct mp_filter *vd)
+static int fel_layer(struct mp_filter *vd)
 {
 #if HAVE_ANDROID && HAVE_LIBDOVI
     vd_ffmpeg_ctx *ctx = vd->priv;
     struct mp_codec_params *c = ctx->codec;
-    if (!c->dovi_layer || (c->dv_profile != 7 && c->dv_profile != 5))
-        return NULL;
     int mode = ctx->hwdec_opts->dolby_vision;
     if (mode != 4 && (mode || mp_jni_display_supports_dolby_vision(vd->log)))
-        return NULL;
-    return c->dovi_layer == 1 ? "mediacodec_fel_bl" : "mediacodec_fel_el";
+        return 0;
+    if (c->dovi_layer && (c->dv_profile == 7 || c->dv_profile == 5))
+        return c->dovi_layer;
+    if (!c->dovi || c->dv_el_present || c->dv_profile != 8)
+        return 0;
+    struct mp_vo_opts *vo = mp_get_config_group(NULL, vd->global, &vo_sub_opts);
+    int tm = vo->android_dovi_tonemap;
+    talloc_free(vo);
+    if (tm < 0)
+        tm = !(mp_jni_display_hdr_types(vd->log, NULL) & MP_JNI_HDR_HDR10_PLUS);
+    return tm ? 1 : 0;
 #else
-    return NULL;
+    return 0;
 #endif
+}
+
+static const char *fel_driver(struct mp_filter *vd)
+{
+    switch (fel_layer(vd)) {
+    case 1: return "mediacodec_fel_bl";
+    case 2: return "mediacodec_fel_el";
+    }
+    return NULL;
 }
 
 static AVBufferRef *hwdec_create_dev(struct mp_filter *vd,
@@ -589,7 +605,7 @@ static AVBufferRef *hwdec_create_dev(struct mp_filter *vd,
         const struct mp_hwdec_ctx *hw_ctx = NULL;
         if (driver)
             hw_ctx = hwdec_devices_get_by_name(ctx->hwdec_devs, driver);
-        ctx->fel_layer = hw_ctx ? ctx->codec->dovi_layer : 0;
+        ctx->fel_layer = hw_ctx ? fel_layer(vd) : 0;
         if (!hw_ctx) {
             hw_ctx = hwdec_devices_get_by_imgfmt_and_type(ctx->hwdec_devs, imgfmt,
                                                           hwdec->lavc_device);
