@@ -520,8 +520,10 @@ static bool attach(struct android_fel *f)
     int hdr_types = mp_jni_display_hdr_types(f->log, &f->display_peak);
     f->display_hdr10p = hdr_types & MP_JNI_HDR_HDR10_PLUS;
     f->sdr = !(hdr_types & MP_JNI_HDR_HDR10) || f->vo->opts->android_dovi_tonemap == 2;
-    if (f->sdr || f->display_peak <= 0)
+    if (f->sdr)
         f->display_peak = 203;
+    else if (f->display_peak < 100)
+        f->display_peak = 1000;
     const EGLint attrs[] = {
         EGL_GL_COLORSPACE_KHR, f->sdr ? EGL_GL_COLORSPACE_LINEAR_KHR
                                       : EGL_GL_COLORSPACE_BT2020_PQ_EXT,
