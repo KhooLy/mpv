@@ -1034,6 +1034,7 @@ static const struct MPOpts mp_default_opts = {
     .stop_screensaver = 1,
     .cursor_autohide_delay = 1000,
     .video_osd = true,
+    .audio_ac3_transcode = HAVE_ANDROID ? 2 : 0,
     .osd_level = 1,
     .osd_on_seek = 1,
     .osd_duration = 1000,

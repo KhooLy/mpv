@@ -162,6 +162,9 @@ const struct m_sub_options dec_wrapper_conf = {
         .aspect_method = 2,
         .video_reverse_size = 1 * 1024 * 1024 * 1024,
         .audio_reverse_size = 64 * 1024 * 1024,
+#if HAVE_ANDROID
+        .audio_spdif = "auto",
+#endif
     },
 };
 

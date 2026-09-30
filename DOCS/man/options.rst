@@ -2133,6 +2133,7 @@ Audio
     On Android, ``auto`` selects the codecs the current audio output accepts,
     based on the HDMI audio plug state and ``AudioTrack`` direct playback
     queries. If DTS-HD is not supported but DTS is, the DTS core is sent.
+    This is the default on Android.
     With ``--ao=avfoundation``, ``auto`` selects ``ac3,eac3``: the system
     decodes them itself when the output cannot take them, and keeps Dolby
     Atmos for AirPods spatial audio and HDMI receivers.
@@ -2177,7 +2178,7 @@ Audio
     usually means a TV forwarding audio over ARC, which downmixes multichannel
     PCM to stereo even when its EDID claims more channels. ``eac3`` encodes to E-AC3 instead, for
     outputs that take E-AC3 but not AC3 or multichannel PCM. Requires FFmpeg's
-    ``ac3`` or ``eac3`` encoder (default: no).
+    ``ac3`` or ``eac3`` encoder (default: auto on Android, no elsewhere).
 
 ``--ad=<decoder1,decoder2,...[-]>``
     Specify a priority list of audio decoders to be used, according to their
