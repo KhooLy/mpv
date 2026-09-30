@@ -226,10 +226,7 @@ void osd_set_sub(struct osd_state *osd, int index, struct dec_sub *dec_sub)
 
 bool osd_get_render_subs_in_filter(struct osd_state *osd)
 {
-    mp_mutex_lock(&osd->lock);
-    bool r = osd->render_subs_in_filter;
-    mp_mutex_unlock(&osd->lock);
-    return r;
+    return atomic_load(&osd->render_subs_in_filter);
 }
 
 void osd_set_render_subs_in_filter(struct osd_state *osd, bool s)

@@ -589,6 +589,13 @@ void update_osd_msg(struct MPContext *mpctx)
         text = talloc_asprintf_append(text, "%s%s", text ? "\n" : "",
                                       mpctx->osd_msg_text);
     }
-    osd_set_text(osd, text);
-    talloc_free(text);
+    if (!text)
+        text = talloc_strdup(NULL, "");
+    if (!mpctx->osd_text_sent || strcmp(mpctx->osd_text_sent, text) != 0) {
+        osd_set_text(osd, text);
+        talloc_free(mpctx->osd_text_sent);
+        mpctx->osd_text_sent = talloc_steal(mpctx, text);
+    } else {
+        talloc_free(text);
+    }
 }

@@ -140,6 +140,8 @@ struct track {
 
     // Current subtitle state (or cached state if selected==false).
     struct dec_sub *d_sub;
+    struct mp_image_params sub_video_params;
+    int sub_still_image;
 
     /* Heuristic for potentially redrawing subs. */
     bool redraw_subs;
@@ -281,6 +283,7 @@ typedef struct MPContext {
     double osd_last_update;
     bool osd_force_update, osd_idle_update;
     char *osd_msg_text;
+    char *osd_text_sent;
     bool osd_show_pos;
     struct osd_progbar_state osd_progbar;
 
