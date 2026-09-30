@@ -210,7 +210,7 @@ static const m_option_t mp_vo_opt_list[] = {
 #endif
 #if HAVE_WAYLAND
     {"wayland-configure-bounds", OPT_CHOICE(wl_configure_bounds,
-        {"auto", -1}, {"no", 0}, {"yes", 1})},
+        {"auto", -1}, {"no", 0}, {"yes", 1}, {"sdr", 2})},
     {"wayland-content-type", OPT_CHOICE(wl_content_type, {"auto", -1}, {"none", 0},
         {"photo", 1}, {"video", 2}, {"game", 3})},
     {"wayland-disable-vsync", OPT_BOOL(wl_disable_vsync),
@@ -253,7 +253,7 @@ static const m_option_t mp_vo_opt_list[] = {
     {"android-frame-rate-switch", OPT_CHOICE(android_frame_rate_switch,
         {"no", 0}, {"seamless", 1}, {"always", 2})},
     {"android-dovi-tonemap", OPT_CHOICE(android_dovi_tonemap,
-        {"auto", -1}, {"no", 0}, {"yes", 1})},
+        {"auto", -1}, {"no", 0}, {"yes", 1}, {"sdr", 2})},
 #endif
 #if HAVE_D3D11
     {"d3d11-composition-size", OPT_SIZE_BOX(d3d11_composition_size)},
