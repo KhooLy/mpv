@@ -1387,11 +1387,13 @@ static void detect_dovi_split_streams(demuxer_t *demuxer)
     for (int n = 0; n < snapshot_count; n++) {
         struct stream_info *info = priv->streams[n];
         struct sh_stream *sh = info ? info->sh : NULL;
-        if (!sh || sh->type != STREAM_VIDEO || !sh->codec ||
-            !sh->codec->dv_el_present || sh->group)
-        {
+        if (!sh || sh->type != STREAM_VIDEO || !sh->codec || sh->group)
             continue;
-        }
+        if (sh->codec->dv_profile == 5 && sh->codec->codec &&
+            !strcmp(sh->codec->codec, "hevc"))
+            sh->codec->dovi_layer = 1;
+        if (!sh->codec->dv_el_present)
+            continue;
         info->dovi_split = mp_dovi_split_create(demuxer, sh);
     }
 }

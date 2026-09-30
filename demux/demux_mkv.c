@@ -1831,6 +1831,8 @@ static int demux_mkv_open_video(demuxer_t *demuxer, mkv_track_t *track)
 #endif
 
 done:
+    if (sh_v->dv_profile == 5 && sh_v->codec && !strcmp(sh_v->codec, "hevc"))
+        sh_v->dovi_layer = 1;
     demux_add_sh_stream(demuxer, sh);
 
     // Profile 7 NALU-interleaved

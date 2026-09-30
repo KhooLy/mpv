@@ -544,7 +544,7 @@ static const char *fel_driver(struct mp_filter *vd)
 #if HAVE_ANDROID && HAVE_LIBDOVI
     vd_ffmpeg_ctx *ctx = vd->priv;
     struct mp_codec_params *c = ctx->codec;
-    if (!c->dovi_layer || c->dv_profile != 7)
+    if (!c->dovi_layer || (c->dv_profile != 7 && c->dv_profile != 5))
         return NULL;
     int mode = ctx->hwdec_opts->dolby_vision;
     if (mode != 4 && (mode || mp_jni_display_supports_dolby_vision(vd->log)))
@@ -1083,7 +1083,7 @@ static void init_dovi(struct mp_filter *vd)
     int mode = ctx->fel_layer ? 3 : resolve_dovi_mode(vd, profile, conf ? conf->dv_level : 0);
     av_opt_set(avctx, "dovi_mode", modes[mode], AV_OPT_SEARCH_CHILDREN);
 
-    if (avctx->codec_id != AV_CODEC_ID_HEVC || (profile != 7 && profile != 8) ||
+    if (avctx->codec_id != AV_CODEC_ID_HEVC || (profile != 5 && profile != 7 && profile != 8) ||
         ctx->fel_layer == 2)
         return;
 #if HAVE_LIBDOVI
