@@ -26,6 +26,7 @@
 #include <libavformat/version.h>
 #include <libavutil/common.h>
 #include <libavutil/dovi_meta.h>
+#include <libavutil/hdr_dynamic_metadata.h>
 #include <libavutil/hwcontext.h>
 #include <libavutil/opt.h>
 #include <libavutil/intreadwrite.h>
@@ -280,6 +281,9 @@ typedef struct lavc_ctx {
     char *hwdec_codec;
     char *dovi_path;
     int dovi_strip;
+    bool hdr10p;
+    bool l1_new;
+    float l1[3];
     int nal_len;
     AVPacket *dovi_pkt;
     bstr dovi_buf;
@@ -1091,6 +1095,9 @@ static void init_dovi(struct mp_filter *vd)
     if (mode == 3) {
         ctx->dovi_strip = 2;
 #if HAVE_LIBDOVI
+        ctx->hdr10p = !ctx->fel_layer && strstr(avctx->codec->name, "mediacodec");
+#endif
+#if HAVE_LIBDOVI
     } else if (mode == 2 && profile == 7) {
         ctx->dovi_strip = 1;
 #endif
@@ -1149,6 +1156,10 @@ static void filter_nal(struct mp_filter *vd, const uint8_t *nal, size_t len)
         return;
     }
 #endif
+#if HAVE_LIBDOVI
+    if (type == 62 && ctx->hdr10p)
+        ctx->l1_new = mp_dovi_rpu_l1(nal, len, &ctx->l1[0], &ctx->l1[1], &ctx->l1[2]);
+#endif
     if (type == 63 || (type == 62 && ctx->dovi_strip == 2))
         return;
 #if HAVE_LIBDOVI
@@ -1180,6 +1191,7 @@ static AVPacket *filter_dovi(struct mp_filter *vd, AVPacket *pkt)
     const uint8_t *p = pkt->data, *end = pkt->data + pkt->size;
 
     ctx->dovi_buf.len = 0;
+    ctx->l1_new = false;
     ctx->rpu_pts = mp_pts_from_av(pkt->pts, &ctx->codec_timebase);
     if (ctx->nal_len) {
         while (end - p >= ctx->nal_len) {
@@ -1208,6 +1220,15 @@ static AVPacket *filter_dovi(struct mp_filter *vd, AVPacket *pkt)
     if (av_new_packet(out, ctx->dovi_buf.len) < 0 || av_packet_copy_props(out, pkt) < 0)
         return pkt;
     memcpy(out->data, ctx->dovi_buf.start, ctx->dovi_buf.len);
+#if HAVE_LIBDOVI
+    if (ctx->l1_new) {
+        size_t size;
+        AVDynamicHDRPlus *d = mp_dovi_hdr10p(ctx->l1[0], ctx->l1[1], ctx->l1[2], &size);
+        if (d && av_packet_add_side_data(out, AV_PKT_DATA_DYNAMIC_HDR10_PLUS,
+                                         (uint8_t *)d, size) < 0)
+            av_free(d);
+    }
+#endif
     return out;
 }
 

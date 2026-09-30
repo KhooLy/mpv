@@ -37,6 +37,7 @@
 #include "osdep/threads.h"
 #include "osdep/timer.h"
 #include "video/hwdec.h"
+#include "video/decode/dovi_rpu.h"
 #include "video/mp_image.h"
 #include "android_common.h"
 #include "android_fel.h"
@@ -730,30 +731,15 @@ static void update_hdr10p(struct android_fel *f, const struct pl_hdr_metadata *h
     f->hdr10p_peak = peak;
     f->hdr10p_avg = avg;
 
-    AVDynamicHDRPlus d = {
-        .itu_t_t35_country_code = 0xB5,
-        .application_version = 1,
-        .num_windows = 1,
-        .targeted_system_display_maximum_luminance =
-            av_make_q(lrintf(hdr->max_luma > 0 ? hdr->max_luma : 1000), 1),
-    };
-    AVHDRPlusColorTransformParams *p = &d.params[0];
-    for (int i = 0; i < 3; i++)
-        p->maxscl[i] = av_make_q(lrintf(peak * 10), 100000);
-    p->average_maxrgb = av_make_q(lrintf(avg * 10), 100000);
-    static const uint8_t pct[] = {1, 5, 10, 25, 50, 75, 90, 95, 99};
-    static const float scale[] = {0.05, 0.15, 0.3, 0.6, 0.9, 1.3, 2.2, 3.2, 6};
-    p->num_distribution_maxrgb_percentiles = MP_ARRAY_SIZE(pct);
-    for (int i = 0; i < MP_ARRAY_SIZE(pct); i++) {
-        p->distribution_maxrgb[i].percentage = pct[i];
-        p->distribution_maxrgb[i].percentile =
-            av_make_q(lrintf(MPMIN(avg * scale[i], peak) * 10), 100000);
-    }
-    p->fraction_bright_pixels = av_make_q(0, 1000);
-
+    size_t dsize;
+    AVDynamicHDRPlus *d = mp_dovi_hdr10p(peak, avg, hdr->max_luma, &dsize);
+    if (!d)
+        return;
     uint8_t *payload = NULL;
     size_t size = 0;
-    if (av_dynamic_hdr_plus_to_t35(&d, &payload, &size) < 0)
+    int ret = av_dynamic_hdr_plus_to_t35(d, &payload, &size);
+    av_free(d);
+    if (ret < 0)
         return;
     uint8_t buf[512] = {0xB5, 0x00, 0x3C, 0x00, 0x01, 0x04};
     if (size + 6 <= sizeof(buf)) {

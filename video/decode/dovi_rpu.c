@@ -1,9 +1,13 @@
+#include <stdbool.h>
+#include <math.h>
 #include <string.h>
 
 #include <libavutil/buffer.h>
 #include <libavutil/dovi_meta.h>
+#include <libavutil/hdr_dynamic_metadata.h>
 #include <libavutil/mem.h>
 #include <libdovi/rpu_parser.h>
+#include <libplacebo/colorspace.h>
 
 #include "common/common.h"
 #include "mpv_talloc.h"
@@ -279,4 +283,55 @@ done:
         dovi_rpu_free_header(hdr);
     dovi_rpu_free(rpu);
     return buf;
+}
+
+static float pq_nits(int pq)
+{
+    return pl_hdr_rescale(PL_HDR_PQ, PL_HDR_NITS, pq / 4095.0f);
+}
+
+bool mp_dovi_rpu_l1(const uint8_t *nal, size_t len, float *peak, float *avg,
+                    float *max_luma)
+{
+    DoviRpuOpaque *rpu = dovi_parse_unspec62_nalu(nal, len);
+    const DoviVdrDmData *dm = NULL;
+    if (!dovi_rpu_get_error(rpu))
+        dm = dovi_rpu_get_vdr_dm_data(rpu);
+    bool ok = dm && dm->dm_data.level1 && dm->dm_data.level1->max_pq;
+    if (ok) {
+        *peak = pq_nits(dm->dm_data.level1->max_pq);
+        *avg = pq_nits(dm->dm_data.level1->avg_pq);
+        *max_luma = pq_nits(dm->source_max_pq);
+    }
+    if (dm)
+        dovi_rpu_free_vdr_dm_data(dm);
+    dovi_rpu_free(rpu);
+    return ok;
+}
+
+AVDynamicHDRPlus *mp_dovi_hdr10p(float peak, float avg, float max_luma,
+                                 size_t *size)
+{
+    AVDynamicHDRPlus *d = av_dynamic_hdr_plus_alloc(size);
+    if (!d)
+        return NULL;
+    d->itu_t_t35_country_code = 0xB5;
+    d->application_version = 1;
+    d->num_windows = 1;
+    d->targeted_system_display_maximum_luminance =
+        av_make_q(lrintf(max_luma > 0 ? max_luma : 1000), 1);
+    AVHDRPlusColorTransformParams *p = &d->params[0];
+    for (int i = 0; i < 3; i++)
+        p->maxscl[i] = av_make_q(lrintf(peak * 10), 100000);
+    p->average_maxrgb = av_make_q(lrintf(avg * 10), 100000);
+    static const uint8_t pct[] = {1, 5, 10, 25, 50, 75, 90, 95, 99};
+    static const float scale[] = {0.05, 0.15, 0.3, 0.6, 0.9, 1.3, 2.2, 3.2, 6};
+    p->num_distribution_maxrgb_percentiles = MP_ARRAY_SIZE(pct);
+    for (int i = 0; i < MP_ARRAY_SIZE(pct); i++) {
+        p->distribution_maxrgb[i].percentage = pct[i];
+        p->distribution_maxrgb[i].percentile =
+            av_make_q(lrintf(MPMIN(avg * scale[i], peak) * 10), 100000);
+    }
+    p->fraction_bright_pixels = av_make_q(0, 1000);
+    return d;
 }

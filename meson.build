@@ -1434,7 +1434,7 @@ if features['android-media-ndk']
     sources += files('video/out/hwdec/hwdec_aimagereader.c')
 endif
 
-android_fel = features['android-media-ndk'] and features['egl-android']
+android_fel = features['android-media-ndk'] and features['egl-android'] and features['libdovi']
 if android_fel
     mediandk = cc.find_library('mediandk', required: false)
     glesv3 = cc.find_library('GLESv3', required: false)
