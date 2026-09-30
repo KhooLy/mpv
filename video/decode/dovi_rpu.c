@@ -310,7 +310,7 @@ bool mp_dovi_rpu_l1(const uint8_t *nal, size_t len, float *peak, float *avg,
 }
 
 AVDynamicHDRPlus *mp_dovi_hdr10p(float peak, float avg, float max_luma,
-                                 size_t *size)
+                                 const float pct[9], size_t *size)
 {
     AVDynamicHDRPlus *d = av_dynamic_hdr_plus_alloc(size);
     if (!d)
@@ -324,13 +324,14 @@ AVDynamicHDRPlus *mp_dovi_hdr10p(float peak, float avg, float max_luma,
     for (int i = 0; i < 3; i++)
         p->maxscl[i] = av_make_q(lrintf(peak * 10), 100000);
     p->average_maxrgb = av_make_q(lrintf(avg * 10), 100000);
-    static const uint8_t pct[] = {1, 5, 10, 25, 50, 75, 90, 95, 99};
+    static const uint8_t percentage[] = {1, 5, 10, 25, 50, 75, 90, 95, 99};
     static const float scale[] = {0.05, 0.15, 0.3, 0.6, 0.9, 1.3, 2.2, 3.2, 6};
-    p->num_distribution_maxrgb_percentiles = MP_ARRAY_SIZE(pct);
-    for (int i = 0; i < MP_ARRAY_SIZE(pct); i++) {
-        p->distribution_maxrgb[i].percentage = pct[i];
+    p->num_distribution_maxrgb_percentiles = MP_ARRAY_SIZE(percentage);
+    for (int i = 0; i < MP_ARRAY_SIZE(percentage); i++) {
+        float v = pct ? pct[i] : avg * scale[i];
+        p->distribution_maxrgb[i].percentage = percentage[i];
         p->distribution_maxrgb[i].percentile =
-            av_make_q(lrintf(MPMIN(avg * scale[i], peak) * 10), 100000);
+            av_make_q(lrintf(MPMIN(v, peak) * 10), 100000);
     }
     p->fraction_bright_pixels = av_make_q(0, 1000);
     return d;

@@ -70,6 +70,9 @@
 #define MAX_IMAGES 5
 #define MAX_CACHE 24
 #define MAX_MMR 48
+#define STAT_W 256
+#define STAT_H 144
+#define STAT_BINS 1024
 
 struct cached_tex {
     AHardwareBuffer *buf;
@@ -112,6 +115,15 @@ struct android_fel {
     bool hdr_md;
     struct pl_hdr_metadata hdr;
     float hdr10p_peak, hdr10p_avg;
+
+    GLuint stat_fbo, stat_tex, stat_pbo[2];
+    int stat_scene[2];
+    bool stat_pending[2];
+    int stat_idx;
+    int scene, since_sent;
+    uint64_t hist[STAT_BINS];
+    uint64_t hist_n;
+    float nits[STAT_BINS];
 
     EGLImageKHR (*CreateImageKHR)(EGLDisplay, EGLContext, EGLenum,
                                   EGLClientBuffer, const EGLint *);
@@ -404,6 +416,28 @@ static bool egl_init(struct android_fel *f)
                 return false;
         }
     }
+
+    glGenTextures(1, &f->stat_tex);
+    glBindTexture(GL_TEXTURE_2D, f->stat_tex);
+    glTexStorage2D(GL_TEXTURE_2D, 1, GL_RGB10_A2, STAT_W, STAT_H);
+    glGenFramebuffers(1, &f->stat_fbo);
+    glBindFramebuffer(GL_FRAMEBUFFER, f->stat_fbo);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D,
+                           f->stat_tex, 0);
+    bool fbo_ok = glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE;
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    if (fbo_ok) {
+        glGenBuffers(2, f->stat_pbo);
+        for (int i = 0; i < 2; i++) {
+            glBindBuffer(GL_PIXEL_PACK_BUFFER, f->stat_pbo[i]);
+            glBufferData(GL_PIXEL_PACK_BUFFER, STAT_W * STAT_H * 4, NULL, GL_STREAM_READ);
+        }
+        glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
+    } else {
+        MP_VERBOSE(f, "Brightness measurement unavailable\n");
+    }
+    for (int i = 0; i < STAT_BINS; i++)
+        f->nits[i] = pl_hdr_rescale(PL_HDR_PQ, PL_HDR_NITS, i / (float)(STAT_BINS - 1));
     return true;
 }
 
@@ -445,6 +479,7 @@ static bool attach(struct android_fel *f)
     eglSwapInterval(f->dpy, 0);
     f->hdr = (struct pl_hdr_metadata){0};
     f->hdr10p_peak = f->hdr10p_avg = -1;
+    f->stat_pending[0] = f->stat_pending[1] = false;
     MP_VERBOSE(f, "Composing Dolby Vision FEL on the GPU\n");
     return true;
 }
@@ -720,19 +755,11 @@ struct native_window {
     int (*perform)(struct native_window *, int, ...);
 };
 
-static void update_hdr10p(struct android_fel *f, const struct pl_hdr_metadata *hdr)
+static void send_hdr10p(struct android_fel *f, float peak, float avg,
+                        float max_luma, const float *pct)
 {
-    if (hdr->max_pq_y <= 0)
-        return;
-    float peak = pl_hdr_rescale(PL_HDR_PQ, PL_HDR_NITS, hdr->max_pq_y);
-    float avg = pl_hdr_rescale(PL_HDR_PQ, PL_HDR_NITS, hdr->avg_pq_y);
-    if (peak == f->hdr10p_peak && avg == f->hdr10p_avg)
-        return;
-    f->hdr10p_peak = peak;
-    f->hdr10p_avg = avg;
-
     size_t dsize;
-    AVDynamicHDRPlus *d = mp_dovi_hdr10p(peak, avg, hdr->max_luma, &dsize);
+    AVDynamicHDRPlus *d = mp_dovi_hdr10p(peak, avg, max_luma, pct, &dsize);
     if (!d)
         return;
     uint8_t *payload = NULL;
@@ -746,9 +773,88 @@ static void update_hdr10p(struct android_fel *f, const struct pl_hdr_metadata *h
         memcpy(buf + 6, payload, size);
         struct native_window *win = (void *)vo_android_native_window(f->vo);
         int r = win->perform(win, 34, size + 6, buf);
-        MP_VERBOSE(f, "HDR10+ scene peak %.0f avg %.0f nits -> %d\n", peak, avg, r);
+        if (pct) {
+            MP_VERBOSE(f, "HDR10+ measured peak %.0f avg %.0f p50 %.0f p99 %.0f nits -> %d\n",
+                   peak, avg, pct[4], pct[8], r);
+        } else {
+            MP_VERBOSE(f, "HDR10+ scene peak %.0f avg %.0f nits -> %d\n", peak, avg, r);
+        }
     }
     av_free(payload);
+}
+
+static void collect_stats(struct android_fel *f)
+{
+    int i = f->stat_idx;
+    if (!f->stat_pending[i])
+        return;
+    f->stat_pending[i] = false;
+    glBindBuffer(GL_PIXEL_PACK_BUFFER, f->stat_pbo[i]);
+    const uint32_t *px = glMapBufferRange(GL_PIXEL_PACK_BUFFER, 0, STAT_W * STAT_H * 4,
+                                          GL_MAP_READ_BIT);
+    if (px && f->stat_scene[i] == f->scene) {
+        for (int n = 0; n < STAT_W * STAT_H; n++) {
+            uint32_t v = px[n];
+            uint32_t m = MPMAX(MPMAX(v & 0x3ff, (v >> 10) & 0x3ff), (v >> 20) & 0x3ff);
+            f->hist[m]++;
+        }
+        f->hist_n += STAT_W * STAT_H;
+    }
+    if (px)
+        glUnmapBuffer(GL_PIXEL_PACK_BUFFER);
+    glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
+}
+
+static void measure(struct android_fel *f)
+{
+    if (!f->stat_pbo[0])
+        return;
+    collect_stats(f);
+    int i = f->stat_idx;
+    glBindFramebuffer(GL_FRAMEBUFFER, f->stat_fbo);
+    glViewport(0, 0, STAT_W, STAT_H);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+    glBindBuffer(GL_PIXEL_PACK_BUFFER, f->stat_pbo[i]);
+    glReadPixels(0, 0, STAT_W, STAT_H, GL_RGBA, GL_UNSIGNED_INT_2_10_10_10_REV, 0);
+    glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    f->stat_pending[i] = true;
+    f->stat_scene[i] = f->scene;
+    f->stat_idx = !i;
+}
+
+static void update_hdr10p(struct android_fel *f, const struct pl_hdr_metadata *hdr)
+{
+    if (hdr->max_pq_y <= 0)
+        return;
+    float peak = pl_hdr_rescale(PL_HDR_PQ, PL_HDR_NITS, hdr->max_pq_y);
+    float avg = pl_hdr_rescale(PL_HDR_PQ, PL_HDR_NITS, hdr->avg_pq_y);
+    if (peak != f->hdr10p_peak || avg != f->hdr10p_avg) {
+        f->hdr10p_peak = peak;
+        f->hdr10p_avg = avg;
+        f->scene++;
+        memset(f->hist, 0, sizeof(f->hist));
+        f->hist_n = 0;
+        f->since_sent = -1;
+        send_hdr10p(f, peak, avg, hdr->max_luma, NULL);
+        return;
+    }
+    if (!f->hist_n || (f->since_sent >= 0 && ++f->since_sent < 12))
+        return;
+    f->since_sent = 0;
+
+    static const int percentage[9] = {1, 5, 10, 25, 50, 75, 90, 95, 99};
+    float pct[9];
+    double sum = 0;
+    uint64_t acc = 0;
+    int k = 0;
+    for (int b = 0; b < STAT_BINS; b++) {
+        sum += f->nits[b] * f->hist[b];
+        acc += f->hist[b];
+        while (k < 9 && acc * 100 >= f->hist_n * percentage[k])
+            pct[k++] = f->nits[b];
+    }
+    send_hdr10p(f, peak, sum / f->hist_n, hdr->max_luma, pct);
 }
 
 static void release(AVMediaCodecBuffer *buf, int render)
@@ -834,6 +940,7 @@ void android_fel_render(struct android_fel *f, struct mp_image *img,
         glUniform4fv(p->elc, 1, elc);
     }
     glDrawArrays(GL_TRIANGLES, 0, 3);
+    measure(f);
 
     if (present_ns > 0)
         f->PresentationTime(f->dpy, f->surface, present_ns);

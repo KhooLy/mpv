@@ -1223,7 +1223,7 @@ static AVPacket *filter_dovi(struct mp_filter *vd, AVPacket *pkt)
 #if HAVE_LIBDOVI
     if (ctx->l1_new) {
         size_t size;
-        AVDynamicHDRPlus *d = mp_dovi_hdr10p(ctx->l1[0], ctx->l1[1], ctx->l1[2], &size);
+        AVDynamicHDRPlus *d = mp_dovi_hdr10p(ctx->l1[0], ctx->l1[1], ctx->l1[2], NULL, &size);
         if (d && av_packet_add_side_data(out, AV_PKT_DATA_DYNAMIC_HDR10_PLUS,
                                          (uint8_t *)d, size) < 0)
             av_free(d);
