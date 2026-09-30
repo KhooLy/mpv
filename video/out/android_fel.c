@@ -522,6 +522,8 @@ static bool attach(struct android_fel *f)
     f->sdr = !(hdr_types & MP_JNI_HDR_HDR10) || f->vo->opts->android_dovi_tonemap == 2;
     if (f->sdr)
         f->display_peak = 203;
+    else if (f->vo->opts->android_display_peak > 0)
+        f->display_peak = f->vo->opts->android_display_peak;
     else if (f->display_peak < 100)
         f->display_peak = 1000;
     const EGLint attrs[] = {

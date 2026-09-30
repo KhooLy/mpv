@@ -254,6 +254,7 @@ static const m_option_t mp_vo_opt_list[] = {
         {"no", 0}, {"seamless", 1}, {"always", 2})},
     {"android-dovi-tonemap", OPT_CHOICE(android_dovi_tonemap,
         {"auto", -1}, {"no", 0}, {"yes", 1}, {"sdr", 2})},
+    {"android-display-peak", OPT_FLOAT(android_display_peak), M_RANGE(0, 10000)},
 #endif
 #if HAVE_D3D11
     {"d3d11-composition-size", OPT_SIZE_BOX(d3d11_composition_size)},
