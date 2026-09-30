@@ -740,6 +740,25 @@ static void upload_dovi(struct android_fel *f, struct program *p,
     }
 }
 
+static float l8_target(const AVDOVIMetadata *md, int index)
+{
+    for (int i = 0; i < md->num_ext_blocks; i++) {
+        const AVDOVIDmData *ext = av_dovi_get_ext(md, i);
+        if (ext->level == 10 && ext->l10.target_display_index == index)
+            return ext->l10.target_max_pq / 4095.0f;
+    }
+    float nits = 100;
+    switch (index) {
+    case 16: case 18: case 21: nits = 48; break;
+    case 42: nits = 108; break;
+    case 24: case 25: nits = 300; break;
+    case 27: case 28: nits = 600; break;
+    case 48: case 49: nits = 1000; break;
+    case 37: case 38: nits = 2000; break;
+    }
+    return pl_hdr_rescale(PL_HDR_NITS, PL_HDR_PQ, nits);
+}
+
 static void upload_tonemap(struct android_fel *f, struct program *p,
                            struct mp_image *img)
 {
@@ -751,25 +770,41 @@ static void upload_tonemap(struct android_fel *f, struct program *p,
     bool on = opt < 0 ? !f->display_hdr10p : opt;
     glUniform4f(p->tm, 0, MPMAX(src, 0.01f), dst, on);
 
-    const AVDOVIDmLevel2 *best = NULL;
+    const AVDOVIMetadata *md = NULL;
     for (int n = 0; on && n < img->num_ff_side_data; n++) {
-        if (img->ff_side_data[n].type != AV_FRAME_DATA_DOVI_METADATA)
+        if (img->ff_side_data[n].type == AV_FRAME_DATA_DOVI_METADATA)
+            md = (void *)img->ff_side_data[n].buf->data;
+    }
+    uint16_t trim[4];
+    bool found = false;
+    float best = INFINITY;
+    for (int i = 0; md && i < md->num_ext_blocks; i++) {
+        const AVDOVIDmData *ext = av_dovi_get_ext(md, i);
+        if (ext->level != 8)
             continue;
-        const AVDOVIMetadata *md = (void *)img->ff_side_data[n].buf->data;
-        for (int i = 0; i < md->num_ext_blocks; i++) {
-            const AVDOVIDmData *ext = av_dovi_get_ext(md, i);
-            if (ext->level != 2)
-                continue;
-            if (!best || fabsf(ext->l2.target_max_pq / 4095.0f - dst) <
-                         fabsf(best->target_max_pq / 4095.0f - dst))
-                best = &ext->l2;
+        float d = fabsf(l8_target(md, ext->l8.target_display_index) - dst);
+        if (d < best) {
+            best = d;
+            found = true;
+            memcpy(trim, (uint16_t[]){ext->l8.trim_slope, ext->l8.trim_offset,
+                   ext->l8.trim_power, ext->l8.trim_saturation_gain}, sizeof(trim));
         }
     }
-    if (best) {
-        glUniform4f(p->trim, best->trim_slope / 4096.0f + 0.5f,
-                    best->trim_offset / 4096.0f - 0.5f,
-                    best->trim_power / 4096.0f + 0.5f,
-                    best->trim_saturation_gain / 4096.0f + 0.5f);
+    for (int i = 0; md && !found && i < md->num_ext_blocks; i++) {
+        const AVDOVIDmData *ext = av_dovi_get_ext(md, i);
+        if (ext->level != 2)
+            continue;
+        float d = fabsf(ext->l2.target_max_pq / 4095.0f - dst);
+        if (d < best) {
+            best = d;
+            found = true;
+            memcpy(trim, (uint16_t[]){ext->l2.trim_slope, ext->l2.trim_offset,
+                   ext->l2.trim_power, ext->l2.trim_saturation_gain}, sizeof(trim));
+        }
+    }
+    if (found) {
+        glUniform4f(p->trim, trim[0] / 4096.0f + 0.5f, trim[1] / 4096.0f - 0.5f,
+                    trim[2] / 4096.0f + 0.5f, trim[3] / 4096.0f + 0.5f);
     } else {
         glUniform4f(p->trim, 1, 0, 1, 1);
     }

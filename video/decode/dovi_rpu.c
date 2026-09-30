@@ -176,6 +176,59 @@ static void free_metadata(void *opaque, uint8_t *data)
     av_free(data);
 }
 
+static void map_ext(const DoviDmData *d, AVDOVIMetadata *md)
+{
+    const int max = AV_DOVI_MAX_EXT_BLOCKS;
+    if (d->level1) {
+        AVDOVIDmData *e = av_dovi_get_ext(md, md->num_ext_blocks++);
+        e->level = 1;
+        e->l1.min_pq = d->level1->min_pq;
+        e->l1.max_pq = d->level1->max_pq;
+        e->l1.avg_pq = d->level1->avg_pq;
+    }
+    for (size_t i = 0; i < d->level2.len && md->num_ext_blocks < max; i++) {
+        const DoviExtMetadataBlockLevel2 *b = d->level2.list[i];
+        AVDOVIDmData *e = av_dovi_get_ext(md, md->num_ext_blocks++);
+        e->level = 2;
+        e->l2 = (AVDOVIDmLevel2){
+            .target_max_pq = b->target_max_pq,
+            .trim_slope = b->trim_slope,
+            .trim_offset = b->trim_offset,
+            .trim_power = b->trim_power,
+            .trim_chroma_weight = b->trim_chroma_weight,
+            .trim_saturation_gain = b->trim_saturation_gain,
+            .ms_weight = b->ms_weight,
+        };
+    }
+    for (size_t i = 0; i < d->level8.len && md->num_ext_blocks < max; i++) {
+        const DoviExtMetadataBlockLevel8 *b = d->level8.list[i];
+        AVDOVIDmData *e = av_dovi_get_ext(md, md->num_ext_blocks++);
+        e->level = 8;
+        e->l8 = (AVDOVIDmLevel8){
+            .target_display_index = b->target_display_index,
+            .trim_slope = b->trim_slope,
+            .trim_offset = b->trim_offset,
+            .trim_power = b->trim_power,
+            .trim_chroma_weight = b->trim_chroma_weight,
+            .trim_saturation_gain = b->trim_saturation_gain,
+            .ms_weight = b->ms_weight,
+            .target_mid_contrast = b->target_mid_contrast,
+            .clip_trim = b->clip_trim,
+        };
+    }
+    for (size_t i = 0; i < d->level10.len && md->num_ext_blocks < max; i++) {
+        const DoviExtMetadataBlockLevel10 *b = d->level10.list[i];
+        AVDOVIDmData *e = av_dovi_get_ext(md, md->num_ext_blocks++);
+        e->level = 10;
+        e->l10 = (AVDOVIDmLevel10){
+            .target_display_index = b->target_display_index,
+            .target_max_pq = b->target_max_pq,
+            .target_min_pq = b->target_min_pq,
+            .target_primary_index = b->target_primary_index,
+        };
+    }
+}
+
 struct AVBufferRef *mp_dovi_rpu_parse(struct mp_dovi_rpu *s,
                                       const uint8_t *nal, size_t len, bool obu,
                                       const char **err)
@@ -260,14 +313,8 @@ struct AVBufferRef *mp_dovi_rpu_parse(struct mp_dovi_rpu *s,
     *av_dovi_get_mapping(md) = s->vdr[id];
     *av_dovi_get_color(md) = s->color;
 
-    if (dm && dm->dm_data.level1) {
-        AVDOVIDmData *l1 = av_dovi_get_ext(md, 0);
-        l1->level = 1;
-        l1->l1.min_pq = dm->dm_data.level1->min_pq;
-        l1->l1.max_pq = dm->dm_data.level1->max_pq;
-        l1->l1.avg_pq = dm->dm_data.level1->avg_pq;
-        md->num_ext_blocks = 1;
-    }
+    if (dm)
+        map_ext(&dm->dm_data, md);
 
     buf = av_buffer_create((uint8_t *)md, size, free_metadata, NULL, 0);
     if (!buf) {
