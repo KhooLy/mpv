@@ -60,6 +60,8 @@ struct sd_ass_priv {
     struct mp_osd_res osd;
     struct seen_packet *seen_packets;
     int num_seen_packets;
+    int *seen_table;
+    int seen_table_size;
     bool check_animated;
 };
 
@@ -424,28 +426,54 @@ static void filter_and_add(struct sd *sd, struct demux_packet *pkt)
 // Test if the packet with the given file position and pts was already consumed.
 // Return false if the packet is new (and add it to the internal list), and
 // return true if it was already seen.
+static uint32_t seen_hash(const struct demux_packet *packet)
+{
+    uint64_t pts_bits;
+    memcpy(&pts_bits, &packet->pts, sizeof(pts_bits));
+    uint64_t h = (uint64_t)packet->pos * 0x9E3779B97F4A7C15ull ^
+                 pts_bits * 0xC2B2AE3D27D4EB4Full;
+    return h >> 32;
+}
+
+static void seen_table_grow(struct sd_ass_priv *priv)
+{
+    int size = priv->seen_table_size ? priv->seen_table_size * 2 : 1024;
+    int *table = talloc_zero_array(priv, int, size);
+    for (int n = 0; n < priv->num_seen_packets; n++) {
+        struct seen_packet *sp = &priv->seen_packets[n];
+        struct demux_packet key = {.pos = sp->pos, .pts = sp->pts};
+        uint32_t i = seen_hash(&key) & (size - 1);
+        while (table[i])
+            i = (i + 1) & (size - 1);
+        table[i] = n + 1;
+    }
+    talloc_free(priv->seen_table);
+    priv->seen_table = table;
+    priv->seen_table_size = size;
+}
+
+// Test if the packet with the given file position and pts was already consumed.
+// Return false if the packet is new (and add it to the internal list), and
+// return true if it was already seen.
 static bool check_packet_seen(struct sd *sd, struct demux_packet *packet)
 {
     struct sd_ass_priv *priv = sd->priv;
-    int a = 0;
-    int b = priv->num_seen_packets;
-    while (a < b) {
-        int mid = a + (b - a) / 2;
-        struct seen_packet *seen_packet = &priv->seen_packets[mid];
-        if (packet->pos == seen_packet->pos && packet->pts == seen_packet->pts) {
-            packet->seen_pos = mid;
+    if ((priv->num_seen_packets + 1) * 2 > priv->seen_table_size)
+        seen_table_grow(priv);
+    uint32_t mask = priv->seen_table_size - 1;
+    uint32_t i = seen_hash(packet) & mask;
+    while (priv->seen_table[i]) {
+        struct seen_packet *sp = &priv->seen_packets[priv->seen_table[i] - 1];
+        if (sp->pos == packet->pos && sp->pts == packet->pts) {
+            packet->seen_pos = priv->seen_table[i] - 1;
             return true;
         }
-        if (packet->pos > seen_packet->pos ||
-            (packet->pos == seen_packet->pos && packet->pts > seen_packet->pts)) {
-            a = mid + 1;
-        } else {
-            b = mid;
-        }
+        i = (i + 1) & mask;
     }
-    packet->seen_pos = a;
-    MP_TARRAY_INSERT_AT(priv, priv->seen_packets, priv->num_seen_packets, a,
-                        (struct seen_packet){packet->pos, packet->pts, -1});
+    packet->seen_pos = priv->num_seen_packets;
+    MP_TARRAY_APPEND(priv, priv->seen_packets, priv->num_seen_packets,
+                     (struct seen_packet){packet->pos, packet->pts, -1});
+    priv->seen_table[i] = priv->num_seen_packets;
     return false;
 }
 
@@ -997,6 +1025,8 @@ static void reset(struct sd *sd)
     if (sd->opts->sub_clear_on_seek || ctx->clear_once) {
         ass_flush_events(ctx->ass_track);
         ctx->num_seen_packets = 0;
+        if (ctx->seen_table_size)
+            memset(ctx->seen_table, 0, ctx->seen_table_size * sizeof(int));
         sd->preload_ok = false;
         ctx->clear_once = false;
     }
