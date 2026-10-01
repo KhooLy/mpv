@@ -2736,6 +2736,20 @@ Subtitles
     ``complex`` is the default. If libass hasn't been compiled against HarfBuzz,
     libass silently reverts to ``simple``.
 
+``--sub-ass-render-threads=<-1|0|1-4>``
+    Number of extra threads that render upcoming ASS subtitle frames ahead of
+    time with their own libass renderers. Meant for heavy typesetting on slow
+    CPUs.
+
+    :-1:    start up to 3 threads once rendering a frame takes longer than 20 ms
+            (default).
+    :0:     always render on the calling thread.
+    :1-4:   start this many threads right away.
+
+    Frames containing events that libass places by collision detection are
+    always rendered on the calling thread. Has no effect with
+    ``--sub-ass-prune-delay`` or ``--sub-ass=no``.
+
 ``--sub-ass-prune-delay=<-1|seconds>``
     Set the delay for automatic pruning of events from memory in libass. When
     enabled, subtitle events are removed from memory once their end timestamp is

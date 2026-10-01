@@ -27,6 +27,9 @@
 #include "mpv_talloc.h"
 
 #include "config.h"
+#if HAVE_POSIX
+#include <unistd.h>
+#endif
 #include "options/m_config.h"
 #include "options/options.h"
 #include "options/path.h"
@@ -36,10 +39,43 @@
 #include "demux/packet_pool.h"
 #include "video/csputils.h"
 #include "video/mp_image.h"
+#include "osdep/threads.h"
+#include "osdep/timer.h"
 #include "dec_sub.h"
 #include "ass_mp.h"
 #include "packer.h"
 #include "sd.h"
+
+#define MAX_QUEUE 24
+#define MAX_WORKERS 4
+#define ASYNC_ENABLE_SEC 0.020
+
+struct render_entry {
+    double pts;
+    long long ts;
+    uint64_t serial;
+    bool dep;
+    struct sub_bitmaps *bm;
+};
+
+struct async_cfg {
+    struct mp_osd_res dim;
+    int format;
+    double scale;
+    int storage_w, storage_h;
+    bool converted;
+    unsigned gen;
+};
+
+struct sub_worker {
+    struct sd *sd;
+    mp_thread thread;
+    ASS_Renderer *renderer;
+    struct mp_sub_packer *packer;
+    struct sub_bitmap_copy_cache *cache;
+    struct async_cfg cfg;
+    bool cfg_valid;
+};
 
 struct sd_ass_priv {
     struct ass_library *ass_library;
@@ -63,6 +99,29 @@ struct sd_ass_priv {
     int *seen_table;
     int seen_table_size;
     bool check_animated;
+
+    mp_mutex mu;
+    mp_cond cv;
+    struct sub_worker *workers;
+    int num_workers;
+    bool stop;
+    int busy;
+    int paused;
+    int64_t resume_at;
+    unsigned epoch;
+    struct async_cfg cfg;
+    bool cfg_valid;
+    double req_pts;
+    int64_t req_time;
+    double step;
+    double sync_ema;
+    double async_ema;
+    double sched;
+    uint64_t serial;
+    struct render_entry queue[MAX_QUEUE];
+    int num_queue;
+    int last_kind;
+    uint64_t last_val;
 };
 
 struct seen_packet {
@@ -100,6 +159,9 @@ const struct m_sub_options mp_sub_filter_opts = {
 };
 
 static void mangle_colors(struct sd *sd, struct sub_bitmaps *parts);
+static void async_pause(struct sd *sd);
+static void async_resume(struct sd *sd);
+static void workers_stop(struct sd *sd);
 static void fill_plaintext(struct sd *sd, double pts);
 
 static const struct sd_filter_functions *const filters[] = {
@@ -296,6 +358,7 @@ static void assobjects_destroy(struct sd *sd)
 {
     struct sd_ass_priv *ctx = sd->priv;
 
+    workers_stop(sd);
     ass_free_track(ctx->ass_track);
     ass_free_track(ctx->shadow_track);
     enable_output(sd, false);
@@ -306,6 +369,9 @@ static int init(struct sd *sd)
 {
     struct sd_ass_priv *ctx = talloc_zero(sd, struct sd_ass_priv);
     sd->priv = ctx;
+    mp_mutex_init(&ctx->mu);
+    mp_cond_init(&ctx->cv);
+    ctx->step = 1.0 / 24;
 
     // Note: accept "null" as alias for "ass", so EDL delay_open subtitle
     //       streams work.
@@ -479,7 +545,7 @@ static bool check_packet_seen(struct sd *sd, struct demux_packet *packet)
 
 #define UNKNOWN_DURATION (INT_MAX / 1000)
 
-static void decode(struct sd *sd, struct demux_packet *packet)
+static void decode_inner(struct sd *sd, struct demux_packet *packet)
 {
     struct sd_ass_priv *ctx = sd->priv;
     ASS_Track *track = ctx->ass_track;
@@ -533,6 +599,13 @@ static void decode(struct sd *sd, struct demux_packet *packet)
     }
 }
 
+static void decode(struct sd *sd, struct demux_packet *packet)
+{
+    async_pause(sd);
+    decode_inner(sd, packet);
+    async_resume(sd);
+}
+
 // Calculate the height used for scaling subtitle text size so --sub-scale-with-window
 // can undo this scale and use frame size instead. The algorithm used is the following:
 // - If use_margins is disabled, the text is scaled with the visual size of the video.
@@ -549,12 +622,12 @@ static float get_libass_scale_height(struct mp_osd_res *dim, bool use_margins)
 }
 
 static void configure_ass(struct sd *sd, struct mp_osd_res *dim,
-                          bool converted, ASS_Track *track)
+                          bool converted, ASS_Track *track, ASS_Renderer *priv)
 {
     struct mp_subtitle_opts *opts = sd->opts;
     struct mp_subtitle_shared_opts *shared_opts = sd->shared_opts;
     struct sd_ass_priv *ctx = sd->priv;
-    ASS_Renderer *priv = ctx->ass_renderer;
+    bool main = priv == ctx->ass_renderer;
 
     ass_set_frame_size(priv, dim->w, dim->h);
     ass_set_margins(priv, dim->mt, dim->mb, dim->ml, dim->mr);
@@ -622,7 +695,7 @@ static void configure_ass(struct sd *sd, struct mp_osd_res *dim,
     mp_ass_set_style(&style, MP_ASS_FONT_PLAYRESY, opts->sub_style);
     ass_set_selective_style_override(priv, &style);
     free(style.FontName);
-    if (converted && track->default_style < track->n_styles) {
+    if (main && converted && track->default_style < track->n_styles) {
         mp_ass_set_style(track->styles + track->default_style,
                          track->PlayResY, opts->sub_style);
     }
@@ -630,7 +703,7 @@ static void configure_ass(struct sd *sd, struct mp_osd_res *dim,
     ass_set_hinting(priv, set_hinting);
     ass_set_line_spacing(priv, set_line_spacing);
 #if LIBASS_VERSION >= 0x01600010
-    if (converted) {
+    if (main && converted) {
         ass_track_set_feature(track, ASS_FEATURE_WRAP_UNICODE, 1);
         if (!opts->sub_vsfilter_bidi_compat) {
             for (int n = 0; n < track->n_styles; n++) {
@@ -641,7 +714,7 @@ static void configure_ass(struct sd *sd, struct mp_osd_res *dim,
         }
     }
 #endif
-    if (converted) {
+    if (main && converted) {
         bool override_playres = true;
         char **ass_style_override_list = opts->ass_style_override_list;
         for (int i = 0; ass_style_override_list && ass_style_override_list[i]; i++) {
@@ -750,6 +823,251 @@ static long long find_timestamp(struct sd *sd, double pts)
 
 #undef END
 
+static void entry_free(struct render_entry *e)
+{
+    talloc_free(e->bm);
+    *e = (struct render_entry){0};
+}
+
+static void queue_drop(struct sd_ass_priv *ctx, int n)
+{
+    entry_free(&ctx->queue[n]);
+    ctx->queue[n] = ctx->queue[--ctx->num_queue];
+    ctx->queue[ctx->num_queue] = (struct render_entry){0};
+}
+
+static void queue_clear(struct sd_ass_priv *ctx)
+{
+    while (ctx->num_queue)
+        queue_drop(ctx, ctx->num_queue - 1);
+}
+
+static void worker_configure(struct sd *sd, struct sub_worker *w,
+                             const struct async_cfg *cfg, ASS_Track *track)
+{
+    if (!w->cfg_valid || w->cfg.gen != cfg->gen ||
+        !osd_res_equals(w->cfg.dim, cfg->dim))
+    {
+        struct mp_osd_res dim = cfg->dim;
+        configure_ass(sd, &dim, cfg->converted, track, w->renderer);
+    }
+    ass_set_pixel_aspect(w->renderer, cfg->scale);
+    ass_set_storage_size(w->renderer, cfg->storage_w, cfg->storage_h);
+    w->cfg = *cfg;
+    w->cfg_valid = true;
+}
+
+static void *worker_main(void *arg)
+{
+    struct sub_worker *w = arg;
+    struct sd *sd = w->sd;
+    struct sd_ass_priv *ctx = sd->priv;
+    mp_thread_set_name("sub/ass");
+
+    w->renderer = ass_renderer_init(ctx->ass_library);
+    mp_ass_configure_fonts(w->renderer, sd->opts->sub_style, sd->global, sd->log);
+    int bitmaps = sd->opts->sub_bitmap_max_size;
+    ass_set_cache_limits(w->renderer, sd->opts->sub_glyph_limit,
+                         bitmaps > 0 ? MPMAX(bitmaps / 4, 16) : 32);
+    ass_set_stateless(w->renderer, 1);
+    w->packer = mp_sub_packer_alloc(NULL);
+
+    mp_mutex_lock(&ctx->mu);
+    while (!ctx->stop) {
+        int64_t now = mp_time_ns();
+        if (!ctx->cfg_valid || ctx->paused || now < ctx->resume_at ||
+            now - ctx->req_time > 1500000000LL || ctx->num_queue >= MAX_QUEUE - 2)
+        {
+            mp_cond_timedwait(&ctx->cv, &ctx->mu, 20000000LL);
+            continue;
+        }
+
+        double r = ctx->async_ema > 0 ? ctx->async_ema : ctx->sync_ema;
+        double base = ctx->req_pts + MPMIN((now - ctx->req_time) / 1e9, 0.5);
+        double lo = base + r;
+        double hi = lo + MAX_WORKERS * ctx->step + 0.1;
+        if (ctx->sched < lo - ctx->step || ctx->sched > hi + 1.0)
+            ctx->sched = lo;
+        if (ctx->sched > hi) {
+            mp_cond_timedwait(&ctx->cv, &ctx->mu, 10000000LL);
+            continue;
+        }
+        double pts = ctx->req_pts + round((ctx->sched - ctx->req_pts) / ctx->step) * ctx->step;
+        ctx->sched = pts + ctx->step;
+
+        struct async_cfg cfg = ctx->cfg;
+        ASS_Track *track = ctx->ass_track;
+        unsigned epoch = ctx->epoch;
+        bool converted = cfg.converted;
+        ctx->busy++;
+        mp_mutex_unlock(&ctx->mu);
+
+        int64_t t0 = mp_time_ns();
+        worker_configure(sd, w, &cfg, track);
+        int changed;
+        long long ts = find_timestamp(sd, pts + 5e-5);
+        ASS_Image *imgs = ass_render_frame(w->renderer, track, ts, &changed);
+        bool dep = ass_frame_history_dependent(w->renderer);
+        struct sub_bitmaps *bm = NULL;
+        if (!dep) {
+            struct sub_bitmaps res = {0};
+            mp_sub_packer_pack_ass(w->packer, &imgs, 1, 2, !converted, cfg.format, &res);
+            bm = sub_bitmaps_copy(&w->cache, &res);
+        }
+        double took = (mp_time_ns() - t0) / 1e9;
+
+        mp_mutex_lock(&ctx->mu);
+        ctx->busy--;
+        if (ctx->epoch == epoch && !ctx->paused) {
+            ctx->async_ema = ctx->async_ema > 0 ? ctx->async_ema * 0.9 + took * 0.1 : took;
+            if (ctx->num_queue == MAX_QUEUE)
+                queue_drop(ctx, 0);
+            ctx->queue[ctx->num_queue++] = (struct render_entry){
+                .pts = pts, .ts = ts, .serial = ++ctx->serial, .dep = dep, .bm = bm,
+            };
+        } else {
+            talloc_free(bm);
+        }
+        mp_cond_broadcast(&ctx->cv);
+    }
+    mp_mutex_unlock(&ctx->mu);
+
+    talloc_free(w->cache);
+    talloc_free(w->packer);
+    ass_renderer_done(w->renderer);
+    return NULL;
+}
+
+static void workers_stop(struct sd *sd)
+{
+    struct sd_ass_priv *ctx = sd->priv;
+    if (!ctx->num_workers)
+        return;
+    mp_mutex_lock(&ctx->mu);
+    ctx->stop = true;
+    mp_cond_broadcast(&ctx->cv);
+    mp_mutex_unlock(&ctx->mu);
+    for (int n = 0; n < ctx->num_workers; n++)
+        mp_thread_join(ctx->workers[n].thread);
+    talloc_free(ctx->workers);
+    ctx->workers = NULL;
+    ctx->num_workers = 0;
+    ctx->stop = false;
+    ctx->paused = 0;
+    queue_clear(ctx);
+    ctx->async_ema = 0;
+    ctx->cfg_valid = false;
+}
+
+static void workers_start(struct sd *sd)
+{
+    struct sd_ass_priv *ctx = sd->priv;
+    int want = sd->opts->ass_render_threads;
+    if (want < 0) {
+        int cpus = 1;
+#if HAVE_POSIX && defined(_SC_NPROCESSORS_ONLN)
+        cpus = sysconf(_SC_NPROCESSORS_ONLN);
+#endif
+        want = MPMIN(3, cpus - 1);
+    }
+    want = MPMIN(want, MAX_WORKERS);
+    if (want <= 0)
+        return;
+    ctx->workers = talloc_zero_array(ctx, struct sub_worker, want);
+    for (int n = 0; n < want; n++) {
+        ctx->workers[n].sd = sd;
+        if (mp_thread_create(&ctx->workers[n].thread, worker_main, &ctx->workers[n]))
+            break;
+        ctx->num_workers++;
+    }
+}
+
+static void async_pause(struct sd *sd)
+{
+    struct sd_ass_priv *ctx = sd->priv;
+    if (!ctx->num_workers)
+        return;
+    mp_mutex_lock(&ctx->mu);
+    ctx->paused++;
+    ctx->epoch++;
+    queue_clear(ctx);
+    while (ctx->busy)
+        mp_cond_wait(&ctx->cv, &ctx->mu);
+    mp_mutex_unlock(&ctx->mu);
+}
+
+static void async_resume(struct sd *sd)
+{
+    struct sd_ass_priv *ctx = sd->priv;
+    if (!ctx->num_workers)
+        return;
+    mp_mutex_lock(&ctx->mu);
+    ctx->paused--;
+    ctx->resume_at = mp_time_ns() + 30000000LL;
+    ctx->cfg.gen++;
+    mp_cond_broadcast(&ctx->cv);
+    mp_mutex_unlock(&ctx->mu);
+}
+
+static struct sub_bitmaps *async_lookup(struct sd *sd, const struct async_cfg *cfg,
+                                        double pts, long long req_ts, bool *hit)
+{
+    struct sd_ass_priv *ctx = sd->priv;
+    struct sub_bitmaps *res = NULL;
+    *hit = false;
+
+    mp_mutex_lock(&ctx->mu);
+    int64_t now = mp_time_ns();
+    if (ctx->cfg_valid && ctx->req_time && pts > ctx->req_pts && pts - ctx->req_pts < 0.1) {
+        double d = pts - ctx->req_pts;
+        if (d > 0.005 && d < ctx->step * 1.3)
+            ctx->step = d;
+    }
+    if (!ctx->cfg_valid || ctx->cfg.format != cfg->format ||
+        !osd_res_equals(ctx->cfg.dim, cfg->dim) || ctx->cfg.scale != cfg->scale ||
+        ctx->cfg.converted != cfg->converted ||
+        ctx->cfg.storage_w != cfg->storage_w || ctx->cfg.storage_h != cfg->storage_h)
+    {
+        unsigned gen = ctx->cfg.gen + 1;
+        ctx->cfg = *cfg;
+        ctx->cfg.gen = gen;
+        ctx->cfg_valid = true;
+        ctx->epoch++;
+        queue_clear(ctx);
+    }
+    ctx->req_pts = pts;
+    ctx->req_time = now;
+
+    double tol = 1.5 * ctx->step;
+    int best = -1;
+    double best_score = 0;
+    for (int n = ctx->num_queue - 1; n >= 0; n--) {
+        double d = ctx->queue[n].pts - pts;
+        if (d < -1.0 || d > 4.0)
+            queue_drop(ctx, n);
+    }
+    for (int n = 0; n < ctx->num_queue; n++) {
+        double score = ctx->queue[n].ts == req_ts ? -1 : fabs(ctx->queue[n].pts - pts);
+        if (score <= tol && (best < 0 || score < best_score)) {
+            best = n;
+            best_score = score;
+        }
+    }
+    if (best >= 0 && !ctx->queue[best].dep) {
+        struct render_entry *e = &ctx->queue[best];
+        res = sub_bitmaps_copy(&ctx->copy_cache, e->bm);
+        bool same = ctx->last_kind == 1 && ctx->last_val == e->serial;
+        if (res)
+            res->change_id = !same;
+        ctx->last_kind = 1;
+        ctx->last_val = e->serial;
+        *hit = true;
+    }
+    mp_cond_broadcast(&ctx->cv);
+    mp_mutex_unlock(&ctx->mu);
+    return res;
+}
+
 static struct sub_bitmaps *get_bitmaps(struct sd *sd, struct mp_osd_res dim,
                                        int format, double pts)
 {
@@ -788,25 +1106,54 @@ static struct sub_bitmaps *get_bitmaps(struct sd *sd, struct mp_osd_res dim,
             scale *= par;
     }
     if (!ctx->ass_configured || !osd_res_equals(old_osd, ctx->osd)) {
-        configure_ass(sd, &dim, converted, track);
+        async_pause(sd);
+        configure_ass(sd, &dim, converted, track, renderer);
+        async_resume(sd);
         ctx->ass_configured = true;
     }
     ass_set_pixel_aspect(renderer, scale);
+    int storage_w = 0, storage_h = 0;
     if (!converted && (!shared_opts->ass_style_override[sd->order] ||
                        opts->ass_use_video_data >= 2))
     {
-        ass_set_storage_size(renderer, ctx->video_params.w, ctx->video_params.h);
-    } else {
-        ass_set_storage_size(renderer, 0, 0);
+        storage_w = ctx->video_params.w;
+        storage_h = ctx->video_params.h;
     }
+    ass_set_storage_size(renderer, storage_w, storage_h);
+
+    bool async_ok = !no_ass && opts->ass_prune_delay < 0 && opts->ass_render_threads != 0 &&
+                    (ctx->num_workers || opts->ass_render_threads > 0 ||
+                     ctx->sync_ema > ASYNC_ENABLE_SEC);
+    if (async_ok && !ctx->num_workers)
+        workers_start(sd);
+    if (async_ok && ctx->num_workers) {
+        struct async_cfg cfg = {
+            .dim = dim, .format = format, .scale = scale,
+            .storage_w = storage_w, .storage_h = storage_h, .converted = converted,
+        };
+        bool hit;
+        struct sub_bitmaps *r = async_lookup(sd, &cfg, pts, find_timestamp(sd, pts), &hit);
+        if (hit) {
+            if (r && !converted)
+                mangle_colors(sd, r);
+            return r;
+        }
+    }
+
     long long ts = find_timestamp(sd, pts);
 
     if (no_ass)
         fill_plaintext(sd, pts);
 
     int changed;
+    int64_t t0 = mp_time_ns();
     ASS_Image *imgs = ass_render_frame(renderer, track, ts, &changed);
     mp_sub_packer_pack_ass(ctx->packer, &imgs, 1, changed, !converted, format, res);
+    double took = (mp_time_ns() - t0) / 1e9;
+    ctx->sync_ema = ctx->sync_ema > 0 ? ctx->sync_ema * 0.9 + took * 0.1 : took;
+    if (ctx->last_kind != 2)
+        res->change_id = 1;
+    ctx->last_kind = 2;
 
 done:
     // mangle_colors() modifies the color field, so copy the thing _before_.
@@ -1019,7 +1366,7 @@ static void fill_plaintext(struct sd *sd, double pts)
     talloc_free(dst.start);
 }
 
-static void reset(struct sd *sd)
+static void reset_inner(struct sd *sd)
 {
     struct sd_ass_priv *ctx = sd->priv;
     if (sd->opts->sub_clear_on_seek || ctx->clear_once) {
@@ -1034,6 +1381,13 @@ static void reset(struct sd *sd)
         lavc_conv_reset(ctx->converter);
 }
 
+static void reset(struct sd *sd)
+{
+    async_pause(sd);
+    reset_inner(sd);
+    async_resume(sd);
+}
+
 static void uninit(struct sd *sd)
 {
     struct sd_ass_priv *ctx = sd->priv;
@@ -1042,6 +1396,9 @@ static void uninit(struct sd *sd)
     if (ctx->converter)
         lavc_conv_uninit(ctx->converter);
     assobjects_destroy(sd);
+    queue_clear(ctx);
+    mp_cond_destroy(&ctx->cv);
+    mp_mutex_destroy(&ctx->mu);
     talloc_free(ctx->copy_cache);
 }
 
@@ -1109,6 +1466,7 @@ static int control(struct sd *sd, enum sd_ctrl cmd, void *arg)
         return CONTROL_OK;
     case SD_CTRL_UPDATE_OPTS: {
         uint64_t flags = *(uint64_t *)arg;
+        async_pause(sd);
         if (flags & UPDATE_SUB_FILT) {
             filters_destroy(sd);
             filters_init(sd);
@@ -1123,6 +1481,7 @@ static int control(struct sd *sd, enum sd_ctrl cmd, void *arg)
             assobjects_init(sd);
         }
         ctx->ass_configured = false; // ass always needs to be reconfigured
+        async_resume(sd);
         return CONTROL_OK;
     }
     default:
