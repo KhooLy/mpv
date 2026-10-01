@@ -66,6 +66,8 @@
 #include "options/m_config_frontend.h"
 #include "options/parse_configfile.h"
 #include "osdep/getpid.h"
+#include "common/global.h"
+#include "video/dovi_stats.h"
 #include "video/out/vo.h"
 #include "video/csputils.h"
 #include "video/hwdec.h"
@@ -835,7 +837,8 @@ static int mp_property_platform_caps(void *ctx, struct m_property *prop,
     mp_jni_audio_caps(mpctx->log, &ac);
     struct mp_jni_video_caps vc;
     mp_jni_video_caps(mpctx->log, &vc);
-    int hdr = mp_jni_display_hdr_types(mpctx->log);
+    float peak;
+    int hdr = mp_jni_display_hdr_types(mpctx->log, &peak);
 
     struct mpv_node *res = arg;
     node_init(res, MPV_FORMAT_NODE_MAP, NULL);
@@ -853,6 +856,7 @@ static int mp_property_platform_caps(void *ctx, struct m_property *prop,
     node_map_add_flag(d, "hdr10", hdr & MP_JNI_HDR_HDR10);
     node_map_add_flag(d, "hdr10-plus", hdr & MP_JNI_HDR_HDR10_PLUS);
     node_map_add_flag(d, "hlg", hdr & MP_JNI_HDR_HLG);
+    node_map_add_double(d, "peak", peak);
 
     struct mpv_node *v = node_map_add(res, "hwdec", MPV_FORMAT_NODE_MAP);
     node_map_add_flag(v, "h264", vc.h264);
@@ -871,6 +875,117 @@ static int mp_property_platform_caps(void *ctx, struct m_property *prop,
 #else
     return M_PROPERTY_UNAVAILABLE;
 #endif
+}
+
+static const char *audio_reason(struct MPContext *mpctx, const char *mode,
+                                int src_channels)
+{
+    struct ao_chain *ao_c = mpctx->ao_chain;
+#if HAVE_ANDROID
+    struct mp_jni_audio_caps caps;
+    mp_jni_audio_caps(mpctx->log, &caps);
+#endif
+    if (strcmp(mode, "passthrough") == 0)
+        return "output accepts this codec";
+    if (strcmp(mode, "transcode") == 0) {
+        if (mpctx->opts->audio_ac3_transcode != 2)
+            return "forced by audio-ac3-transcode";
+#if HAVE_ANDROID
+        if (caps.max_channels <= 2)
+            return "output takes AC3 but only stereo PCM";
+#endif
+        return "output lacks DTS, likely a TV forwarding over ARC";
+    }
+    if (ao_c->spdif_failed)
+        return "output rejected passthrough";
+    if (src_channels <= 2)
+        return "stereo source";
+#if HAVE_ANDROID
+    if (!caps.ac3)
+        return "output accepts no compressed audio";
+#endif
+    return "multichannel PCM";
+}
+
+static int mp_property_audio_status(void *ctx, struct m_property *prop,
+                                    int action, void *arg)
+{
+    MPContext *mpctx = ctx;
+    struct ao_chain *ao_c = mpctx->ao_chain;
+    if (!ao_c || !ao_c->track || !ao_c->track->stream || !mpctx->ao)
+        return M_PROPERTY_UNAVAILABLE;
+    if (action == M_PROPERTY_GET_TYPE) {
+        *(struct m_option *)arg = (struct m_option){.type = CONF_TYPE_NODE};
+        return M_PROPERTY_OK;
+    }
+    if (action != M_PROPERTY_GET)
+        return M_PROPERTY_NOT_IMPLEMENTED;
+
+    struct mp_codec_params *c = ao_c->track->stream->codec;
+    const char *dec = c->decoder ? c->decoder : "";
+    int rate, format;
+    struct mp_chmap ch;
+    ao_get_format(mpctx->ao, &rate, &format, &ch);
+    bool transcoding = ao_c->transcode && af_fmt_is_spdif(format);
+    const char *mode = strncmp(dec, "spdif_", 6) == 0 ? "passthrough" :
+                       transcoding ? "transcode" : "decode";
+
+    struct mpv_node *res = arg;
+    node_init(res, MPV_FORMAT_NODE_MAP, NULL);
+    struct mpv_node *src = node_map_add(res, "source", MPV_FORMAT_NODE_MAP);
+    node_map_add_string(src, "codec", c->codec);
+    if (c->codec_profile)
+        node_map_add_string(src, "profile", c->codec_profile);
+    node_map_add_int64(src, "channels", c->channels.num);
+    node_map_add_int64(src, "samplerate", c->samplerate);
+
+    node_map_add_string(res, "mode", mode);
+    if (transcoding)
+        node_map_add_string(res, "transcode-codec", ao_c->transcode);
+    node_map_add_string(res, "decoder", dec);
+    node_map_add_string(res, "reason", audio_reason(mpctx, mode, c->channels.num));
+    node_map_add_flag(res, "passthrough-failed", ao_c->spdif_failed);
+
+    struct mpv_node *out = node_map_add(res, "output", MPV_FORMAT_NODE_MAP);
+    node_map_add_string(out, "format", af_fmt_to_str(format));
+    node_map_add_int64(out, "channels", ch.num);
+    node_map_add_int64(out, "samplerate", rate);
+    node_map_add_string(out, "ao", ao_get_name(mpctx->ao));
+    return M_PROPERTY_OK;
+}
+
+static int mp_property_dovi_status(void *ctx, struct m_property *prop,
+                                   int action, void *arg)
+{
+    MPContext *mpctx = ctx;
+    struct mp_dovi_stats *s = mpctx->global->dovi;
+    if (!mpctx->vo_chain || !s->path[0])
+        return M_PROPERTY_UNAVAILABLE;
+    if (action == M_PROPERTY_GET_TYPE) {
+        *(struct m_option *)arg = (struct m_option){.type = CONF_TYPE_NODE};
+        return M_PROPERTY_OK;
+    }
+    if (action != M_PROPERTY_GET)
+        return M_PROPERTY_NOT_IMPLEMENTED;
+    mp_dovi_stats_live(s, arg);
+    return M_PROPERTY_OK;
+}
+
+static int mp_property_dovi_summary(void *ctx, struct m_property *prop,
+                                    int action, void *arg)
+{
+    MPContext *mpctx = ctx;
+    struct mp_dovi_stats *s = mpctx->global->dovi;
+    if (!s->path[0])
+        return M_PROPERTY_UNAVAILABLE;
+    if (action == M_PROPERTY_GET_TYPE) {
+        *(struct m_option *)arg = (struct m_option){.type = CONF_TYPE_NODE};
+        return M_PROPERTY_OK;
+    }
+    if (action != M_PROPERTY_GET)
+        return M_PROPERTY_NOT_IMPLEMENTED;
+    mp_dovi_stats_summary(s, arg);
+    return M_PROPERTY_OK;
 }
 
 static int mp_property_file_format(void *ctx, struct m_property *prop,
@@ -5119,6 +5234,9 @@ static const struct m_property mp_properties_base[] = {
     {"hwdec-current", mp_property_hwdec_current},
     {"hwdec-codec", mp_property_hwdec_codec},
     {"hwdec-dolby-vision-current", mp_property_hwdec_dolby_vision_current},
+    {"dolby-vision-status", mp_property_dovi_status},
+    {"audio-status", mp_property_audio_status},
+    {"dolby-vision-summary", mp_property_dovi_summary},
     {"hwdec-interop", mp_property_hwdec_interop},
 
     {"estimated-frame-count", mp_property_frame_count},
@@ -5264,7 +5382,7 @@ static const char *const *const mp_event_property_change[] = {
     E(MPV_EVENT_AUDIO_RECONFIG, "audio-format", "audio-codec", "audio-bitrate",
       "samplerate", "channels", "audio", "volume", "volume-gain", "mute",
       "current-ao", "audio-codec-name", "audio-params", "track-list", "current-tracks",
-      "audio-out-params", "volume-max", "volume-gain-min", "volume-gain-max", "mixer-active"),
+      "audio-out-params", "audio-status", "volume-max", "volume-gain-min", "volume-gain-max", "mixer-active"),
     E(MPV_EVENT_SEEK, "seeking", "core-idle", "eof-reached"),
     E(MPV_EVENT_PLAYBACK_RESTART, "seeking", "core-idle", "eof-reached"),
     E(MP_EVENT_METADATA_UPDATE, "metadata", "filtered-metadata", "media-title"),

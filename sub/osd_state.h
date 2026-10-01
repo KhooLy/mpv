@@ -70,7 +70,7 @@ struct osd_state {
 
     struct osd_object *objs[MAX_OSD_PARTS];
 
-    bool render_subs_in_filter;
+    atomic_bool render_subs_in_filter;
     _Atomic double force_video_pts;
 
     bool want_redraw;

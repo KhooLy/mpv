@@ -56,6 +56,22 @@ struct mp_hwdec_ctx *hwdec_devices_get_by_imgfmt_and_type(struct mp_hwdec_device
     return res;
 }
 
+struct mp_hwdec_ctx *hwdec_devices_get_by_name(struct mp_hwdec_devices *devs,
+                                               const char *name)
+{
+    struct mp_hwdec_ctx *res = NULL;
+    mp_mutex_lock(&devs->lock);
+    for (int n = 0; n < devs->num_hwctxs; n++) {
+        const char *d = devs->hwctxs[n]->driver_name;
+        if (d && !strcmp(d, name)) {
+            res = devs->hwctxs[n];
+            break;
+        }
+    }
+    mp_mutex_unlock(&devs->lock);
+    return res;
+}
+
 struct mp_hwdec_ctx *hwdec_devices_get_first(struct mp_hwdec_devices *devs)
 {
     return hwdec_devices_get_n(devs, 0);

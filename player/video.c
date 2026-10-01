@@ -37,8 +37,11 @@
 #include "demux/demux.h"
 #include "stream/stream.h"
 #include "sub/osd.h"
+#include "common/global.h"
+#include "video/dovi_stats.h"
 #include "video/hwdec.h"
 #include "filters/f_decoder_wrapper.h"
+#include "filters/f_enhancement_pair.h"
 #include "video/out/vo.h"
 
 #include "core.h"
@@ -162,6 +165,13 @@ static void vo_chain_uninit(struct vo_chain *vo_c)
 void uninit_video_chain(struct MPContext *mpctx)
 {
     if (mpctx->vo_chain) {
+        struct mp_dovi_stats *dovi = mpctx->global->dovi;
+        struct mp_decoder_wrapper *dec = mpctx->vo_chain->track
+            ? mpctx->vo_chain->track->dec : NULL;
+        mp_mutex_lock(&dovi->lock);
+        dovi->dropped_dec = dec ? mp_decoder_wrapper_get_frames_dropped(dec) : 0;
+        dovi->dropped_vo = vo_get_drop_count(mpctx->video_out);
+        mp_mutex_unlock(&dovi->lock);
         reset_video_state(mpctx);
         vo_chain_uninit(mpctx->vo_chain);
         mpctx->vo_chain = NULL;
@@ -191,6 +201,9 @@ int init_video_decoder(struct MPContext *mpctx, struct track *track)
     track->dec = mp_decoder_wrapper_create(parent, track->stream);
     if (!track->dec)
         goto err_out;
+
+    if (sh_stream_dependent_sibling(track->stream))
+        mp_decoder_wrapper_set_extra_hw_frames(track->dec, MP_ENHANCEMENT_PAIR_QUEUE_MAX);
 
     if (!mp_decoder_wrapper_reinit(track->dec))
         goto err_out;
@@ -278,6 +291,8 @@ void reinit_video_chain_src(struct MPContext *mpctx, struct track *track)
 
         mp_pin_connect(vo_c->filter->f->pins[0], vo_c->dec_src);
     }
+
+    update_vo_chain_el_pair(mpctx);
 
     if (!recreate_video_filters(mpctx))
         goto err_out;

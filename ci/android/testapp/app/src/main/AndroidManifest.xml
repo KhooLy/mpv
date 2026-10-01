@@ -7,7 +7,7 @@
         android:supportsRtl="true">
         <activity android:launchMode="singleTop"
             android:name=".MainActivity"
-            android:screenOrientation="landscape"
+            android:screenOrientation="user"
             android:configChanges="orientation|screenSize|keyboardHidden"
             android:exported="true">
             <intent-filter>

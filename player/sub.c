@@ -102,8 +102,15 @@ static bool update_subtitle(struct MPContext *mpctx, double video_pts,
 
     if (mpctx->vo_chain) {
         struct mp_image_params params = mpctx->vo_chain->filter->input_params;
-        if (params.imgfmt)
+        struct mp_image_params *old = &track->sub_video_params;
+        if (params.imgfmt && (params.imgfmt != old->imgfmt ||
+                              params.w != old->w || params.h != old->h ||
+                              params.p_w != old->p_w || params.p_h != old->p_h ||
+                              params.repr.sys != old->repr.sys ||
+                              params.repr.levels != old->repr.levels)) {
             sub_control(dec_sub, SD_CTRL_SET_VIDEO_PARAMS, &params);
+            track->sub_video_params = params;
+        }
     }
 
     // Checking if packets have special animations is relatively expensive.
@@ -113,7 +120,10 @@ static bool update_subtitle(struct MPContext *mpctx, double video_pts,
                        mpctx->opts->subs_rend->sub_past_video_end) ||
                        !mpctx->current_track[0][STREAM_VIDEO] ||
                        mpctx->current_track[0][STREAM_VIDEO]->image);
-    sub_control(dec_sub, SD_CTRL_SET_ANIMATED_CHECK, &still_image);
+    if (track->sub_still_image != still_image + 1) {
+        sub_control(dec_sub, SD_CTRL_SET_ANIMATED_CHECK, &still_image);
+        track->sub_still_image = still_image + 1;
+    }
 
     if (track->demuxer->fully_read && sub_can_preload(dec_sub)) {
         // Assume fully_read implies no interleaved audio/video streams.
@@ -200,6 +210,8 @@ static bool init_subdec(struct MPContext *mpctx, struct track *track)
     if (!track->demuxer || !track->stream)
         return false;
 
+    track->sub_video_params = (struct mp_image_params){0};
+    track->sub_still_image = 0;
     track->d_sub = sub_create(mpctx->global, track,
                               get_all_attachments(mpctx),
                               get_order(mpctx, track));

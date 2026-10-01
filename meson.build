@@ -106,6 +106,7 @@ sources = files(
     'demux/demux_playlist.c',
     'demux/demux_raw.c',
     'demux/demux_timeline.c',
+    'demux/dovi_split.c',
     'demux/ebml.c',
     'demux/packet.c',
     'demux/packet_pool.c',
@@ -117,6 +118,7 @@ sources = files(
     'filters/f_auto_filters.c',
     'filters/f_decoder_wrapper.c',
     'filters/f_demux_in.c',
+    'filters/f_enhancement_pair.c',
     'filters/f_hwtransfer.c',
     'filters/f_lavfi.c',
     'filters/f_output_chain.c',
@@ -215,6 +217,7 @@ sources = files(
 
     ## Video
     'video/csputils.c',
+    'video/dovi_stats.c',
     'video/decode/vd_lavc.c',
     'video/filter/refqueue.c',
     'video/filter/vf_format.c',
@@ -790,6 +793,7 @@ libdovi = dependency('dovi', version: '>= 3.3.0', required: get_option('libdovi'
 features += {'libdovi': libdovi.found()}
 if features['libdovi']
     dependencies += libdovi
+    sources += files('video/decode/dovi_rpu.c')
 endif
 
 vapoursynth = dependency('vapoursynth', version: '>= 56', required: get_option('vapoursynth'))
@@ -1431,6 +1435,18 @@ features += {'android-media-ndk': android_media_ndk.allowed()}
 if features['android-media-ndk']
     # header only, library is dynamically loaded
     sources += files('video/out/hwdec/hwdec_aimagereader.c')
+endif
+
+android_fel = features['android-media-ndk'] and features['egl-android'] and features['libdovi']
+if android_fel
+    mediandk = cc.find_library('mediandk', required: false)
+    glesv3 = cc.find_library('GLESv3', required: false)
+    android_fel = mediandk.found() and glesv3.found()
+endif
+features += {'android-fel': android_fel}
+if features['android-fel']
+    dependencies += [mediandk, glesv3]
+    sources += files('video/out/android_fel.c')
 endif
 
 d3d_hwaccel = get_option('d3d-hwaccel').require(

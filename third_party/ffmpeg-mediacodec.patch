@@ -47,6 +47,49 @@ index 47eded2..cf1581c 100644
  extern const FFCodec ff_mp3_mf_encoder;
  extern const FFCodec ff_mpeg1_cuvid_decoder;
  extern const FFCodec ff_mpeg2_cuvid_decoder;
+diff --git a/libavcodec/mediacodec.c b/libavcodec/mediacodec.c
+index 33bde81..405e92c 100644
+--- a/libavcodec/mediacodec.c
++++ b/libavcodec/mediacodec.c
+@@ -101,6 +101,13 @@ int av_mediacodec_release_buffer(AVMediaCodecBuffer *buffer, int render)
+     return 0;
+ }
+ 
++int av_mediacodec_buffer_is_current(AVMediaCodecBuffer *buffer)
++{
++    MediaCodecDecContext *ctx = buffer->ctx;
++    return !atomic_load(&buffer->released) &&
++           (ctx->delay_flush || buffer->serial == atomic_load(&ctx->serial));
++}
++
+ int av_mediacodec_render_buffer_at_time(AVMediaCodecBuffer *buffer, int64_t time)
+ {
+     MediaCodecDecContext *ctx = buffer->ctx;
+@@ -140,6 +147,11 @@ int av_mediacodec_release_buffer(AVMediaCodecBuffer *buffer, int render)
+     return AVERROR(ENOSYS);
+ }
+ 
++int av_mediacodec_buffer_is_current(AVMediaCodecBuffer *buffer)
++{
++    return 0;
++}
++
+ int av_mediacodec_render_buffer_at_time(AVMediaCodecBuffer *buffer, int64_t time)
+ {
+     return AVERROR(ENOSYS);
+diff --git a/libavcodec/mediacodec.h b/libavcodec/mediacodec.h
+index 4e9b56a..4c2024d 100644
+--- a/libavcodec/mediacodec.h
++++ b/libavcodec/mediacodec.h
+@@ -85,6 +85,8 @@ typedef struct MediaCodecBuffer AVMediaCodecBuffer;
+  */
+ int av_mediacodec_release_buffer(AVMediaCodecBuffer *buffer, int render);
+ 
++int av_mediacodec_buffer_is_current(AVMediaCodecBuffer *buffer);
++
+ /**
+  * Release a MediaCodec buffer and render it at the given time to the surface
+  * that is associated with the decoder. The timestamp must be within one second
 diff --git a/libavcodec/mediacodec_wrapper.c b/libavcodec/mediacodec_wrapper.c
 index 283bbe7..d8e5b4e 100644
 --- a/libavcodec/mediacodec_wrapper.c
@@ -325,7 +368,7 @@ index 18d0796..73e5c4d 100644
  {
      return codec->start(codec);
 diff --git a/libavcodec/mediacodecdec.c b/libavcodec/mediacodecdec.c
-index bc176d8..23a17aa 100644
+index bc176d8..b7410a2 100644
 --- a/libavcodec/mediacodecdec.c
 +++ b/libavcodec/mediacodecdec.c
 @@ -32,6 +32,8 @@
@@ -573,7 +616,7 @@ index bc176d8..23a17aa 100644
          codec_mime = "video/hevc";
  
          ret = hevc_set_extradata(avctx, format);
-@@ -425,11 +592,73 @@ static av_cold int mediacodec_decode_init(AVCodecContext *avctx)
+@@ -425,11 +592,75 @@ static av_cold int mediacodec_decode_init(AVCodecContext *avctx)
              goto done;
          break;
  #endif
@@ -610,6 +653,8 @@ index bc176d8..23a17aa 100644
 +            (const AVDOVIDecoderConfigurationRecord *)dovi_sd->data;
 +        alternative_mime = mediacodec_dolby_vision_alternative_mime(
 +            avctx, dovi_sd, base_codec_mime);
++        if (s->dovi_mode == DOVI_MODE_BASE_LAYER && !alternative_mime)
++            alternative_mime = base_codec_mime;
 +        codec_mime = s->dovi_mode == DOVI_MODE_BASE_LAYER && alternative_mime
 +                     ? alternative_mime : "video/dolby-vision";
 +        if (cfg->dv_profile == 7 && !strcmp(codec_mime, "video/dolby-vision") &&
@@ -647,7 +692,7 @@ index bc176d8..23a17aa 100644
  
      if (avctx->codec_type == AVMEDIA_TYPE_VIDEO) {
          ff_AMediaFormat_setInt32(format, "width", avctx->width);
-@@ -440,6 +669,8 @@ static av_cold int mediacodec_decode_init(AVCodecContext *avctx)
+@@ -440,6 +671,8 @@ static av_cold int mediacodec_decode_init(AVCodecContext *avctx)
      }
      if (s->operating_rate > 0)
          ff_AMediaFormat_setInt32(format, "operating-rate", s->operating_rate);
@@ -656,7 +701,7 @@ index bc176d8..23a17aa 100644
  
      s->ctx = av_mallocz(sizeof(*s->ctx));
      if (!s->ctx) {
-@@ -451,14 +682,46 @@ static av_cold int mediacodec_decode_init(AVCodecContext *avctx)
+@@ -451,14 +684,46 @@ static av_cold int mediacodec_decode_init(AVCodecContext *avctx)
      s->ctx->delay_flush = s->delay_flush;
      s->ctx->use_ndk_codec = s->use_ndk_codec;
  
@@ -705,7 +750,7 @@ index bc176d8..23a17aa 100644
  
      sdk_int = ff_Build_SDK_INT(avctx);
      /* ff_Build_SDK_INT can fail when target API < 24 and JVM isn't available.
-@@ -564,6 +827,7 @@ static int mediacodec_receive_frame(AVCodecContext *avctx, AVFrame *frame)
+@@ -564,6 +829,7 @@ static int mediacodec_receive_frame(AVCodecContext *avctx, AVFrame *frame)
          } else if (ret < 0) {
              return ret;
          }
@@ -713,7 +758,7 @@ index bc176d8..23a17aa 100644
      }
  
      return AVERROR(EAGAIN);
-@@ -600,6 +864,24 @@ static const AVOption ff_mediacodec_vdec_options[] = {
+@@ -600,6 +866,24 @@ static const AVOption ff_mediacodec_vdec_options[] = {
                     OFFSET(use_ndk_codec), AV_OPT_TYPE_BOOL, {.i64 = -1}, -1, 1, VD },
      { "operating_rate", "The desired operating rate that the codec will need to operate at, zero for unspecified",
              OFFSET(operating_rate), AV_OPT_TYPE_INT, {.i64 = 0}, 0, INT_MAX, VD },
@@ -738,7 +783,7 @@ index bc176d8..23a17aa 100644
      { NULL }
  };
  
-@@ -665,6 +947,8 @@ static const AVOption ff_mediacodec_adec_options[] = {
+@@ -665,6 +949,8 @@ static const AVOption ff_mediacodec_adec_options[] = {
                     OFFSET(use_ndk_codec), AV_OPT_TYPE_BOOL, {.i64 = -1}, -1, 1, AD },
      { "operating_rate", "The desired operating rate that the codec will need to operate at, zero for unspecified",
              OFFSET(operating_rate), AV_OPT_TYPE_INT, {.i64 = 0}, 0, INT_MAX, AD },
@@ -747,7 +792,7 @@ index bc176d8..23a17aa 100644
      { NULL }
  };
  
-@@ -689,7 +973,7 @@ const FFCodec ff_ ## short_name ## _mediacodec_decoder = {
+@@ -689,7 +975,7 @@ const FFCodec ff_ ## short_name ## _mediacodec_decoder = {
      FF_CODEC_RECEIVE_FRAME_CB(mediacodec_receive_frame),                                       \
      .flush          = mediacodec_decode_flush,                                                 \
      .close          = mediacodec_decode_close,                                                 \
@@ -756,7 +801,7 @@ index bc176d8..23a17aa 100644
      .caps_internal  = FF_CODEC_CAP_NOT_INIT_THREADSAFE,                                        \
      .bsfs           = bsf,                                                                     \
      .p.wrapper_name = "mediacodec",                                                            \
-@@ -710,3 +994,15 @@ DECLARE_MEDIACODEC_ADEC(amrwb, "AMR-WB", AV_CODEC_ID_AMR_WB, NULL)
+@@ -710,3 +996,15 @@ DECLARE_MEDIACODEC_ADEC(amrwb, "AMR-WB", AV_CODEC_ID_AMR_WB, NULL)
  #if CONFIG_MP3_MEDIACODEC_DECODER
  DECLARE_MEDIACODEC_ADEC(mp3, "MP3", AV_CODEC_ID_MP3, NULL)
  #endif
@@ -773,7 +818,7 @@ index bc176d8..23a17aa 100644
 +DECLARE_MEDIACODEC_ADEC(ac4, "AC-4", AV_CODEC_ID_AC4, NULL)
 +#endif
 diff --git a/libavcodec/mediacodecdec_common.c b/libavcodec/mediacodecdec_common.c
-index 9a627c0..e73dd91 100644
+index 9a627c0..068c139 100644
 --- a/libavcodec/mediacodecdec_common.c
 +++ b/libavcodec/mediacodecdec_common.c
 @@ -23,6 +23,7 @@
@@ -801,10 +846,13 @@ index 9a627c0..e73dd91 100644
      if (!s->codec_name) {
          // getCodecNameByType() can fail due to missing JVM, while NDK
          // mediacodec can be used without JVM.
-@@ -847,6 +849,12 @@ int ff_mediacodec_dec_init(AVCodecContext *avctx, MediaCodecDecContext *s,
+@@ -847,6 +849,15 @@ int ff_mediacodec_dec_init(AVCodecContext *avctx, MediaCodecDecContext *s,
      if (ret < 0)
          goto fail;
  
++    if (s->surface && !strncmp(s->codec_name, "c2.exynos.", 10))
++        ff_AMediaFormat_setInt32(format, "vendor.sec-ext-dec-compressed-color-format.value", 0);
++
 +    {
 +        char *desc = ff_AMediaFormat_toString(format);
 +        av_log(avctx, AV_LOG_VERBOSE, "Configuring %s with format %s\n",
@@ -814,7 +862,7 @@ index 9a627c0..e73dd91 100644
      status = ff_AMediaCodec_configure(s->codec, format, s->surface, NULL, 0);
      if (status < 0) {
          char *desc = ff_AMediaFormat_toString(format);
-@@ -891,10 +899,33 @@ fail:
+@@ -891,10 +902,33 @@ fail:
      return ret;
  }
  
@@ -848,7 +896,7 @@ index 9a627c0..e73dd91 100644
      int need_draining = 0;
      uint8_t *data;
      size_t size;
-@@ -966,11 +997,27 @@ int ff_mediacodec_dec_send(AVCodecContext *avctx, MediaCodecDecContext *s,
+@@ -966,11 +1000,27 @@ int ff_mediacodec_dec_send(AVCodecContext *avctx, MediaCodecDecContext *s,
              return 0;
          }
  

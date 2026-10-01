@@ -55,6 +55,7 @@
 #include "stream/stream_curl.h"
 
 #include "demux.h"
+#include "dovi_split.h"
 #include "stheader.h"
 #include "options/m_config.h"
 #include "options/m_option.h"
@@ -68,6 +69,11 @@
 // Should correspond to IO_BUFFER_SIZE in libavformat/aviobuf.c (not public)
 // libavformat (almost) always reads data in blocks of this size.
 #define BIO_BUFFER_SIZE 32768
+
+static void avcodec_par_destructor(void *p)
+{
+    avcodec_parameters_free(p);
+}
 
 #define OPT_BASE_STRUCT struct demux_lavf_opts
 struct demux_lavf_opts {
@@ -227,6 +233,7 @@ struct stream_info {
     double last_key_pts;
     double highest_pts;
     double ts_offset;
+    struct mp_dovi_split *dovi_split;
 };
 
 typedef struct lavf_priv {
@@ -254,6 +261,8 @@ typedef struct lavf_priv {
     bool any_ts_fixed;
 
     int retry_counter;
+
+    struct demux_packet *pending_pkt;
 
     AVDictionary *av_opts;
 
@@ -603,6 +612,12 @@ static void select_tracks(struct demuxer *demuxer, int start)
         AVStream *st = priv->avfc->streams[n];
         bool selected = stream && demux_stream_is_selected(stream) &&
                         !stream->attached_picture;
+        if (!selected && priv->streams[n]->dovi_split) {
+            struct sh_stream *el =
+                mp_dovi_split_el_stream(priv->streams[n]->dovi_split);
+            if (el && demux_stream_is_selected(el))
+                selected = true;
+        }
         st->discard = selected ? AVDISCARD_DEFAULT : AVDISCARD_ALL;
     }
 }
@@ -633,7 +648,7 @@ static void export_replaygain(demuxer_t *demuxer, struct sh_stream *sh,
     if (!track_data_available && !album_data_available)
         return;
 
-    struct replaygain_data *rgain = talloc_ptrtype(demuxer, rgain);
+    struct replaygain_data *rgain = talloc_ptrtype(sh->codec, rgain);
     rgain->track_gain = rgain->album_gain = 0;
     rgain->track_peak = rgain->album_peak = 1;
 
@@ -711,7 +726,7 @@ static void handle_new_stream(demuxer_t *demuxer, int i)
 
         sh->codec->samplerate = codec->sample_rate;
         sh->codec->bitrate = codec->bit_rate;
-        sh->codec->format_name = talloc_strdup(sh, av_get_sample_fmt_name(codec->format));
+        sh->codec->format_name = talloc_strdup(sh->codec, av_get_sample_fmt_name(codec->format));
 
         double delay = 0;
         if (codec->sample_rate > 0)
@@ -751,7 +766,7 @@ static void handle_new_stream(demuxer_t *demuxer, int i)
         sh->codec->disp_w = codec->width;
         sh->codec->disp_h = codec->height;
         sh->codec->bitrate = codec->bit_rate;
-        sh->codec->format_name = talloc_strdup(sh, av_get_pix_fmt_name(codec->format));
+        sh->codec->format_name = talloc_strdup(sh->codec, av_get_pix_fmt_name(codec->format));
         if (st->avg_frame_rate.num)
             sh->codec->fps = av_q2d(st->avg_frame_rate);
         if (is_image(st, sh->attached_picture, priv->avif)) {
@@ -787,6 +802,7 @@ static void handle_new_stream(demuxer_t *demuxer, int i)
             sh->codec->dovi = true;
             sh->codec->dv_profile = cfg->dv_profile;
             sh->codec->dv_level = cfg->dv_level;
+            sh->codec->dv_el_present = cfg->bl_present_flag && cfg->el_present_flag;
         }
 
         // This also applies to vfw-muxed mkv, but we can't detect these easily.
@@ -798,7 +814,7 @@ static void handle_new_stream(demuxer_t *demuxer, int i)
         sh = demux_alloc_sh_stream(STREAM_SUB);
 
         if (codec->extradata_size) {
-            sh->codec->extradata = talloc_size(sh, codec->extradata_size);
+            sh->codec->extradata = talloc_size(sh->codec, codec->extradata_size);
             memcpy(sh->codec->extradata, codec->extradata, codec->extradata_size);
             sh->codec->extradata_size = codec->extradata_size;
         }
@@ -840,9 +856,11 @@ static void handle_new_stream(demuxer_t *demuxer, int i)
         sh->ff_index = st->index;
         mp_codec_info_from_avcodecpar(codec, sh->codec);
         sh->codec->codec_tag = codec->codec_tag;
-        sh->codec->lav_codecpar = avcodec_parameters_alloc();
-        if (sh->codec->lav_codecpar)
-            avcodec_parameters_copy(sh->codec->lav_codecpar, codec);
+        AVCodecParameters **lavp = talloc_ptrtype(sh->codec, lavp);
+        talloc_set_destructor(lavp, avcodec_par_destructor);
+        *lavp = avcodec_parameters_alloc();
+        if (*lavp && avcodec_parameters_copy(*lavp, codec) >= 0)
+            sh->codec->lav_codecpar = *lavp;
         sh->codec->native_tb_num = st->time_base.num;
         sh->codec->native_tb_den = st->time_base.den;
         sh->codec->duration = st->duration * av_q2d(st->time_base);
@@ -1280,6 +1298,42 @@ static void handle_lcevc_group(demuxer_t *demuxer, AVStreamGroup *stg)
 }
 #endif
 
+#if LIBAVFORMAT_VERSION_INT >= AV_VERSION_INT(62, 19, 100)
+// Base layer + Enhancement layer separate track stream group
+static void handle_layered_video_group(demuxer_t *demuxer, AVStreamGroup *stg)
+{
+    lavf_priv_t *priv = demuxer->priv;
+    AVStreamGroupLayeredVideo *layered = stg->params.layered_video;
+
+    if (stg->nb_streams != 2 || layered->el_index >= stg->nb_streams) {
+        MP_WARN(demuxer, "Dolby Vision group %u: expected 2 streams with valid "
+                "el_index, got %u streams and el_index %u\n",
+                stg->index, stg->nb_streams, layered->el_index);
+        return;
+    }
+
+    AVStream *el_st = stg->streams[layered->el_index];
+    AVStream *bl_st = stg->streams[layered->el_index ? 0 : 1];
+
+    if ((size_t)el_st->index >= priv->num_streams || (size_t)bl_st->index >= priv->num_streams)
+        return;
+
+    struct sh_stream *el_sh = priv->streams[el_st->index]->sh;
+    struct sh_stream *bl_sh = priv->streams[bl_st->index]->sh;
+    if (!el_sh || !bl_sh)
+        return;
+
+    // Group storage is attached to the BL so its lifetime tracks the demuxer.
+    struct sh_stream_group *group = talloc_zero(bl_sh, struct sh_stream_group);
+    MP_TARRAY_APPEND(group, group->members, group->num_members, bl_sh);
+    MP_TARRAY_APPEND(group, group->members, group->num_members, el_sh);
+
+    bl_sh->group = group;
+    el_sh->group = group;
+    el_sh->dependent_track = true;
+}
+#endif
+
 static void handle_stream_groups(demuxer_t *demuxer)
 {
     lavf_priv_t *priv = demuxer->priv;
@@ -1312,6 +1366,11 @@ static void handle_stream_groups(demuxer_t *demuxer)
             handle_lcevc_group(demuxer, stg);
             break;
 #endif
+#if LIBAVFORMAT_VERSION_INT >= AV_VERSION_INT(62, 19, 100)
+        case AV_STREAM_GROUP_PARAMS_DOLBY_VISION:
+            handle_layered_video_group(demuxer, stg);
+            break;
+#endif
         default:
             MP_VERBOSE(demuxer, "Unhandled stream group type %d (index %u)\n",
                        (int)stg->type, stg->index);
@@ -1320,6 +1379,24 @@ static void handle_stream_groups(demuxer_t *demuxer)
     }
 }
 #endif
+
+static void detect_dovi_split_streams(demuxer_t *demuxer)
+{
+    lavf_priv_t *priv = demuxer->priv;
+    int snapshot_count = priv->num_streams;
+    for (int n = 0; n < snapshot_count; n++) {
+        struct stream_info *info = priv->streams[n];
+        struct sh_stream *sh = info ? info->sh : NULL;
+        if (!sh || sh->type != STREAM_VIDEO || !sh->codec || sh->group)
+            continue;
+        if (sh->codec->dv_profile == 5 && sh->codec->codec &&
+            !strcmp(sh->codec->codec, "hevc"))
+            sh->codec->dovi_layer = 1;
+        if (!sh->codec->dv_el_present)
+            continue;
+        info->dovi_split = mp_dovi_split_create(demuxer, sh);
+    }
+}
 
 static int demux_open_lavf(demuxer_t *demuxer, enum demux_check check)
 {
@@ -1503,6 +1580,7 @@ static int demux_open_lavf(demuxer_t *demuxer, enum demux_check check)
 #if LIBAVFORMAT_VERSION_INT >= AV_VERSION_INT(60, 19, 100)
     handle_stream_groups(demuxer);
 #endif
+    detect_dovi_split_streams(demuxer);
 
     mp_tags_move_from_av_dictionary(demuxer->metadata, &avfc->metadata);
 
@@ -1590,6 +1668,13 @@ static bool demux_lavf_read_packet(struct demuxer *demux,
 {
     lavf_priv_t *priv = demux->priv;
 
+    // Companion EL packet queued by the Dolby Vision splitter on a prior call.
+    if (priv->pending_pkt) {
+        *mp_pkt = priv->pending_pkt;
+        priv->pending_pkt = NULL;
+        return true;
+    }
+
     AVPacket *pkt = av_packet_alloc();
     MP_HANDLE_OOM(pkt);
     int r = av_read_frame(priv->avfc, pkt);
@@ -1618,7 +1703,14 @@ static bool demux_lavf_read_packet(struct demuxer *demux,
     struct sh_stream *stream = info->sh;
     AVStream *st = priv->avfc->streams[pkt->stream_index];
 
-    if (!demux_stream_is_selected(stream)) {
+    // Keep BL packets flowing to feed the Dolby Vision splitter when its
+    // virtual EL is selected, even if the BL itself isn't selected. The
+    // unselected BL dp gets discarded by the demuxer queue downstream.
+    struct sh_stream *split_el = info->dovi_split
+                                    ? mp_dovi_split_el_stream(info->dovi_split)
+                                    : NULL;
+    bool need_for_split = split_el && demux_stream_is_selected(split_el);
+    if (!demux_stream_is_selected(stream) && !need_for_split) {
         av_packet_free(&pkt);
         return true; // don't signal EOF if skipping a packet
     }
@@ -1680,6 +1772,13 @@ static bool demux_lavf_read_packet(struct demuxer *demux,
         }
     }
 
+    // Dispatch the EL view of this packet via the splitter.
+    if (info->dovi_split) {
+        struct sh_stream *el = mp_dovi_split_el_stream(info->dovi_split);
+        if (el && demux_stream_is_selected(el))
+            priv->pending_pkt = mp_dovi_split_dispatch(info->dovi_split, dp);
+    }
+
     if (st->event_flags & AVSTREAM_EVENT_FLAG_METADATA_UPDATED) {
         st->event_flags = 0;
         struct mp_tags *tags = talloc_zero(NULL, struct mp_tags);
@@ -1692,6 +1791,16 @@ static bool demux_lavf_read_packet(struct demuxer *demux,
     return true;
 }
 
+static void reset_dovi_split_state(demuxer_t *demuxer)
+{
+    lavf_priv_t *priv = demuxer->priv;
+    TA_FREEP(&priv->pending_pkt);
+    for (int n = 0; n < priv->num_streams; n++) {
+        if (priv->streams[n] && priv->streams[n]->dovi_split)
+            mp_dovi_split_reset(priv->streams[n]->dovi_split);
+    }
+}
+
 static void demux_drop_buffers_lavf(demuxer_t *demuxer)
 {
     lavf_priv_t *priv = demuxer->priv;
@@ -1700,6 +1809,7 @@ static void demux_drop_buffers_lavf(demuxer_t *demuxer)
     stream_drop_buffers(priv->stream);
     avio_flush(priv->avfc->pb);
     avformat_flush(priv->avfc);
+    reset_dovi_split_state(demuxer);
 }
 
 static void demux_seek_lavf(demuxer_t *demuxer, double seek_pts, int flags)
@@ -1783,6 +1893,7 @@ static void demux_seek_lavf(demuxer_t *demuxer, double seek_pts, int flags)
         av_strerror(r, buf, sizeof(buf));
         MP_VERBOSE(demuxer, "Seek failed (%s)\n", buf);
     }
+    reset_dovi_split_state(demuxer);
 
     update_read_stats(demuxer);
 }
@@ -1814,9 +1925,9 @@ static void demux_close_lavf(demuxer_t *demuxer)
         av_freep(&priv->pb);
         for (int n = 0; n < priv->num_streams; n++) {
             struct stream_info *info = priv->streams[n];
-            if (info->sh)
-                avcodec_parameters_free(&info->sh->codec->lav_codecpar);
+            TA_FREEP(&info->dovi_split);
         }
+        TA_FREEP(&priv->pending_pkt);
         if (priv->own_stream)
             free_stream(priv->stream);
         if (priv->av_opts)

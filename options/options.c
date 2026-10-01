@@ -210,7 +210,7 @@ static const m_option_t mp_vo_opt_list[] = {
 #endif
 #if HAVE_WAYLAND
     {"wayland-configure-bounds", OPT_CHOICE(wl_configure_bounds,
-        {"auto", -1}, {"no", 0}, {"yes", 1})},
+        {"auto", -1}, {"no", 0}, {"yes", 1}, {"sdr", 2})},
     {"wayland-content-type", OPT_CHOICE(wl_content_type, {"auto", -1}, {"none", 0},
         {"photo", 1}, {"video", 2}, {"game", 3})},
     {"wayland-disable-vsync", OPT_BOOL(wl_disable_vsync),
@@ -252,6 +252,9 @@ static const m_option_t mp_vo_opt_list[] = {
     {"android-surface-size", OPT_SIZE_BOX(android_surface_size)},
     {"android-frame-rate-switch", OPT_CHOICE(android_frame_rate_switch,
         {"no", 0}, {"seamless", 1}, {"always", 2})},
+    {"android-dovi-tonemap", OPT_CHOICE(android_dovi_tonemap,
+        {"auto", -1}, {"no", 0}, {"yes", 1}, {"sdr", 2})},
+    {"android-display-peak", OPT_FLOAT(android_display_peak), M_RANGE(0, 10000)},
 #endif
 #if HAVE_D3D11
     {"d3d11-composition-size", OPT_SIZE_BOX(d3d11_composition_size)},
@@ -278,6 +281,7 @@ const struct m_sub_options vo_sub_opts = {
         .keepaspect_window = true,
         .native_fs = true,
         .android_frame_rate_switch = 1,
+        .android_dovi_tonemap = -1,
         .taskbar_progress = true,
         .show_in_taskbar = true,
         .border = true,
@@ -1030,6 +1034,7 @@ static const struct MPOpts mp_default_opts = {
     .stop_screensaver = 1,
     .cursor_autohide_delay = 1000,
     .video_osd = true,
+    .audio_ac3_transcode = HAVE_ANDROID ? 2 : 0,
     .osd_level = 1,
     .osd_on_seek = 1,
     .osd_duration = 1000,

@@ -37,6 +37,9 @@
 #include "video/mp_image.h"
 #include "video/hwdec.h"
 #include "android_common.h"
+#if HAVE_ANDROID_FEL
+#include "android_fel.h"
+#endif
 
 #define EARLY_SCHEDULING_THRESHOLD_NS INT64_C(50000000)
 #define LATE_THRESHOLD_NS INT64_C(-30000000)
@@ -129,6 +132,7 @@ struct priv {
     float media_frame_rate;
     float surface_frame_rate;
     struct osd_layer osd;
+    struct android_fel *fel;
 };
 
 static int64_t monotonic_ns(void)
@@ -634,6 +638,11 @@ static AVBufferRef *create_mediacodec_device_ref(struct vo *vo)
     return device_ref;
 }
 
+static void load_hwdec_api(void *ctx, struct hwdec_imgfmt_request *params)
+{
+    vo_control(ctx, VOCTRL_LOAD_HWDEC_API, params);
+}
+
 static int preinit(struct vo *vo)
 {
     struct priv *p = vo->priv;
@@ -654,6 +663,10 @@ static int preinit(struct vo *vo)
     }
 
     hwdec_devices_add(vo->hwdec_devs, &p->hwctx);
+#if HAVE_ANDROID_FEL
+    p->fel = android_fel_create(vo);
+    hwdec_devices_set_loader(vo->hwdec_devs, load_hwdec_api, vo);
+#endif
     release_reset(&p->release);
     p->started = true;
     vsync_start(vo, &p->vsync);
@@ -680,10 +693,20 @@ static void flip_page(struct vo *vo)
     }
 
     AVMediaCodecBuffer *buffer = (AVMediaCodecBuffer *)p->next_image->planes[3];
-    int err;
+    bool fel = false;
+#if HAVE_ANDROID_FEL
+    fel = android_fel_active(p->fel);
+#endif
+    int err = 0;
     int64_t present_ns = 0;
     if (p->next_image_pts <= 0 || !p->first_frame_rendered) {
-        err = av_mediacodec_release_buffer(buffer, 1);
+        if (fel) {
+#if HAVE_ANDROID_FEL
+            android_fel_render(p->fel, p->next_image, 0, false);
+#endif
+        } else {
+            err = av_mediacodec_release_buffer(buffer, 1);
+        }
     } else {
         int64_t now = monotonic_ns();
         int64_t early = p->next_image_pts - mp_time_ns();
@@ -692,7 +715,16 @@ static void flip_page(struct vo *vo)
         int64_t release = adjust_release_time(p, now + early, pts_us,
                                               p->next_frame_duration_ns,
                                               p->frame_index);
-        if (release - now < LATE_THRESHOLD_NS) {
+        if (fel) {
+#if HAVE_ANDROID_FEL
+            bool drop = release - now < LATE_THRESHOLD_NS;
+            android_fel_render(p->fel, p->next_image, release, drop);
+            if (drop)
+                vo_increment_drop_count(vo, 1);
+            else
+                present_ns = release;
+#endif
+        } else if (release - now < LATE_THRESHOLD_NS) {
             err = av_mediacodec_release_buffer(buffer, 0);
             vo_increment_drop_count(vo, 1);
         } else {
@@ -752,6 +784,17 @@ static int control(struct vo *vo, uint32_t request, void *data)
 {
     struct priv *p = vo->priv;
     switch (request) {
+#if HAVE_ANDROID_FEL
+    case VOCTRL_LOAD_HWDEC_API: {
+        struct hwdec_imgfmt_request *req = data;
+        if (req->driver && !strncmp(req->driver, "mediacodec_fel", 14)) {
+            android_fel_select(p->fel, true);
+        } else if (req->imgfmt == IMGFMT_MEDIACODEC && !req->probing) {
+            android_fel_select(p->fel, false);
+        }
+        return VO_TRUE;
+    }
+#endif
     case VOCTRL_RESET:
         release_reset(&p->release);
         p->first_frame_rendered = false;
@@ -801,6 +844,10 @@ static void uninit(struct vo *vo)
     vsync_stop(&p->vsync);
     p->started = false;
     update_surface_frame_rate(vo, true);
+#if HAVE_ANDROID_FEL
+    hwdec_devices_set_loader(vo->hwdec_devs, NULL, NULL);
+    android_fel_destroy(p->fel);
+#endif
     hwdec_devices_remove(vo->hwdec_devs, &p->hwctx);
     av_buffer_unref(&p->hwctx.av_device_ref);
     vo_android_uninit(vo);

@@ -21,6 +21,7 @@
 #include <math.h>
 #include <assert.h>
 #include <limits.h>
+#include <stdatomic.h>
 
 #include "demux/demux.h"
 #include "demux/packet_pool.h"
@@ -52,6 +53,9 @@ static const struct sd_functions *const sd_list[] = {
 struct dec_sub {
     mp_mutex lock;
 
+    struct mp_image_params video_params;
+    bool check_animated;
+
     struct mp_log *log;
     struct mpv_global *global;
     struct demux_packet_pool *packet_pool;
@@ -68,7 +72,7 @@ struct dec_sub {
     int play_dir;
     int order;
     double last_pkt_pts;
-    bool preload_attempted;
+    atomic_bool preload_attempted;
     double video_fps;
     double sub_speed;
     bool sub_visible;
@@ -247,6 +251,11 @@ static void update_segment(struct dec_sub *sub)
             talloc_free(sub->sd);
             sub->sd = new;
             update_subtitle_speed(sub);
+            if (new->driver->control) {
+                if (sub->video_params.imgfmt)
+                    new->driver->control(new, SD_CTRL_SET_VIDEO_PARAMS, &sub->video_params);
+                new->driver->control(new, SD_CTRL_SET_ANIMATED_CHECK, &sub->check_animated);
+            }
         } else {
             // We'll just keep the current decoder, and feed it possibly
             // invalid data (not our fault if it crashes or something).
@@ -260,11 +269,8 @@ static void update_segment(struct dec_sub *sub)
 
 bool sub_can_preload(struct dec_sub *sub)
 {
-    bool r;
-    mp_mutex_lock(&sub->lock);
-    r = sub->sd->driver->accept_packets_in_advance && !sub->preload_attempted;
-    mp_mutex_unlock(&sub->lock);
-    return r;
+    return sub->sd->driver->accept_packets_in_advance &&
+           !atomic_load(&sub->preload_attempted);
 }
 
 void sub_preload(struct dec_sub *sub)
@@ -346,7 +352,9 @@ void sub_read_packets(struct dec_sub *sub, double video_pts, bool force,
                       bool *packets_read, bool *sub_updated)
 {
     *packets_read = true;
-    mp_mutex_lock(&sub->lock);
+    *sub_updated = false;
+    if (mp_mutex_trylock(&sub->lock))
+        return;
     video_pts = pts_to_subtitle(sub, video_pts);
     while (1) {
         bool read_more = true;
@@ -542,6 +550,14 @@ int sub_control(struct dec_sub *sub, enum sd_ctrl cmd, void *arg)
         }
         break;
     }
+    case SD_CTRL_SET_VIDEO_PARAMS:
+        sub->video_params = *(struct mp_image_params *)arg;
+        propagate = true;
+        break;
+    case SD_CTRL_SET_ANIMATED_CHECK:
+        sub->check_animated = *(bool *)arg;
+        propagate = true;
+        break;
     default:
         propagate = true;
     }

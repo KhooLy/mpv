@@ -176,7 +176,7 @@ enum {
     MP_JNI_HDR_HDR10_PLUS = 1 << 4,
 };
 
-int mp_jni_display_hdr_types(struct mp_log *log);
+int mp_jni_display_hdr_types(struct mp_log *log, float *peak);
 bool mp_jni_display_supports_dolby_vision(struct mp_log *log);
 
 struct mp_jni_video_caps {

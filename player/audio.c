@@ -115,7 +115,7 @@ static bool want_ac3_transcode(struct MPContext *mpctx)
 #if HAVE_ANDROID
         struct mp_jni_audio_caps caps;
         mp_jni_audio_caps(mpctx->log, &caps);
-        return caps.ac3 && caps.max_channels <= 2;
+        return caps.ac3 && (caps.max_channels <= 2 || !(caps.dts || caps.dtshd));
 #endif
     }
     }
@@ -144,6 +144,7 @@ static int recreate_audio_filters(struct MPContext *mpctx)
     if (opts->audio_stable_volume)
         pre[num_pre++] = stable;
     bool transcode = want_ac3_transcode(mpctx);
+    ao_c->transcode = NULL;
 
     struct m_obj_settings *list = opts->af_settings;
     if (num_pre || transcode) {
@@ -164,6 +165,7 @@ static int recreate_audio_filters(struct MPContext *mpctx)
         while (list[num].name)
             num++;
         bool eac3 = opts->audio_ac3_transcode == 3;
+        ao_c->transcode = eac3 ? "eac3" : "ac3";
         static char *eac3_attribs[] = {"encoder", "eac3", NULL};
         list[num] = (struct m_obj_settings){.name = "lavcac3enc", .enabled = true,
                                             .attribs = eac3 ? eac3_attribs : NULL};

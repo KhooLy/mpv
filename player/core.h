@@ -140,6 +140,8 @@ struct track {
 
     // Current subtitle state (or cached state if selected==false).
     struct dec_sub *d_sub;
+    struct mp_image_params sub_video_params;
+    int sub_still_image;
 
     /* Heuristic for potentially redrawing subs. */
     bool redraw_subs;
@@ -188,6 +190,7 @@ struct ao_chain {
     struct MPContext *mpctx;
 
     bool spdif_passthrough, spdif_failed, spdif_strict;
+    const char *transcode;
 
     struct mp_output_chain *filter;
 
@@ -280,6 +283,7 @@ typedef struct MPContext {
     double osd_last_update;
     bool osd_force_update, osd_idle_update;
     char *osd_msg_text;
+    char *osd_text_sent;
     bool osd_show_pos;
     struct osd_progbar_state osd_progbar;
 
@@ -603,6 +607,7 @@ struct track *select_default_track(struct MPContext *mpctx, int order,
                                    enum stream_type type);
 void prefetch_next(struct MPContext *mpctx);
 void update_lavfi_complex(struct MPContext *mpctx);
+void update_vo_chain_el_pair(struct MPContext *mpctx);
 
 // main.c
 int mp_initialize(struct MPContext *mpctx, char **argv);

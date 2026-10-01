@@ -101,6 +101,16 @@ struct cache {
     pl_cache cache;
 };
 
+// Mapping state of single hwdec frame.
+struct hwdec_slot {
+    struct ra_hwdec_mapper *mapper;
+    struct timer_pool *timer;
+    struct mp_pass_perf perf;
+    struct mp_image *owner;   // queue entry image that owns the mapping
+    bool acquired;            // between acquire and release of a render pass
+    pl_tex tex[4];            // plane textures of the current mapping
+};
+
 struct priv {
     struct mp_log *log;
 #if HAVE_ANDROID
@@ -111,9 +121,8 @@ struct priv {
     struct ra_ctx *ra_ctx;
     struct gpu_ctx *context;
     struct ra_hwdec_ctx hwdec_ctx;
-    struct ra_hwdec_mapper *hwdec_mapper;
-    struct timer_pool *hwdec_timer;
-    struct mp_pass_perf hwdec_perf;
+    struct hwdec_slot hwdec;
+    struct hwdec_slot el_hwdec;
     struct timer_pool *sw_upload_timer;
     struct mp_pass_perf sw_upload_perf;
 
@@ -449,6 +458,10 @@ struct frame_priv {
     struct osd_state subs;
     uint64_t osd_sync;
     struct ra_hwdec *hwdec;
+    // Optional Dolby Vision FEL.
+    struct ra_hwdec *el_hwdec;
+    pl_tex el_tex[4];
+    struct pl_frame el_frame;
 };
 
 static int plane_data_from_imgfmt(struct pl_plane_data out_data[4],
@@ -544,38 +557,70 @@ static int plane_data_from_imgfmt(struct pl_plane_data out_data[4],
     return desc.num_planes;
 }
 
-static bool hwdec_reconfig(struct priv *p, struct ra_hwdec *hwdec,
-                           const struct mp_image_params *par)
+static void slot_unmap(struct priv *p, struct hwdec_slot *s)
 {
-    if (p->hwdec_mapper) {
-        if (mp_image_params_static_equal(par, &p->hwdec_mapper->src_params)) {
-            p->hwdec_mapper->src_params.repr.dovi = par->repr.dovi;
-            p->hwdec_mapper->dst_params.repr.dovi = par->repr.dovi;
-            p->hwdec_mapper->src_params.color.hdr = par->color.hdr;
-            p->hwdec_mapper->dst_params.color.hdr = par->color.hdr;
-            return p->hwdec_mapper;
-        } else {
-            ra_hwdec_mapper_free(&p->hwdec_mapper);
-            timer_pool_destroy(p->hwdec_timer);
-            p->hwdec_timer = NULL;
-        }
+    mp_assert(!s->acquired);
+    if (!s->mapper)
+        return;
+    // For RAs not based on ra_pl the plane textures are wrappers we created.
+    if (!ra_pl_get(s->mapper->ra)) {
+        for (int n = 0; n < MP_ARRAY_SIZE(s->tex); n++)
+            pl_tex_destroy(p->gpu, &s->tex[n]);
     }
-
-    p->hwdec_mapper = ra_hwdec_mapper_create(hwdec, par);
-    if (!p->hwdec_mapper) {
-        MP_ERR(p, "Initializing texture for hardware decoding failed.\n");
-        return NULL;
-    }
-    p->hwdec_timer = timer_pool_create(p->ra_ctx->ra);
-
-    return p->hwdec_mapper;
+    memset(s->tex, 0, sizeof(s->tex));
+    ra_hwdec_mapper_unmap(s->mapper);
+    s->owner = NULL;
 }
 
-// For RAs not based on ra_pl, this creates a new pl_tex wrapper
-static pl_tex hwdec_get_tex(struct priv *p, int n)
+static bool slot_reconfig(struct priv *p, struct hwdec_slot *s,
+                          struct ra_hwdec *hwdec,
+                          const struct mp_image_params *par)
 {
-    struct ra_tex *ratex = p->hwdec_mapper->tex[n];
-    struct ra *ra = p->hwdec_mapper->ra;
+    if (s->mapper) {
+        if (mp_image_params_static_equal(par, &s->mapper->src_params)) {
+            s->mapper->src_params.repr.dovi = par->repr.dovi;
+            s->mapper->dst_params.repr.dovi = par->repr.dovi;
+            s->mapper->src_params.color.hdr = par->color.hdr;
+            s->mapper->dst_params.color.hdr = par->color.hdr;
+            return true;
+        }
+        slot_unmap(p, s);
+        ra_hwdec_mapper_free(&s->mapper);
+        timer_pool_destroy(s->timer);
+        s->timer = NULL;
+    }
+
+    s->mapper = ra_hwdec_mapper_create(hwdec, par);
+    if (!s->mapper) {
+        MP_ERR(p, "Initializing texture for hardware decoding failed.\n");
+        return false;
+    }
+    s->timer = timer_pool_create(p->ra_ctx->ra);
+
+    return true;
+}
+
+// The queue dropped this entry. Release the mapping if the entry owns it.
+static void slot_release_owner(struct priv *p, struct hwdec_slot *s,
+                               struct mp_image *owner)
+{
+    if (s->owner == owner)
+        slot_unmap(p, s);
+}
+
+static void slot_uninit(struct priv *p, struct hwdec_slot *s)
+{
+    slot_unmap(p, s);
+    ra_hwdec_mapper_free(&s->mapper);
+    timer_pool_destroy(s->timer);
+    s->timer = NULL;
+}
+
+// For RAs not based on ra_pl, this creates a new pl_tex wrapper.
+static pl_tex hwdec_get_tex(struct priv *p, struct ra_hwdec_mapper *mapper, int n)
+{
+    struct ra_tex *ratex = mapper->tex[n];
+    struct ra *ra = mapper->ra;
     if (ra_pl_get(ra))
         return (pl_tex) ratex->priv;
 
@@ -613,36 +658,89 @@ static pl_tex hwdec_get_tex(struct priv *p, int n)
     return NULL;
 }
 
+// Fill `frame->num_planes` and per-plane component_mapping from an
+// hwdec-mapped imgfmt description.
+static void setup_hwdec_plane_mapping(struct pl_frame *frame,
+                                      const struct mp_imgfmt_desc *desc)
+{
+    frame->num_planes = desc->num_planes;
+    for (int n = 0; n < frame->num_planes; n++) {
+        struct pl_plane *plane = &frame->planes[n];
+        int *map = plane->component_mapping;
+        for (int c = 0; c < mp_imgfmt_desc_get_num_comps(desc); c++) {
+            if (desc->comps[c].plane != n)
+                continue;
+            // Sort by component offset
+            uint8_t offset = desc->comps[c].offset;
+            int index = plane->components++;
+            while (index > 0 && desc->comps[map[index - 1]].offset > offset) {
+                map[index] = map[index - 1];
+                index--;
+            }
+            map[index] = c;
+        }
+    }
+}
+
+static bool slot_acquire(struct priv *p, struct hwdec_slot *s,
+                         struct mp_image *owner, struct mp_image *mpi,
+                         struct pl_frame *frame)
+{
+    if (s->owner != owner) {
+        // With one frame per role acquired at a time the previous owner is
+        // not in use and can be evicted. Interlaced sources would break this
+        // (prev and next are acquired alongside the image), see hwdec_slot.
+        if (s->acquired) {
+            MP_ERR(p, "Hardware frame of this role is still in use.\n");
+            return false;
+        }
+        slot_unmap(p, s);
+
+        stats_time_start(p->stats, "hwdec-map");
+        timer_pool_start(s->timer);
+        int ret = ra_hwdec_mapper_map(s->mapper, mpi);
+        timer_pool_stop(s->timer);
+        stats_time_end(p->stats, "hwdec-map");
+        if (ret < 0) {
+            MP_ERR(p, "Mapping hardware decoded surface failed.\n");
+            return false;
+        }
+        s->perf = timer_pool_measure(s->timer);
+        s->owner = owner;
+    }
+
+    if (ra_hwdec_mapper_begin_access(s->mapper) < 0)
+        return false;
+    // Set before handing out textures so that the release libplacebo issues
+    // after a failed acquire ends the access again.
+    s->acquired = true;
+
+    for (int n = 0; n < frame->num_planes; n++) {
+        if (!s->tex[n])
+            s->tex[n] = hwdec_get_tex(p, s->mapper, n);
+        if (!s->tex[n])
+            return false;
+        frame->planes[n].texture = s->tex[n];
+    }
+
+    return true;
+}
+
+static void slot_release(struct hwdec_slot *s)
+{
+    if (!s->acquired)
+        return;
+    ra_hwdec_mapper_end_access(s->mapper);
+    s->acquired = false;
+}
+
 static bool hwdec_acquire(pl_gpu gpu, struct pl_frame *frame)
 {
     struct mp_image *mpi = frame->user_data;
     struct frame_priv *fp = mpi->priv;
     struct priv *p = fp->vo->priv;
-    if (!hwdec_reconfig(p, fp->hwdec, &mpi->params))
-        return false;
-
-    stats_time_start(p->stats, "hwdec-map");
-    timer_pool_start(p->hwdec_timer);
-    if (ra_hwdec_mapper_map(p->hwdec_mapper, mpi) < 0) {
-        MP_ERR(p, "Mapping hardware decoded surface failed.\n");
-        timer_pool_stop(p->hwdec_timer);
-        stats_time_end(p->stats, "hwdec-map");
-        return false;
-    }
-
-    for (int n = 0; n < frame->num_planes; n++) {
-        if (!(frame->planes[n].texture = hwdec_get_tex(p, n))) {
-            timer_pool_stop(p->hwdec_timer);
-            stats_time_end(p->stats, "hwdec-map");
-            return false;
-        }
-    }
-
-    timer_pool_stop(p->hwdec_timer);
-    p->hwdec_perf = timer_pool_measure(p->hwdec_timer);
-    stats_time_end(p->stats, "hwdec-map");
-
-    return true;
+    return slot_reconfig(p, &p->hwdec, fp->hwdec, &mpi->params) &&
+           slot_acquire(p, &p->hwdec, mpi, mpi, frame);
 }
 
 static void hwdec_release(pl_gpu gpu, struct pl_frame *frame)
@@ -650,13 +748,29 @@ static void hwdec_release(pl_gpu gpu, struct pl_frame *frame)
     struct mp_image *mpi = frame->user_data;
     struct frame_priv *fp = mpi->priv;
     struct priv *p = fp->vo->priv;
-    if (!ra_pl_get(p->hwdec_mapper->ra)) {
-        for (int n = 0; n < frame->num_planes; n++)
-            pl_tex_destroy(p->gpu, &frame->planes[n].texture);
-    }
-
-    ra_hwdec_mapper_unmap(p->hwdec_mapper);
+    slot_release(&p->hwdec);
 }
+
+#if PL_API_VER >= 367
+static bool hwdec_acquire_el(pl_gpu gpu, struct pl_frame *frame)
+{
+    struct mp_image *bl_mpi = frame->user_data;
+    struct mp_image *el_mpi = bl_mpi->enhancement_layer;
+    struct frame_priv *fp = bl_mpi->priv;
+    struct priv *p = fp->vo->priv;
+    // The EL image belongs to the BL queue entry, which therefore owns the slot.
+    return slot_reconfig(p, &p->el_hwdec, fp->el_hwdec, &el_mpi->params) &&
+           slot_acquire(p, &p->el_hwdec, bl_mpi, el_mpi, frame);
+}
+
+static void hwdec_release_el(pl_gpu gpu, struct pl_frame *frame)
+{
+    struct mp_image *bl_mpi = frame->user_data;
+    struct frame_priv *fp = bl_mpi->priv;
+    struct priv *p = fp->vo->priv;
+    slot_release(&p->el_hwdec);
+}
+#endif
 
 static bool format_supported(struct vo *vo, int format, bool use_uint)
 {
@@ -670,6 +784,59 @@ static bool format_supported(struct vo *vo, int format, bool use_uint)
     for (int i = 0; i < planes; i++) {
         if (!pl_plane_find_fmt(p->gpu, NULL, &data[i]))
             return false;
+    }
+
+    return true;
+}
+
+static bool upload_planes_sw(struct vo *vo, pl_gpu gpu, struct mp_image *mpi,
+                             struct pl_frame *frame, pl_tex tex[4])
+{
+    struct priv *p = vo->priv;
+    struct pl_plane_data data[4] = {0};
+
+    // At this point, we know that the format is supported, query_format()
+    // makes sure of that. Just check if we should use UINT as a fallback.
+    bool use_uint = !format_supported(vo, mpi->imgfmt, false);
+    int planes = plane_data_from_imgfmt(data, &frame->repr.bits, mpi->imgfmt,
+                                        use_uint);
+    if (!planes)
+        return false;
+
+    frame->num_planes = planes;
+    for (int n = 0; n < planes; n++) {
+        struct pl_plane *plane = &frame->planes[n];
+        data[n].width = mp_image_plane_w(mpi, n);
+        data[n].height = mp_image_plane_h(mpi, n);
+        if (mpi->stride[n] < 0) {
+            data[n].pixels = mpi->planes[n] + (data[n].height - 1) * mpi->stride[n];
+            data[n].row_stride = -mpi->stride[n];
+            plane->flipped = true;
+        } else {
+            data[n].pixels = mpi->planes[n];
+            data[n].row_stride = mpi->stride[n];
+        }
+
+        pl_buf buf = get_dr_buf(p, data[n].pixels);
+        if (buf) {
+            data[n].buf = buf;
+            data[n].buf_offset = (uint8_t *) data[n].pixels - buf->data;
+            data[n].pixels = NULL;
+        }
+        // Keep the image alive until it's fully read.
+        if (gpu->limits.callbacks) {
+            data[n].callback = talloc_free;
+            data[n].priv = mp_image_new_ref(mpi);
+        }
+
+        if (!pl_upload_plane(gpu, plane, &tex[n], &data[n])) {
+            talloc_free(data[n].priv);
+            return false;
+        }
+
+        // Without async callback support, we have to poll...
+        if (!gpu->limits.callbacks && data[n].buf)
+            while (pl_buf_poll(gpu, data[n].buf, UINT64_MAX));
     }
 
     return true;
@@ -690,12 +857,12 @@ static bool map_frame(pl_gpu gpu, pl_tex *tex, const struct pl_source_frame *src
         // only reconfig the mapper here (potentially creating it) to access
         // `dst_params`. In practice, though, this should not matter unless the
         // image format changes mid-stream.
-        if (!hwdec_reconfig(p, fp->hwdec, &mpi->params)) {
+        if (!slot_reconfig(p, &p->hwdec, fp->hwdec, &mpi->params)) {
             talloc_free(mpi);
             return false;
         }
 
-        par = p->hwdec_mapper->dst_params;
+        par = p->hwdec.mapper->dst_params;
     }
 
     mp_image_params_guess_csp(&par);
@@ -728,90 +895,70 @@ static bool map_frame(pl_gpu gpu, pl_tex *tex, const struct pl_source_frame *src
         struct mp_imgfmt_desc desc = mp_imgfmt_get_desc(par.imgfmt);
         frame->acquire = hwdec_acquire;
         frame->release = hwdec_release;
-        frame->num_planes = desc.num_planes;
-        for (int n = 0; n < frame->num_planes; n++) {
-            struct pl_plane *plane = &frame->planes[n];
-            int *map = plane->component_mapping;
-            for (int c = 0; c < mp_imgfmt_desc_get_num_comps(&desc); c++) {
-                if (desc.comps[c].plane != n)
-                    continue;
-
-                // Sort by component offset
-                uint8_t offset = desc.comps[c].offset;
-                int index = plane->components++;
-                while (index > 0 && desc.comps[map[index - 1]].offset > offset) {
-                    map[index] = map[index - 1];
-                    index--;
-                }
-                map[index] = c;
-            }
-        }
-
+        setup_hwdec_plane_mapping(frame, &desc);
     } else { // swdec
-        p->hwdec_perf.count = 0;
+        p->hwdec.perf.count = 0;
 
         if (!p->sw_upload_timer)
             p->sw_upload_timer = timer_pool_create(p->ra_ctx->ra);
 
-        struct pl_plane_data data[4] = {0};
-        bool use_uint = false;
-
-        // At this point, we know that the format is supported, query_format()
-        // makes sure of that. Just check if we should use UINT as a fallback.
-        if (!format_supported(vo, mpi->imgfmt, false))
-            use_uint = true;
-
-        frame->num_planes = plane_data_from_imgfmt(data, &frame->repr.bits, mpi->imgfmt, use_uint);
         stats_time_start(p->stats, "swdec-upload");
         timer_pool_start(p->sw_upload_timer);
-        for (int n = 0; n < frame->num_planes; n++) {
-            struct pl_plane *plane = &frame->planes[n];
-            data[n].width = mp_image_plane_w(mpi, n);
-            data[n].height = mp_image_plane_h(mpi, n);
-            if (mpi->stride[n] < 0) {
-                data[n].pixels = mpi->planes[n] + (data[n].height - 1) * mpi->stride[n];
-                data[n].row_stride = -mpi->stride[n];
-                plane->flipped = true;
-            } else {
-                data[n].pixels = mpi->planes[n];
-                data[n].row_stride = mpi->stride[n];
-            }
-
-            pl_buf buf = get_dr_buf(p, data[n].pixels);
-            if (buf) {
-                data[n].buf = buf;
-                data[n].buf_offset = (uint8_t *) data[n].pixels - buf->data;
-                data[n].pixels = NULL;
-            }
-            // Keep the image alive until it's fully read.
-            if (gpu->limits.callbacks) {
-                mp_assert(!data[n].callback);
-                data[n].callback = talloc_free;
-                mp_assert(!data[n].priv);
-                data[n].priv = mp_image_new_ref(mpi);
-            }
-
-            if (!pl_upload_plane(gpu, plane, &tex[n], &data[n])) {
-                MP_ERR(vo, "Failed uploading frame!\n");
-                timer_pool_stop(p->sw_upload_timer);
-                stats_time_end(p->stats, "swdec-upload");
-                talloc_free(data[n].priv);
-                talloc_free(mpi);
-                return false;
-            }
-
-            // Without async callback support, we have to poll...
-            if (!gpu->limits.callbacks && data[n].buf)
-                while (pl_buf_poll(gpu, data[n].buf, UINT64_MAX));
-        }
+        bool ok = upload_planes_sw(vo, gpu, mpi, frame, tex);
         timer_pool_stop(p->sw_upload_timer);
-        p->sw_upload_perf = timer_pool_measure(p->sw_upload_timer);
         stats_time_end(p->stats, "swdec-upload");
-
+        if (!ok) {
+            MP_ERR(vo, "Failed uploading frame!\n");
+            talloc_free(mpi);
+            return false;
+        }
+        p->sw_upload_perf = timer_pool_measure(p->sw_upload_timer);
     }
 
     // Update chroma location, must be done after initializing planes
     pl_frame_set_chroma_location(frame, par.chroma_location);
+
+#if PL_API_VER >= 367
+    if (mpi->enhancement_layer) {
+        struct mp_image *el = mpi->enhancement_layer;
+        fp->el_hwdec = ra_hwdec_get(&p->hwdec_ctx, el->imgfmt);
+
+        struct mp_image_params el_par = el->params;
+        bool el_ok = true;
+        if (fp->el_hwdec) {
+            if (slot_reconfig(p, &p->el_hwdec, fp->el_hwdec, &el->params)) {
+                el_par = p->el_hwdec.mapper->dst_params;
+            } else {
+                fp->el_hwdec = NULL;
+                el_ok = false;
+            }
+        }
+        mp_image_params_guess_csp(&el_par);
+
+        fp->el_frame = (struct pl_frame) {
+            .color = el_par.color,
+            .repr  = el_par.repr,
+            .user_data = mpi, // BL mpi
+        };
+
+        if (el_ok && fp->el_hwdec) {
+            struct mp_imgfmt_desc desc = mp_imgfmt_get_desc(el_par.imgfmt);
+            fp->el_frame.acquire = hwdec_acquire_el;
+            fp->el_frame.release = hwdec_release_el;
+            setup_hwdec_plane_mapping(&fp->el_frame, &desc);
+        } else if (el_ok) {
+            el_ok = upload_planes_sw(vo, gpu, el, &fp->el_frame, fp->el_tex);
+        }
+
+        if (el_ok) {
+            pl_frame_set_chroma_location(&fp->el_frame, el_par.chroma_location);
+            frame->enhancement_layer = &fp->el_frame;
+        } else {
+            MP_WARN(vo, "Failed setting up enhancement layer; "
+                    "rendering base layer only.\n");
+        }
+    }
+#endif
 
     if (mpi->film_grain)
         pl_film_grain_from_av(&frame->film_grain, (AVFilmGrainParams *) mpi->film_grain->data);
@@ -840,6 +987,12 @@ static void unmap_frame(pl_gpu gpu, struct pl_frame *frame,
         if (tex)
             MP_TARRAY_APPEND(p, p->sub_tex, p->num_sub_tex, tex);
     }
+    for (int i = 0; i < MP_ARRAY_SIZE(fp->el_tex); i++) {
+        if (fp->el_tex[i])
+            pl_tex_destroy(gpu, &fp->el_tex[i]);
+    }
+    slot_release_owner(p, &p->hwdec, mpi);
+    slot_release_owner(p, &p->el_hwdec, mpi);
     talloc_free(mpi);
 }
 
@@ -1922,7 +2075,7 @@ static int control(struct vo *vo, uint32_t request, void *data)
 
     case VOCTRL_PERFORMANCE_DATA: {
         struct voctrl_performance_data *perf = data;
-        copy_frame_info_to_mp(&p->perf_fresh, &perf->fresh, &p->hwdec_perf, &p->sw_upload_perf);
+        copy_frame_info_to_mp(&p->perf_fresh, &perf->fresh, &p->hwdec.perf, &p->sw_upload_perf);
         copy_frame_info_to_mp(&p->perf_redraw, &perf->redraw, NULL, NULL);
         return true;
     }
@@ -2181,8 +2334,8 @@ static void uninit(struct vo *vo)
     timer_pool_destroy(p->sw_upload_timer);
 
     if (vo->hwdec_devs) {
-        ra_hwdec_mapper_free(&p->hwdec_mapper);
-        timer_pool_destroy(p->hwdec_timer);
+        slot_uninit(p, &p->hwdec);
+        slot_uninit(p, &p->el_hwdec);
         ra_hwdec_ctx_uninit(&p->hwdec_ctx);
         hwdec_devices_set_loader(vo->hwdec_devs, NULL, NULL);
         hwdec_devices_destroy(vo->hwdec_devs);

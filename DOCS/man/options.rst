@@ -1880,20 +1880,25 @@ Video
     the number of packets that could not be decoded. Values below an unspecified
     count will not have this problem, because mpv retains the packets.
 
-``--hwdec-dolby-vision=<auto|native|convert|base-layer>``
+``--hwdec-dolby-vision=<auto|native|convert|base-layer|compose>``
     How Dolby Vision is decoded with ``--hwdec=mediacodec`` on Android. Other
     hwdecs and software decoding ignore this.
 
     :auto:       Use the Dolby Vision decoder if the display supports Dolby
                  Vision, and the backward-compatible base layer (HDR10, HLG or
                  SDR) otherwise. Profile 7 is converted to 8.1 when the
-                 decoder only supports profile 8. (Default)
+                 decoder only supports profile 8, and also on displays without
+                 Dolby Vision. (Default)
     :native:     Always use the Dolby Vision decoder with the stream's own
                  profile.
     :convert:    Like ``native``, but always convert profile 7 to 8.1, dropping
                  the enhancement layer. Useful for decoders that claim profile 7
                  but play it badly.
     :base-layer: Always decode the base layer, ignoring Dolby Vision metadata.
+    :compose:    Decode the profile 7 base and enhancement layers as plain HEVC
+                 and compose them on the GPU, applying the RPU reshaping and
+                 the full enhancement layer residual. Needs libdovi and
+                 ``--vo=mediacodec_embed`` with GLES 3 support.
 
     Converting needs mpv built with libdovi; without it, profile 7 falls back
     to the base layer whenever a conversion would be needed. When the device
@@ -2127,6 +2132,7 @@ Audio
     On Android, ``auto`` selects the codecs the current audio output accepts,
     based on the HDMI audio plug state and ``AudioTrack`` direct playback
     queries. If DTS-HD is not supported but DTS is, the DTS core is sent.
+    This is the default on Android.
     With ``--ao=avfoundation``, ``auto`` selects ``ac3,eac3``: the system
     decodes them itself when the output cannot take them, and keeps Dolby
     Atmos for AirPods spatial audio and HDMI receivers.
@@ -2167,9 +2173,11 @@ Audio
     passthrough. This is useful for S/PDIF or HDMI ARC receivers that accept
     AC3 but not multichannel PCM. Audio that is already passed through is not
     affected. ``auto`` enables it on Android when the output accepts AC3 but
-    reports at most 2 PCM channels. ``eac3`` encodes to E-AC3 instead, for
+    reports at most 2 PCM channels, or reports no DTS support. The latter
+    usually means a TV forwarding audio over ARC, which downmixes multichannel
+    PCM to stereo even when its EDID claims more channels. ``eac3`` encodes to E-AC3 instead, for
     outputs that take E-AC3 but not AC3 or multichannel PCM. Requires FFmpeg's
-    ``ac3`` or ``eac3`` encoder (default: no).
+    ``ac3`` or ``eac3`` encoder (default: auto on Android, no elsewhere).
 
 ``--ad=<decoder1,decoder2,...[-]>``
     Specify a priority list of audio decoders to be used, according to their
