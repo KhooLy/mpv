@@ -549,7 +549,7 @@ static int fel_layer(struct mp_filter *vd)
     int mode = ctx->hwdec_opts->dolby_vision;
     if (mode != 4 && (mode || mp_jni_display_supports_dolby_vision(vd->log)))
         return 0;
-    if (c->dovi_layer && (c->dv_profile == 7 || c->dv_profile == 5))
+    if (c->dovi_layer && (c->dv_profile == 5 || (c->dv_profile == 7 && mode == 4)))
         return c->dovi_layer;
     if (!c->dovi || c->dv_el_present || (c->dv_profile != 8 && c->dv_profile != 10))
         return 0;
@@ -1111,7 +1111,7 @@ static int resolve_dovi_mode(struct mp_filter *vd, int profile, int level)
     bool native = dovi_decodable(&caps, profile, level);
     bool p81 = profile == 7 && HAVE_LIBDOVI && dovi_decodable(&caps, 8, level);
     if (!mode) {
-        if (!mp_jni_display_supports_dolby_vision(vd->log)) {
+        if (!mp_jni_display_supports_dolby_vision(vd->log) && !p81) {
             MP_VERBOSE(vd, "Display lacks Dolby Vision; using the base layer.\n");
             return 3;
         }

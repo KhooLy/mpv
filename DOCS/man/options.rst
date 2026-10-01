@@ -1887,9 +1887,8 @@ Video
     :auto:       Use the Dolby Vision decoder if the display supports Dolby
                  Vision, and the backward-compatible base layer (HDR10, HLG or
                  SDR) otherwise. Profile 7 is converted to 8.1 when the
-                 decoder only supports profile 8. On displays without Dolby
-                 Vision, profile 7 is composed like ``compose`` when the VO
-                 supports it. (Default)
+                 decoder only supports profile 8, and also on displays without
+                 Dolby Vision. (Default)
     :native:     Always use the Dolby Vision decoder with the stream's own
                  profile.
     :convert:    Like ``native``, but always convert profile 7 to 8.1, dropping
