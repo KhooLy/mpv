@@ -119,6 +119,15 @@ typedef struct mpv_vulkan_init_params {
     uint32_t queue_transfer_count;
     uint32_t queue_compute_index;
     uint32_t queue_compute_count;
+    /**
+     * Optional. If set, mpv calls these around every use of a queue it was
+     * given, so the caller can serialize against its own submissions to the
+     * same VkQueue. `queue_ctx` is passed back unchanged. Both must be set
+     * together; otherwise mpv uses its own per-queue locking.
+     */
+    void (*lock_queue)(void *ctx, uint32_t queue_family, uint32_t queue_index);
+    void (*unlock_queue)(void *ctx, uint32_t queue_family, uint32_t queue_index);
+    void *queue_ctx;
 } mpv_vulkan_init_params;
 
 /**

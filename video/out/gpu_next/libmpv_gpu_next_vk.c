@@ -81,6 +81,11 @@ static int init(struct render_backend *ctx, mpv_render_param *params)
         },
         .features = init_params->features ? init_params->features
                                           : &pl_vulkan_required_features,
+        .lock_queue = init_params->lock_queue && init_params->unlock_queue
+                          ? init_params->lock_queue : NULL,
+        .unlock_queue = init_params->lock_queue && init_params->unlock_queue
+                            ? init_params->unlock_queue : NULL,
+        .queue_ctx = init_params->queue_ctx,
     ));
     if (!a->vk) {
         mp_err(ctx->log,
