@@ -869,7 +869,9 @@ static void *worker_main(void *arg)
     int bitmaps = sd->opts->sub_bitmap_max_size;
     ass_set_cache_limits(w->renderer, sd->opts->sub_glyph_limit,
                          bitmaps > 0 ? MPMAX(bitmaps / 4, 16) : 32);
+#if HAVE_ASS_RENDER_AHEAD
     ass_set_stateless(w->renderer, 1);
+#endif
     w->packer = mp_sub_packer_alloc(NULL);
 
     mp_mutex_lock(&ctx->mu);
@@ -907,7 +909,11 @@ static void *worker_main(void *arg)
         int changed;
         long long ts = find_timestamp(sd, pts + 5e-5);
         ASS_Image *imgs = ass_render_frame(w->renderer, track, ts, &changed);
+#if HAVE_ASS_RENDER_AHEAD
         bool dep = ass_frame_history_dependent(w->renderer);
+#else
+        bool dep = true;
+#endif
         struct sub_bitmaps *bm = NULL;
         if (!dep) {
             struct sub_bitmaps res = {0};
@@ -962,6 +968,9 @@ static void workers_stop(struct sd *sd)
 static void workers_start(struct sd *sd)
 {
     struct sd_ass_priv *ctx = sd->priv;
+#if !HAVE_ASS_RENDER_AHEAD
+    return;
+#endif
     int want = sd->opts->ass_render_threads;
     if (want < 0) {
         int cpus = 1;
