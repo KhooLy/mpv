@@ -1,0 +1,7 @@
+[wrap-git]
+url = https://github.com/libass/libass.git
+revision = f61db567e6593df3470e91594bcd4ad2d0473aff
+diff_files = libass-fork.patch
+
+[provide]
+dependency_names = libass

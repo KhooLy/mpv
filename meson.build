@@ -30,7 +30,11 @@ libswscale = dependency('libswscale', version: '>= 7.5.100')
 libplacebo = dependency('libplacebo', version: '>=7.360.1',
                 default_options: ['default_library=static', 'demos=false'])
 
-libass = dependency('libass', version: '>= 0.12.2')
+if meson.is_cross_build()
+    libass = dependency('libass', version: '>= 0.12.2')
+else
+    libass = subproject('libass').get_variable('libass_dep')
+endif
 
 # the dependency order of libass -> ffmpeg is necessary due to
 # static linking symbol resolution between fontconfig and MinGW

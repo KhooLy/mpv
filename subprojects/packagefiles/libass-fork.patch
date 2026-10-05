@@ -1,0 +1,472 @@
+diff --git a/libass/ass.c b/libass/ass.c
+index b9ce811..915dbd4 100644
+--- a/libass/ass.c
++++ b/libass/ass.c
+@@ -126,6 +126,8 @@ int ass_alloc_event(ASS_Track *track)
+ 
+     assert(track->n_events <= track->max_events);
+ 
++    track->parser_priv->events_gen++;
++
+     if (track->n_events == track->max_events) {
+         if (track->max_events >= FFMIN(SIZE_MAX, INT_MAX) / 2)
+             return -1;
+@@ -144,6 +146,7 @@ void ass_free_event(ASS_Track *track, int eid)
+ {
+     ASS_Event *event = track->events + eid;
+ 
++    track->parser_priv->events_gen++;
+     free(event->Name);
+     free(event->Effect);
+     free(event->Text);
+diff --git a/libass/ass.h b/libass/ass.h
+index 851ca7c..e46d5e8 100644
+--- a/libass/ass.h
++++ b/libass/ass.h
+@@ -606,6 +606,9 @@ int ass_fonts_update(ASS_Renderer *priv);
+ void ass_set_cache_limits(ASS_Renderer *priv, int glyph_max,
+                           int bitmap_max_size);
+ 
++void ass_set_stateless(ASS_Renderer *priv, int stateless);
++int ass_frame_history_dependent(ASS_Renderer *priv);
++
+ /**
+  * \brief Render a frame, producing a list of ASS_Image.
+  * \param priv renderer handle
+diff --git a/libass/ass_cache.c b/libass/ass_cache.c
+index 47069c1..3fc9f3f 100644
+--- a/libass/ass_cache.c
++++ b/libass/ass_cache.c
+@@ -381,11 +381,21 @@ Cache *ass_cache_create(const CacheDesc *desc)
+ // creating one if it does not already exist.
+ // The returned item is guaranteed to be valid until the next ass_cache_cut call;
+ // to extend its lifetime further, call ass_cache_inc_ref().
++static inline unsigned hash_bucket(ass_hashcode h, unsigned buckets)
++{
++    if (buckets != 0xFFFF)
++        return h % buckets;
++    unsigned s = (h & 0xFFFF) + ((h >> 16) & 0xFFFF) + ((h >> 32) & 0xFFFF) + (h >> 48);
++    s = (s & 0xFFFF) + (s >> 16);
++    s = (s & 0xFFFF) + (s >> 16);
++    return s == 0xFFFF ? 0 : s;
++}
++
+ void *ass_cache_get(Cache *cache, void *key, void *priv)
+ {
+     const CacheDesc *desc = cache->desc;
+     size_t key_offs = CACHE_ITEM_SIZE + align_cache(desc->value_size);
+-    unsigned bucket = desc->hash_func(key, ASS_HASH_INIT) % cache->buckets;
++    unsigned bucket = hash_bucket(desc->hash_func(key, ASS_HASH_INIT), cache->buckets);
+     CacheItem *item = cache->map[bucket];
+     while (item) {
+         if (desc->compare_func(key, (char *) item + key_offs)) {
+diff --git a/libass/ass_parse.c b/libass/ass_parse.c
+index e85fc5e..b7b4bee 100644
+--- a/libass/ass_parse.c
++++ b/libass/ass_parse.c
+@@ -65,9 +65,17 @@ static inline void push_arg(struct arg *args, int *nargs, char *start, char *end
+  * \brief Check if starting part of (*p) matches sample.
+  * If true, shift p to the first symbol after the matching part.
+  */
+-static inline int mystrcmp(char **p, const char *sample)
++#if defined(__GNUC__)
++#define FORCE_INLINE __attribute__((always_inline))
++#else
++#define FORCE_INLINE
++#endif
++
++static inline FORCE_INLINE int mystrcmp(char **p, const char *sample)
+ {
+     char *p2;
++    if (**p != *sample)
++        return 0;
+     for (p2 = *p; *sample != 0 && *p2 == *sample; p2++, sample++)
+         ;
+     if (*sample == 0) {
+diff --git a/libass/ass_priv.h b/libass/ass_priv.h
+index ac6ec50..e0c3b50 100644
+--- a/libass/ass_priv.h
++++ b/libass/ass_priv.h
+@@ -60,6 +60,7 @@ struct parser_priv {
+     uint32_t *read_order_bitmap;
+     int read_order_elems; // size in uint32_t units of read_order_bitmap
+     int check_readorder;
++    unsigned events_gen;
+ 
+     // tracks [Script Info] headers set by the script
+     uint32_t header_flags;
+diff --git a/libass/ass_render.c b/libass/ass_render.c
+index 18f856a..50b9f8e 100644
+--- a/libass/ass_render.c
++++ b/libass/ass_render.c
+@@ -23,6 +23,7 @@
+ #include <math.h>
+ #include <string.h>
+ #include <stdbool.h>
++#include <limits.h>
+ 
+ #ifdef CONFIG_UNIBREAK
+ #include <linebreak.h>
+@@ -172,6 +173,8 @@ fail:
+     return NULL;
+ }
+ 
++static void free_event_index(ASS_Renderer *priv);
++
+ void ass_renderer_done(ASS_Renderer *render_priv)
+ {
+     if (!render_priv)
+@@ -192,6 +195,8 @@ void ass_renderer_done(ASS_Renderer *render_priv)
+     if (render_priv->ftlibrary)
+         FT_Done_FreeType(render_priv->ftlibrary);
+     free(render_priv->eimg);
++    free(render_priv->stateless_rp);
++    free_event_index(render_priv);
+ 
+     render_context_done(&render_priv->state);
+ 
+@@ -3115,6 +3120,26 @@ static int cmp_event_layer(const void *p1, const void *p2)
+ static ASS_RenderPriv *get_render_priv(ASS_Renderer *render_priv,
+                                        ASS_Event *event)
+ {
++    if (render_priv->stateless) {
++        ASS_Track *track = render_priv->track;
++        int idx = event - track->events;
++        if (idx >= render_priv->stateless_rp_n) {
++            int n = FFMAX(track->n_events, idx + 1);
++            RenderPriv *rp = realloc(render_priv->stateless_rp, n * sizeof(*rp));
++            if (!rp)
++                return NULL;
++            memset(rp + render_priv->stateless_rp_n, 0,
++                   (n - render_priv->stateless_rp_n) * sizeof(*rp));
++            render_priv->stateless_rp = rp;
++            render_priv->stateless_rp_n = n;
++        }
++        RenderPriv *p = render_priv->stateless_rp + idx;
++        if (p->render_id != render_priv->render_id) {
++            memset(p, 0, sizeof(*p));
++            p->render_id = render_priv->render_id;
++        }
++        return p;
++    }
+     if (!event->render_priv) {
+         event->render_priv = calloc(1, sizeof(ASS_RenderPriv));
+         if (!event->render_priv)
+@@ -3215,6 +3240,7 @@ fix_collisions(ASS_Renderer *render_priv, EventImages *imgs, int cnt)
+         // zero-area events are therefore effectively fixed as well
+         if (!imgs[i].detect_collisions || !imgs[i].height  || !imgs[i].width)
+             continue;
++        render_priv->history_dependent = true;
+         priv = get_render_priv(render_priv, imgs[i].event);
+         if (priv && priv->height > 0) { // it's a fixed event
+             Rect s;
+@@ -3358,6 +3384,165 @@ static ASS_Image *ass_free_image(ASS_Image *img) {
+     return next;
+ }
+ 
++#define EV_BUCKET_MS 1000
++#define EV_MIN_INDEXED 2048
++#define EV_LONG_BUCKETS 32
++#define EV_MAX_BUCKETS (1 << 20)
++
++static void free_event_index(ASS_Renderer *priv)
++{
++    free(priv->ev_index.bucket_start);
++    free(priv->ev_index.items);
++    free(priv->ev_index.long_items);
++    memset(&priv->ev_index, 0, sizeof(priv->ev_index));
++}
++
++static bool event_buckets(const ASS_Event *e, long long t0, long long *b0, long long *b1)
++{
++    if (e->Duration <= 0)
++        return false;
++    *b0 = (e->Start - t0) / EV_BUCKET_MS;
++    *b1 = (e->Start + e->Duration - 1 - t0) / EV_BUCKET_MS;
++    return true;
++}
++
++static void build_event_index(ASS_Renderer *priv, ASS_Track *track)
++{
++    free_event_index(priv);
++    priv->ev_index.track = track;
++    priv->ev_index.events = track->events;
++    priv->ev_index.n_events = track->n_events;
++    priv->ev_index.gen = track->parser_priv->events_gen;
++
++    long long t0 = LLONG_MAX, t1 = LLONG_MIN;
++    for (int i = 0; i < track->n_events; i++) {
++        t0 = FFMIN(t0, track->events[i].Start);
++        t1 = FFMAX(t1, track->events[i].Start);
++    }
++    long long span = (t1 - t0) / EV_BUCKET_MS + 1;
++    if (span > EV_MAX_BUCKETS)
++        return;
++    int nb = span;
++
++    int *start = calloc(nb + 1, sizeof(int));
++    int *fill = malloc(nb * sizeof(int));
++    int *long_items = malloc(track->n_events * sizeof(int));
++    int *items = NULL;
++    int n_long = 0;
++    long long total = 0;
++    if (!start || !fill || !long_items)
++        goto fail;
++
++    for (int i = 0; i < track->n_events; i++) {
++        long long b0, b1;
++        if (!event_buckets(track->events + i, t0, &b0, &b1))
++            continue;
++        if (b1 - b0 >= EV_LONG_BUCKETS) {
++            long_items[n_long++] = i;
++            continue;
++        }
++        b1 = FFMIN(b1, nb - 1LL);
++        for (long long b = b0; b <= b1; b++)
++            start[b + 1]++;
++        total += b1 - b0 + 1;
++    }
++    for (int b = 0; b < nb; b++)
++        start[b + 1] += start[b];
++
++    items = malloc(FFMAX(total, 1) * sizeof(int));
++    if (!items)
++        goto fail;
++    memcpy(fill, start, nb * sizeof(int));
++    for (int i = 0; i < track->n_events; i++) {
++        long long b0, b1;
++        if (!event_buckets(track->events + i, t0, &b0, &b1))
++            continue;
++        if (b1 - b0 >= EV_LONG_BUCKETS)
++            continue;
++        b1 = FFMIN(b1, nb - 1LL);
++        for (long long b = b0; b <= b1; b++)
++            items[fill[b]++] = i;
++    }
++    free(fill);
++
++    priv->ev_index.t0 = t0;
++    priv->ev_index.n_buckets = nb;
++    priv->ev_index.bucket_start = start;
++    priv->ev_index.items = items;
++    priv->ev_index.long_items = long_items;
++    priv->ev_index.n_long = n_long;
++    priv->ev_index.valid = true;
++    return;
++
++fail:
++    free(start);
++    free(fill);
++    free(long_items);
++    free(items);
++}
++
++static bool event_active(const ASS_Event *event, long long now)
++{
++    return event->Start <= now && now < event->Start + event->Duration;
++}
++
++static int render_events_at(ASS_Renderer *priv, ASS_Track *track, long long now)
++{
++    int cnt = 0;
++    const int n = track->n_events;
++    bool indexed = n >= EV_MIN_INDEXED;
++    if (indexed) {
++        if (priv->ev_index.track != track || priv->ev_index.events != track->events ||
++            priv->ev_index.n_events != n ||
++            priv->ev_index.gen != track->parser_priv->events_gen)
++            build_event_index(priv, track);
++        indexed = priv->ev_index.valid;
++    }
++
++    int bi = 0, be = 0, li = 0;
++    const int *items = NULL, *long_items = NULL;
++    int n_long = 0;
++    if (indexed) {
++        long long b = now - priv->ev_index.t0;
++        if (b >= 0) {
++            b = FFMIN(b / EV_BUCKET_MS, priv->ev_index.n_buckets - 1LL);
++            items = priv->ev_index.items;
++            bi = priv->ev_index.bucket_start[b];
++            be = priv->ev_index.bucket_start[b + 1];
++        }
++        long_items = priv->ev_index.long_items;
++        n_long = priv->ev_index.n_long;
++    }
++
++    for (int k = 0;; k++) {
++        int i;
++        if (!indexed) {
++            if (k >= n)
++                break;
++            i = k;
++        } else {
++            bool have_b = bi < be, have_l = li < n_long;
++            if (!have_b && !have_l)
++                break;
++            if (have_b && (!have_l || items[bi] < long_items[li]))
++                i = items[bi++];
++            else
++                i = long_items[li++];
++        }
++        ASS_Event *event = track->events + i;
++        if (!event_active(event, now))
++            continue;
++        if (cnt >= priv->eimg_size) {
++            priv->eimg_size += 100;
++            priv->eimg = realloc(priv->eimg, priv->eimg_size * sizeof(EventImages));
++        }
++        if (ass_render_event(&priv->state, event, priv->eimg + cnt))
++            cnt++;
++    }
++    return cnt;
++}
++
++
+ /**
+  * \brief render a frame
+  * \param priv library handle
+@@ -3377,22 +3562,11 @@ ASS_Image *ass_render_frame(ASS_Renderer *priv, ASS_Track *track,
+         return NULL;
+     }
+ 
+-    // render events separately
+-    int cnt = 0;
+-    for (int i = 0; i < track->n_events; i++) {
+-        ASS_Event *event = track->events + i;
+-        if ((event->Start <= now)
+-            && (now < (event->Start + event->Duration))) {
+-            if (cnt >= priv->eimg_size) {
+-                priv->eimg_size += 100;
+-                priv->eimg =
+-                    realloc(priv->eimg,
+-                            priv->eimg_size * sizeof(EventImages));
+-            }
+-            if (ass_render_event(&priv->state, event, priv->eimg + cnt))
+-                cnt++;
+-        }
++    if (priv->stateless) {
++        priv->render_id++;
++        priv->history_dependent = false;
+     }
++    int cnt = render_events_at(priv, track, now);
+ 
+     // sort by layer
+     if (cnt > 0)
+diff --git a/libass/ass_render.h b/libass/ass_render.h
+index e1eb7d2..cd16d7d 100644
+--- a/libass/ass_render.h
++++ b/libass/ass_render.h
+@@ -308,6 +308,8 @@ typedef struct {
+     size_t composite_max_size;
+ } CacheStore;
+ 
++typedef struct render_priv RenderPriv;
++
+ struct ass_renderer {
+     ASS_Library *library;
+     FT_Library ftlibrary;
+@@ -315,6 +317,10 @@ struct ass_renderer {
+     size_t num_emfonts;
+     ASS_Settings settings;
+     int render_id;
++    bool stateless;
++    bool history_dependent;
++    RenderPriv *stateless_rp;
++    int stateless_rp_n;
+ 
+     ASS_Image *images_root;     // rendering result is stored here
+     ASS_Image *prev_images_root;
+@@ -322,6 +328,20 @@ struct ass_renderer {
+     EventImages *eimg;          // temporary buffer for sorting rendered events
+     int eimg_size;              // allocated buffer size
+ 
++    struct {
++        ASS_Track *track;
++        ASS_Event *events;
++        int n_events;
++        unsigned gen;
++        bool valid;
++        long long t0;
++        int n_buckets;
++        int *bucket_start;
++        int *items;
++        int *long_items;
++        int n_long;
++    } ev_index;
++
+     // frame-global data
+     int width, height;          // screen dimensions (the whole frame from ass_set_frame_size)
+     int frame_content_height;   // content frame height ( = screen height - API margins )
+@@ -340,10 +360,10 @@ struct ass_renderer {
+     ASS_Style user_override_style;
+ };
+ 
+-typedef struct render_priv {
++struct render_priv {
+     int top, height, left, width;
+     int render_id;
+-} RenderPriv;
++};
+ 
+ typedef struct {
+     int x0;
+diff --git a/libass/ass_render_api.c b/libass/ass_render_api.c
+index ee1620a..bc2aeac 100644
+--- a/libass/ass_render_api.c
++++ b/libass/ass_render_api.c
+@@ -213,3 +213,13 @@ ass_create_font_provider(ASS_Renderer *priv, ASS_FontProviderFuncs *funcs,
+ {
+     return ass_font_provider_new(priv->fontselect, funcs, data);
+ }
++
++void ass_set_stateless(ASS_Renderer *priv, int stateless)
++{
++    priv->stateless = stateless;
++}
++
++int ass_frame_history_dependent(ASS_Renderer *priv)
++{
++    return priv->history_dependent;
++}
+diff --git a/libass/ass_strtod.c b/libass/ass_strtod.c
+index 47302a8..a8b2cc7 100644
+--- a/libass/ass_strtod.c
++++ b/libass/ass_strtod.c
+@@ -133,6 +133,19 @@ ass_strtod(
+         sign = 0;
+     }
+ 
++    {
++        const char *q = p;
++        unsigned long long v = 0;
++        while (*q >= '0' && *q <= '9' && q - p < 15)
++            v = v * 10 + (*q++ - '0');
++        if (q != p && *q != '.' && *q != 'e' && *q != 'E' &&
++            !(*q >= '0' && *q <= '9')) {
++            if (endPtr != NULL)
++                *endPtr = (char *) q;
++            return sign ? -(double) v : (double) v;
++        }
++    }
++
+     /*
+      * Count the number of digits in the mantissa (including the decimal
+      * point), and also locate the decimal point.
+diff --git a/libass/ass_utils.h b/libass/ass_utils.h
+index 5b7cc7a..7b8a9e3 100644
+--- a/libass/ass_utils.h
++++ b/libass/ass_utils.h
+@@ -181,6 +181,12 @@ static inline long ass_lrint(double x)
+     // Unlike GCC and Clang, Visual C++ can't inline lrint() without -fp:fast, so
+     // we provide our own implementation
+     return _mm_cvtsd_si32(_mm_set_sd(x));
++#elif defined(__arm__) && defined(__VFP_FP__) && !defined(__SOFTFP__) || defined(__arm__) && defined(__ARM_FP)
++    float r;
++    __asm__("vcvtr.s32.f64 %0, %P1" : "=t"(r) : "w"(x));
++    int32_t i;
++    memcpy(&i, &r, sizeof(i));
++    return i;
+ #else
+     return lrint(x);
+ #endif
