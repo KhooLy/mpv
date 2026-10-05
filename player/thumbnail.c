@@ -90,6 +90,7 @@ struct thumbnailer {
     bool eager;
     int want;
     int hover;
+    int dir;
     bool ready;
     bool changed;
     int w, h, count;
@@ -192,14 +193,26 @@ static int next_index(struct thumbnailer *t)
         return t->want;
     if (t->hold || !t->eager)
         return -1;
-    for (int d = 1; t->hover >= 0 && d <= 16; d++) {
-        if (t->hover - d >= 0 && t->state[t->hover - d] == SLOT_EMPTY)
-            return t->hover - d;
-        if (t->hover + d < t->count && t->state[t->hover + d] == SLOT_EMPTY)
-            return t->hover + d;
+    if (t->hover >= 0) {
+        for (int d = 1; d <= 8; d++) {
+            int i = t->hover + t->dir * d;
+            if (t->dir && i >= 0 && i < t->count && t->state[i] == SLOT_EMPTY)
+                return i;
+        }
+        for (int d = 1; d <= 16; d++) {
+            if (t->hover - d >= 0 && t->state[t->hover - d] == SLOT_EMPTY)
+                return t->hover - d;
+            if (t->hover + d < t->count && t->state[t->hover + d] == SLOT_EMPTY)
+                return t->hover + d;
+        }
     }
-    if (!t->sweep)
+    if (!t->sweep) {
+        for (int i = 0; t->hover >= 0 && i < t->count; i += 16) {
+            if (t->state[i] == SLOT_EMPTY)
+                return i;
+        }
         return -1;
+    }
     for (int stride = 8; stride >= 1; stride /= 2) {
         for (int i = 0; i < t->count; i += stride) {
             if (t->state[i] == SLOT_EMPTY)
@@ -674,6 +687,8 @@ void cmd_thumbnail(void *p)
         return;
     }
     int want = MPCLAMP((int)lrint(cmd->args[0].v.d / t->step), 0, t->count - 1);
+    if (want != t->hover)
+        t->dir = want > t->hover ? 1 : -1;
     t->hover = want;
     if (!t->eager) {
         t->eager = true;
