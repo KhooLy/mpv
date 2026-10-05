@@ -5094,7 +5094,8 @@ Screenshot
 ``--thumbnail-sweep=<yes|no>``
     Keep generating thumbnails for the whole file in the background (default:
     yes, except on Android). If disabled, only positions near the seekbar
-    hover position are generated, and nothing is decoded while idle.
+    hover position (preferring the scrubbing direction) and a coarse grid of
+    every 16th slot are generated, and nothing is decoded while idle.
 
 ``--thumbnail-cache-dir=<path>``
     Store generated thumbnails here and reuse them when the same file is
