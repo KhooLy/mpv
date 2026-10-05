@@ -5091,6 +5091,11 @@ Screenshot
 ``--thumbnail-max=<count>``
     Maximum number of thumbnails per file (default: 1000).
 
+``--thumbnail-sweep=<yes|no>``
+    Keep generating thumbnails for the whole file in the background (default:
+    yes, except on Android). If disabled, only positions near the seekbar
+    hover position are generated, and nothing is decoded while idle.
+
 ``--thumbnail-cache-dir=<path>``
     Store generated thumbnails here and reuse them when the same file is
     opened again. Disabled if unset.

@@ -719,6 +719,7 @@ static const m_option_t mp_opts[] = {
     {"thumbnail-width", OPT_INT(thumbnail_width), M_RANGE(16, 1920)},
     {"thumbnail-interval", OPT_DOUBLE(thumbnail_interval), M_RANGE(1, 3600)},
     {"thumbnail-max", OPT_INT(thumbnail_max), M_RANGE(1, 100000)},
+    {"thumbnail-sweep", OPT_BOOL(thumbnail_sweep)},
     {"thumbnail-cache-dir", OPT_STRING(thumbnail_cache_dir), .flags = M_OPT_FILE},
     {"thumbnail-hwdec", OPT_CHOICE(thumbnail_hwdec,
         {"no", 0}, {"auto", 1}, {"mediacodec", 2})},
@@ -1110,6 +1111,11 @@ static const struct MPOpts mp_default_opts = {
     .thumbnail_width = 240,
     .thumbnail_interval = 10,
     .thumbnail_max = 1000,
+#if defined(__ANDROID__)
+    .thumbnail_sweep = false,
+#else
+    .thumbnail_sweep = true,
+#endif
     .play_dir = 1,
     .media_controls = true,
     .builtin_dnd = true,

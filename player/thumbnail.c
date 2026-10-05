@@ -73,6 +73,7 @@ struct thumbnailer {
     int width;
     double interval;
     int max_count;
+    bool sweep;
     char *cache_dir;
     int hwdec;
     void (*wakeup)(void *ctx);
@@ -197,6 +198,8 @@ static int next_index(struct thumbnailer *t)
         if (t->hover + d < t->count && t->state[t->hover + d] == SLOT_EMPTY)
             return t->hover + d;
     }
+    if (!t->sweep)
+        return -1;
     for (int stride = 8; stride >= 1; stride /= 2) {
         for (int i = 0; i < t->count; i += stride) {
             if (t->state[i] == SLOT_EMPTY)
@@ -556,6 +559,7 @@ void mp_thumbnails_start(struct MPContext *mpctx)
     t->width = opts->thumbnail_width;
     t->interval = opts->thumbnail_interval;
     t->max_count = opts->thumbnail_max;
+    t->sweep = opts->thumbnail_sweep;
     t->cache_dir = talloc_strdup(t, opts->thumbnail_cache_dir);
     t->hwdec = opts->thumbnail_hwdec;
     t->wakeup = mp_wakeup_core_cb;
