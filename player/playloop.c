@@ -1381,7 +1381,6 @@ static void ranges_from_chapters(struct MPContext *mpctx)
     for (int n = 0; n < count; n++) {
         char *name = chapter_name(mpctx, n);
         const char *type = chapter_skip_type(name);
-        talloc_free(name);
         if (!type)
             continue;
         double end = n + 1 < count ? chapter_start_time(mpctx, n + 1) : duration;
