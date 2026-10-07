@@ -5101,6 +5101,22 @@ Screenshot
     Store generated thumbnails here and reuse them when the same file is
     opened again. Disabled if unset.
 
+``--thumbnail-url=<url>``
+    Read thumbnails from this URL instead of the file being played, for
+    example a lower bitrate rendition of the same video. It must have the
+    same duration. The cache key is derived from this URL. Disabled if unset.
+
+``--thumbnail-http-header-fields=<field1,field2,...>``
+    HTTP header fields used when reading ``--thumbnail-url``, replacing
+    ``--http-header-fields``, ``--referrer`` and ``--user-agent`` for the
+    thumbnail reader only. Include ``User-Agent`` and ``Referer`` here if the
+    source needs them.
+
+``--thumbnail-delay=<seconds>``
+    Wait this long before generating thumbnails nobody asked for, so playback
+    can start first (default: 5). Positions near the hover position are always
+    generated immediately.
+
 ``--thumbnail-hwdec=<no|auto|mediacodec>``
     Decode thumbnails in hardware. ``auto`` uses VideoToolbox on Apple
     platforms, D3D11VA on Windows and VAAPI on Linux, and never MediaCodec.

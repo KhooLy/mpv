@@ -188,6 +188,13 @@ static bool is_local_host(const char *url)
            (a == 172 && b >= 16 && b <= 31);
 }
 
+static thread_local const char *thread_headers;
+
+void mp_stream_lavf_set_thread_headers(const char *headers)
+{
+    thread_headers = headers;
+}
+
 void mp_setup_av_network_options(AVDictionary **dict, const char *target_fmt,
                                  struct mpv_global *global, struct mp_log *log)
 {
@@ -235,6 +242,8 @@ void mp_setup_av_network_options(AVDictionary **dict, const char *target_fmt,
                                                   opts->http_header_fields[n]);
         }
     }
+    if (thread_headers)
+        cust_headers = talloc_strdup(temp, thread_headers);
     if (strlen(cust_headers))
         av_dict_set(dict, "headers", cust_headers, 0);
     av_dict_set(dict, "icy", "1", 0);

@@ -8290,6 +8290,7 @@ const struct mp_cmd_def mp_cmds[] = {
                 OPTDEF_INT(0)},
         },
     },
+    { "thumbnail-reload", cmd_thumbnail_reload },
     { "thumbnail", cmd_thumbnail,
         {
             {"time", OPT_TIME(v.d)},

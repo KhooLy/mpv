@@ -1520,6 +1520,11 @@ Screenshot Commands
     ``exact`` and ``data`` (a byte array). If no thumbnail exists for that
     exact position yet, it is generated next. Requires ``--thumbnails``.
 
+``thumbnail-reload``
+    Stop the thumbnail generator and start it again with the current
+    ``--thumbnail-*`` options, for example after changing ``--thumbnail-url``.
+    Requires ``--thumbnails``.
+
 ``screenshot-to-file <filename> [<flags>]``
     Take a screenshot and save it to a given file. The format of the file will
     be guessed by the extension (and ``--screenshot-format`` is ignored - the

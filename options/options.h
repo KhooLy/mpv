@@ -357,6 +357,9 @@ typedef struct MPOpts {
     int thumbnail_max;
     bool thumbnail_sweep;
     char *thumbnail_cache_dir;
+    char *thumbnail_url;
+    char **thumbnail_headers;
+    double thumbnail_delay;
     int thumbnail_hwdec;
     struct filter_opts *filter_opts;
     struct dec_wrapper_opts *dec_wrapper;

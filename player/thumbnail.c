@@ -75,6 +75,8 @@ struct thumbnailer {
     int max_count;
     bool sweep;
     char *cache_dir;
+    char *headers;
+    double delay;
     int hwdec;
     void (*wakeup)(void *ctx);
     void *wakeup_ctx;
@@ -416,6 +418,7 @@ static MP_THREAD_VOID thumbnail_thread(void *arg)
     mp_thread_set_name("thumbnail");
     lower_priority();
 
+    mp_stream_lavf_set_thread_headers(t->headers);
     struct demuxer_params params = {.stream_flags = t->stream_flags | STREAM_SPARSE_READS};
     struct demuxer *d = demux_open_url(t->url, &params, t->cancel, t->global);
     if (!d) {
@@ -461,7 +464,7 @@ static MP_THREAD_VOID thumbnail_thread(void *arg)
     MP_VERBOSE(t, "%dx%d, %d thumbnails every %.1fs\n", t->w, t->h, t->count, t->step);
     t->wakeup(t->wakeup_ctx);
     double last_wakeup = mp_time_sec();
-    int64_t eager_at = mp_time_ns() + MP_TIME_S_TO_NS(5);
+    int64_t eager_at = mp_time_ns() + MP_TIME_S_TO_NS(t->delay);
     bool pending = false;
     bool primed = false;
     while (!t->quit) {
@@ -566,7 +569,8 @@ void mp_thumbnails_start(struct MPContext *mpctx)
     struct thumbnailer *t = talloc_zero(NULL, struct thumbnailer);
     t->global = mpctx->global;
     t->log = mp_log_new(t, mpctx->log, "thumbnail");
-    t->url = talloc_strdup(t, mpctx->stream_open_filename);
+    t->url = talloc_strdup(t, opts->thumbnail_url && opts->thumbnail_url[0]
+                              ? opts->thumbnail_url : mpctx->stream_open_filename);
     t->stream_flags = mpctx->playing ? mpctx->playing->stream_flags : 0;
     t->rebase = opts->rebase_start_time;
     t->width = opts->thumbnail_width;
@@ -574,6 +578,15 @@ void mp_thumbnails_start(struct MPContext *mpctx)
     t->max_count = opts->thumbnail_max;
     t->sweep = opts->thumbnail_sweep;
     t->cache_dir = talloc_strdup(t, opts->thumbnail_cache_dir);
+    t->delay = opts->thumbnail_delay;
+    t->eager = t->delay <= 0;
+    t->headers = NULL;
+    for (int n = 0; opts->thumbnail_headers && opts->thumbnail_headers[n]; n++) {
+        t->headers = talloc_asprintf_append(t->headers, "%s\r\n",
+                                            opts->thumbnail_headers[n]);
+    }
+    if (t->headers)
+        talloc_steal(t, t->headers);
     t->hwdec = opts->thumbnail_hwdec;
     t->wakeup = mp_wakeup_core_cb;
     t->wakeup_ctx = mpctx;
@@ -754,4 +767,10 @@ void cmd_thumbnail(void *p)
     };
     talloc_steal(ba, img);
     cmd->success = true;
+}
+
+void cmd_thumbnail_reload(void *p)
+{
+    struct mp_cmd_ctx *cmd = p;
+    mp_thumbnails_start(cmd->mpctx);
 }
