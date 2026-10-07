@@ -773,7 +773,7 @@ static void handle_hls_adaptive(struct MPContext *mpctx,
     struct track *vt = find_variant(mpctx, STREAM_VIDEO, cur, best);
     if (!vt)
         return;
-    MP_VERBOSE(mpctx, "HLS adaptive: %d -> %d kbit/s (estimate %d kbit/s, "
+    MP_VERBOSE(mpctx, "Adaptive: %d -> %d kbit/s (estimate %d kbit/s, "
                "buffer %.1fs)\n", cur->hls_bitrate / 1000, best / 1000,
                (int)(mpctx->abr_rate / 1000), buffered);
     mpctx->abr_last_switch = now;
