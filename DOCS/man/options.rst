@@ -5904,6 +5904,15 @@ Network
     ``min`` gives the fastest start. Switching to a higher variant happens only
     with at least 10 seconds buffered, switching down when the buffer runs low.
     Each switch discards the buffered data of the old variant.
+    The rate estimate is the lower of a fast and a slow moving average, and a
+    buffering stall steps down one variant at once. See ``--abr-max-bitrate``
+    and ``--abr-max-height`` for limits.
+
+``--abr-max-bitrate=<bits/s>``, ``--abr-max-height=<pixels>``
+    Upper limits for the variants ``--hls-adaptive`` may pick, and for the
+    initial variant picked by ``--hls-bitrate`` (default: 0, no limit). If every
+    variant exceeds a limit, the lowest one is used. A variant whose height is
+    not known is not limited by ``--abr-max-height``.
 
 ``--live-latency=<seconds>``
     Hold live streams (network streams of unknown duration, such as live HLS

@@ -403,7 +403,9 @@ typedef struct MPContext {
     double last_idle_tick;
     double next_cache_update;
 
-    double abr_rate;
+    double abr_fast;
+    double abr_slow;
+    double abr_stall_time;
     double abr_next_check;
     double abr_last_switch;
 

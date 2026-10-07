@@ -662,6 +662,8 @@ static const m_option_t mp_opts[] = {
     {"hls-bitrate", OPT_CHOICE(hls_bitrate,
         {"no", -1}, {"min", 0}, {"max", INT_MAX}), M_RANGE(0, INT_MAX)},
     {"hls-adaptive", OPT_BOOL(hls_adaptive)},
+    {"abr-max-bitrate", OPT_INT(abr_max_bitrate), M_RANGE(0, INT_MAX)},
+    {"abr-max-height", OPT_INT(abr_max_height), M_RANGE(0, 16384)},
     {"live-latency", OPT_DOUBLE(live_latency), M_RANGE(0, DBL_MAX)},
     {"live-speed-min", OPT_DOUBLE(live_speed_min), M_RANGE(0.25, 1.0)},
     {"live-speed-max", OPT_DOUBLE(live_speed_max), M_RANGE(1.0, 4.0)},

@@ -1801,7 +1801,9 @@ static void play_current_file(struct MPContext *mpctx)
     mpctx->paused = false;
     mpctx->playing_msg_shown = false;
     mpctx->max_frames = -1;
-    mpctx->abr_rate = 0;
+    mpctx->abr_fast = 0;
+    mpctx->abr_slow = 0;
+    mpctx->abr_stall_time = 0;
     mpctx->abr_next_check = 0;
     mpctx->abr_last_switch = mp_time_sec();
     mpctx->live_speed = 1.0;

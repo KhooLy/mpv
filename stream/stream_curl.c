@@ -144,6 +144,8 @@ struct curl_ctx {
     struct mp_dispatch_queue *dispatch;
     CURLM *multi;
     bool exit;
+    _Atomic uint64_t rate_fast;
+    _Atomic uint64_t rate_slow;
 };
 
 // Per-stream state, owned by the curl thread.
@@ -169,6 +171,10 @@ struct priv {
     // Producer state. Only touched by the curl thread.
     uint64_t request_start;    // absolute byte position of next request
     uint64_t request_received; // bytes received in the current request
+    int64_t rate_last;
+    int64_t rate_ns;
+    uint64_t rate_bytes;
+    bool rate_resume;
     uint64_t request_end;      // exclusive byte cap (0 = unbounded)
     int retry_count;           // consecutive failed attempts at request_start
     bool active;               // handle is currently active in the multi
@@ -350,6 +356,17 @@ void mp_curl_global_init(struct mpv_global *global)
     mp_require(!mp_thread_create(&ctx->thread, curl_thread, ctx));
 }
 
+bool mp_curl_get_rates(struct mpv_global *global, double *fast, double *slow)
+{
+    struct curl_ctx *ctx = global->curl;
+    uint64_t f = ctx ? atomic_load(&ctx->rate_fast) : 0;
+    if (!f)
+        return false;
+    *fast = f;
+    *slow = atomic_load(&ctx->rate_slow);
+    return true;
+}
+
 // Curl callbacks
 
 static bool is_http_success(long resp)
@@ -376,6 +393,7 @@ static size_t write_callback(char *ptr, size_t size, size_t nmemb, void *userdat
     if (p->buffer_size - p->count < bytes) {
         // No room in the buffer. Pause the transfer and wait for the consumer.
         p->paused = true;
+        p->rate_resume = true;
         mp_mutex_unlock(&p->mtx);
         MP_TRACE(p, "pausing curl transfer, buffer full (%zu bytes)\n", p->count);
         return CURL_WRITEFUNC_PAUSE;
@@ -389,6 +407,14 @@ static size_t write_callback(char *ptr, size_t size, size_t nmemb, void *userdat
     p->paused = false;
 
     p->request_received += bytes;
+
+    int64_t now = mp_time_ns();
+    if (p->rate_last && !p->rate_resume) {
+        p->rate_ns += now - p->rate_last;
+        p->rate_bytes += bytes;
+    }
+    p->rate_last = now;
+    p->rate_resume = false;
 
     mp_cond_broadcast(&p->cond);
     mp_mutex_unlock(&p->mtx);
@@ -650,6 +676,21 @@ static void on_done(struct priv *p, CURLcode code)
     // continuations resume at the next missing byte.
     p->request_start += p->request_received;
     p->request_received = 0;
+
+    if (code == CURLE_OK && !aborted && p->rate_bytes >= 65536 &&
+        p->rate_ns >= MP_TIME_MS_TO_NS(10))
+    {
+        double bps = p->rate_bytes * 8.0 * 1e9 / p->rate_ns;
+        struct curl_ctx *ctx = p->ctx;
+        uint64_t fast = atomic_load(&ctx->rate_fast);
+        uint64_t slow = atomic_load(&ctx->rate_slow);
+        atomic_store(&ctx->rate_fast, fast ? 0.5 * fast + 0.5 * bps : bps);
+        atomic_store(&ctx->rate_slow, slow ? 0.9 * slow + 0.1 * bps : bps);
+    }
+    p->rate_last = 0;
+    p->rate_ns = 0;
+    p->rate_bytes = 0;
+    p->rate_resume = false;
 
     if (code == CURLE_OK && !aborted) {
         p->retry_count = 0;

@@ -1138,7 +1138,12 @@ static void build_editions(demuxer_t *demuxer)
             }
             if (!rep)
                 continue;
-            bool ok = rep->hls_bitrate <= hls_bitrate;
+            int h = rep->codec ? rep->codec->disp_h : 0;
+            bool ok = rep->hls_bitrate <= hls_bitrate &&
+                      (!mp_opts->abr_max_bitrate ||
+                       rep->hls_bitrate <= mp_opts->abr_max_bitrate) &&
+                      (!mp_opts->abr_max_height || !h ||
+                       h <= mp_opts->abr_max_height);
             if (best < 0 || (ok && !best_ok) ||
                 (ok && best_ok && rep->hls_bitrate > best_bitrate) ||
                 (!ok && !best_ok && rep->hls_bitrate < best_bitrate))

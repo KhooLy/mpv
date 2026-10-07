@@ -46,6 +46,7 @@
 #include "osdep/terminal.h"
 #include "osdep/timer.h"
 #include "stream/stream.h"
+#include "stream/stream_curl.h"
 #include "sub/dec_sub.h"
 #include "sub/osd.h"
 #include "video/out/vo.h"
@@ -729,29 +730,75 @@ static struct track *find_variant(struct MPContext *mpctx, enum stream_type type
     return NULL;
 }
 
+static bool abr_allowed(struct MPContext *mpctx, struct track *t)
+{
+    struct MPOpts *opts = mpctx->opts;
+    if (opts->abr_max_bitrate && t->hls_bitrate > opts->abr_max_bitrate)
+        return false;
+    int h = t->stream ? t->stream->codec->disp_h : 0;
+    return !opts->abr_max_height || !h || h <= opts->abr_max_height;
+}
+
+static struct track *abr_pick_audio(struct MPContext *mpctx, struct track *cur,
+                                    int budget)
+{
+    struct track *best = NULL, *lowest = NULL;
+    for (int n = 0; n < mpctx->num_tracks; n++) {
+        struct track *t = mpctx->tracks[n];
+        if (t->type != STREAM_AUDIO || t->demuxer != cur->demuxer ||
+            t->hls_bitrate <= 0 || bstrcmp0(bstr0(t->lang), cur->lang))
+            continue;
+        if (!lowest || t->hls_bitrate < lowest->hls_bitrate)
+            lowest = t;
+        if (t->hls_bitrate <= budget &&
+            (!best || t->hls_bitrate > best->hls_bitrate))
+            best = t;
+    }
+    return best ? best : lowest;
+}
+
 static void handle_hls_adaptive(struct MPContext *mpctx,
                                 struct demux_reader_state *s, double now)
 {
     struct track *cur = mpctx->current_track[0][STREAM_VIDEO];
     if (!mpctx->opts->hls_adaptive || !cur || cur->hls_bitrate <= 0 ||
-        !mpctx->restart_complete || now < mpctx->abr_next_check)
+        !mpctx->restart_complete)
+        return;
+
+    bool stall = mpctx->paused_for_cache &&
+                 now - mpctx->abr_last_switch > 3 &&
+                 now - mpctx->abr_stall_time > 3;
+    if (stall)
+        mpctx->abr_stall_time = now;
+    if (!stall && now < mpctx->abr_next_check)
         return;
     mpctx->abr_next_check = now + 1;
 
+#if HAVE_LIBCURL
+    if (!mp_curl_get_rates(mpctx->global, &mpctx->abr_fast, &mpctx->abr_slow))
+#endif
     if (!s->idle && s->bytes_per_second > 0) {
         double sample = s->bytes_per_second * 8.0;
-        mpctx->abr_rate = mpctx->abr_rate > 0 ?
-            0.7 * mpctx->abr_rate + 0.3 * sample : sample;
+        mpctx->abr_fast = mpctx->abr_fast > 0 ?
+            0.5 * mpctx->abr_fast + 0.5 * sample : sample;
+        mpctx->abr_slow = mpctx->abr_slow > 0 ?
+            0.9 * mpctx->abr_slow + 0.1 * sample : sample;
     }
-    if (mpctx->abr_rate <= 0)
+    if (mpctx->abr_fast <= 0)
         return;
+    double rate = MPMIN(mpctx->abr_fast, mpctx->abr_slow);
 
-    int budget = MPMIN(mpctx->abr_rate * 0.75, INT_MAX);
+    if (stall) {
+        mpctx->abr_fast = mpctx->abr_slow = MPMIN(rate, cur->hls_bitrate * 0.8);
+        rate = mpctx->abr_fast;
+    }
+
+    int budget = MPMIN(rate * 0.75, INT_MAX);
     int best = 0, lowest = INT_MAX;
     for (int n = 0; n < mpctx->num_tracks; n++) {
         struct track *t = mpctx->tracks[n];
         if (t->type != STREAM_VIDEO || t->demuxer != cur->demuxer ||
-            t->hls_bitrate <= 0)
+            t->hls_bitrate <= 0 || !abr_allowed(mpctx, t))
             continue;
         lowest = MPMIN(lowest, t->hls_bitrate);
         if (t->hls_bitrate <= budget)
@@ -759,29 +806,43 @@ static void handle_hls_adaptive(struct MPContext *mpctx,
     }
     if (!best)
         best = lowest;
-    if (best == cur->hls_bitrate)
+    if (stall && best >= cur->hls_bitrate) {
+        int lower = 0;
+        for (int n = 0; n < mpctx->num_tracks; n++) {
+            struct track *t = mpctx->tracks[n];
+            if (t->type == STREAM_VIDEO && t->demuxer == cur->demuxer &&
+                t->hls_bitrate > lower && t->hls_bitrate < cur->hls_bitrate &&
+                abr_allowed(mpctx, t))
+                lower = t->hls_bitrate;
+        }
+        if (lower)
+            best = lower;
+    }
+    if (best == INT_MAX || best == cur->hls_bitrate)
         return;
 
     double buffered = s->ts_info.duration;
     bool up = best > cur->hls_bitrate;
     if (up && (buffered < 10 || now - mpctx->abr_last_switch < 10))
         return;
-    if (!up && ((buffered > 8 && !mpctx->paused_for_cache) ||
-                now - mpctx->abr_last_switch < 5))
+    if (!up && !stall && abr_allowed(mpctx, cur) && ((buffered > 8 && !mpctx->paused_for_cache) ||
+                          now - mpctx->abr_last_switch < 5))
         return;
 
     struct track *vt = find_variant(mpctx, STREAM_VIDEO, cur, best);
     if (!vt)
         return;
     MP_VERBOSE(mpctx, "Adaptive: %d -> %d kbit/s (estimate %d kbit/s, "
-               "buffer %.1fs)\n", cur->hls_bitrate / 1000, best / 1000,
-               (int)(mpctx->abr_rate / 1000), buffered);
+               "buffer %.1fs%s)\n", cur->hls_bitrate / 1000, best / 1000,
+               (int)(rate / 1000), buffered, stall ? ", stalled" : "");
     mpctx->abr_last_switch = now;
     struct track *acur = mpctx->current_track[0][STREAM_AUDIO];
     mp_switch_track(mpctx, STREAM_VIDEO, vt, 0);
     if (acur && acur->hls_bitrate > 0 && acur->hls_bitrate != best) {
         struct track *at = find_variant(mpctx, STREAM_AUDIO, acur, best);
-        if (at)
+        if (!at)
+            at = abr_pick_audio(mpctx, acur, budget / 6);
+        if (at && at != acur)
             mp_switch_track(mpctx, STREAM_AUDIO, at, 0);
     }
 }
