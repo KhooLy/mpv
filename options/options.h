@@ -258,6 +258,9 @@ typedef struct MPOpts {
     bool use_filedir_conf;
     int hls_bitrate;
     bool hls_adaptive;
+    double live_latency;
+    double live_speed_min;
+    double live_speed_max;
     int edition_id;
     bool flatten_editions;
     bool show_dependent_tracks;

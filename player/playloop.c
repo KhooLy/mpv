@@ -786,6 +786,49 @@ static void handle_hls_adaptive(struct MPContext *mpctx,
     }
 }
 
+static void handle_live_latency(struct MPContext *mpctx,
+                                struct demux_reader_state *s, double now)
+{
+    struct MPOpts *opts = mpctx->opts;
+    struct demuxer *d = mpctx->demuxer;
+    double target = opts->live_latency;
+    double speed = 1.0;
+
+    bool live = d && d->is_network && !d->seekable && !s->eof;
+    if (target <= 0 || !live || !mpctx->restart_complete ||
+        mpctx->paused_for_cache || mpctx->play_dir < 0 ||
+        s->ts_info.duration < 0)
+    {
+        mpctx->live_avg = -1;
+        if (mpctx->live_speed != 1.0) {
+            mpctx->live_speed = 1.0;
+            update_playback_speed(mpctx);
+        }
+        return;
+    }
+
+    if (now < mpctx->live_next_check)
+        return;
+    mpctx->live_next_check = now + 0.5;
+
+    double buffered = s->ts_info.duration;
+    mpctx->live_avg = mpctx->live_avg < 0 ? buffered :
+                      0.85 * mpctx->live_avg + 0.15 * buffered;
+    double err = mpctx->live_avg - target;
+    double band = mpctx->live_speed != 1.0 ? 0.2 : 0.5;
+    if (err > band)
+        speed = MPMIN(1 + 0.1 * err, opts->live_speed_max);
+    else if (err < -band)
+        speed = MPMAX(1 + 0.1 * err, opts->live_speed_min);
+
+    if (speed != mpctx->live_speed) {
+        MP_VERBOSE(mpctx, "Live latency %.1fs (target %.1fs): speed %.3f\n",
+                   mpctx->live_avg, target, speed);
+        mpctx->live_speed = speed;
+        update_playback_speed(mpctx);
+    }
+}
+
 static void handle_update_cache(struct MPContext *mpctx)
 {
     bool force_update = false;
@@ -804,6 +847,7 @@ static void handle_update_cache(struct MPContext *mpctx)
     mpctx->demux_underrun |= s.underrun;
 
     handle_hls_adaptive(mpctx, &s, now);
+    handle_live_latency(mpctx, &s, now);
 
     int cache_buffer = 100;
     bool use_pause_on_low_cache = opts->cache_pause && mpctx->play_dir > 0;

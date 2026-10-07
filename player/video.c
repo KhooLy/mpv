@@ -716,7 +716,7 @@ static double find_best_speed(struct MPContext *mpctx, double vsync)
         double dur = mpctx->past_frames[n].approx_duration;
         if (dur <= 0)
             continue;
-        double best = calc_best_speed(vsync, dur / mpctx->opts->playback_speed,
+        double best = calc_best_speed(vsync, dur / get_playback_speed(mpctx),
                                  mpctx->opts->sync_max_video_change / 100,
                                  mpctx->opts->sync_max_factor);
         if (best <= 0)
@@ -781,7 +781,7 @@ static void adjust_audio_drift_compensation(struct MPContext *mpctx, double vsyn
     const double SLEW_RAMP_FRAMES = 10.0;
 
     double max_correct = opts->sync_max_audio_change / 100;
-    double other = opts->playback_speed * mpctx->speed_factor_v;
+    double other = get_playback_speed(mpctx) * mpctx->speed_factor_v;
     double comp = 1.0 + mpctx->audio_drift_compensation;
 
     double alpha = vsync / (AVD_FILTER_TIME + vsync);
@@ -839,7 +839,7 @@ static void handle_display_sync_frame(struct MPContext *mpctx,
         return;
 
     double approx_duration = MPMAX(0, mpctx->past_frames[0].approx_duration);
-    double adjusted_duration = approx_duration / opts->playback_speed;
+    double adjusted_duration = approx_duration / get_playback_speed(mpctx);
     if (adjusted_duration > 0.5)
         return;
 
@@ -906,7 +906,7 @@ static void handle_display_sync_frame(struct MPContext *mpctx,
     }
 
     mpctx->total_avsync_change = 0;
-    update_av_diff(mpctx, time_left * opts->playback_speed);
+    update_av_diff(mpctx, time_left * get_playback_speed(mpctx));
 
     mpctx->past_frames[0].num_vsyncs = num_vsyncs;
 
@@ -1107,7 +1107,7 @@ void write_video(struct MPContext *mpctx)
             get_relative_time(mpctx);
             if (vo_c->is_sparse && !mpctx->ao_chain) {
                 MP_VERBOSE(mpctx, "assuming this is an image\n");
-                mpctx->time_frame += opts->image_display_duration / opts->playback_speed;
+                mpctx->time_frame += opts->image_display_duration / get_playback_speed(mpctx);
             } else if (mpctx->last_frame_duration > 0) {
                 MP_VERBOSE(mpctx, "using demuxer frame duration for last frame\n");
                 mpctx->time_frame += mpctx->last_frame_duration;

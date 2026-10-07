@@ -1804,6 +1804,9 @@ static void play_current_file(struct MPContext *mpctx)
     mpctx->abr_rate = 0;
     mpctx->abr_next_check = 0;
     mpctx->abr_last_switch = mp_time_sec();
+    mpctx->live_speed = 1.0;
+    mpctx->live_next_check = 0;
+    mpctx->live_avg = -1;
     error_report_start(mpctx);
     mpctx->load_start = mp_time_sec();
     mpctx->open_time = -1;

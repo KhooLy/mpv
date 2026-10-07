@@ -407,6 +407,10 @@ typedef struct MPContext {
     double abr_next_check;
     double abr_last_switch;
 
+    double live_speed;
+    double live_next_check;
+    double live_avg;
+
     struct error_report *error_report;
 
     double load_start;
@@ -541,6 +545,7 @@ void fill_audio_out_buffers(struct MPContext *mpctx);
 double written_audio_pts(struct MPContext *mpctx);
 void clear_audio_output_buffers(struct MPContext *mpctx);
 void update_playback_speed(struct MPContext *mpctx);
+double get_playback_speed(struct MPContext *mpctx);
 void uninit_audio_out(struct MPContext *mpctx);
 void uninit_audio_chain(struct MPContext *mpctx);
 void reinit_audio_chain_src(struct MPContext *mpctx, struct track *track);

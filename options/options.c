@@ -662,6 +662,9 @@ static const m_option_t mp_opts[] = {
     {"hls-bitrate", OPT_CHOICE(hls_bitrate,
         {"no", -1}, {"min", 0}, {"max", INT_MAX}), M_RANGE(0, INT_MAX)},
     {"hls-adaptive", OPT_BOOL(hls_adaptive)},
+    {"live-latency", OPT_DOUBLE(live_latency), M_RANGE(0, DBL_MAX)},
+    {"live-speed-min", OPT_DOUBLE(live_speed_min), M_RANGE(0.25, 1.0)},
+    {"live-speed-max", OPT_DOUBLE(live_speed_max), M_RANGE(1.0, 4.0)},
 
     {"display-tags", OPT_STRINGLIST(display_tags)},
 
@@ -1076,6 +1079,8 @@ static const struct MPOpts mp_default_opts = {
     .demuxer_thread = true,
     .demux_termination_timeout = 0.1,
     .hls_bitrate = INT_MAX,
+    .live_speed_min = 0.97,
+    .live_speed_max = 1.05,
     .cache_pause = true,
     .cache_pause_wait = 1.0,
     .ab_loop = {MP_NOPTS_VALUE, MP_NOPTS_VALUE},

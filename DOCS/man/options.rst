@@ -5905,6 +5905,16 @@ Network
     with at least 10 seconds buffered, switching down when the buffer runs low.
     Each switch discards the buffered data of the old variant.
 
+``--live-latency=<seconds>``
+    Hold live streams (network streams of unknown duration, such as live HLS
+    or DASH) about this many seconds behind the live edge by playing slightly
+    faster or slower (default: 0, disabled). The distance is measured as the
+    amount of buffered data, so ``--demuxer-readahead-secs`` and
+    ``--cache-secs`` must not be lower than the target.
+
+``--live-speed-min=<0.25-1.0>``, ``--live-speed-max=<1.0-4.0>``
+    Limits for the speed used by ``--live-latency`` (default: 0.97 and 1.05).
+
 Network backend (libcurl)
 -------------------------
 

@@ -62,7 +62,7 @@ static void update_speed_filters(struct MPContext *mpctx)
         return;
 
     double pitch = mpctx->opts->playback_pitch;
-    double speed = mpctx->opts->playback_speed;
+    double speed = get_playback_speed(mpctx);
     double resample = mpctx->speed_factor_a;
     double drop = 1.0;
 
@@ -279,10 +279,16 @@ void audio_update_volume(struct MPContext *mpctx)
 }
 
 // Call this if opts->playback_speed or mpctx->speed_factor_* change.
+double get_playback_speed(struct MPContext *mpctx)
+{
+    return mpctx->opts->playback_speed * mpctx->live_speed;
+}
+
 void update_playback_speed(struct MPContext *mpctx)
 {
-    mpctx->audio_speed = mpctx->opts->playback_speed * mpctx->speed_factor_a;
-    mpctx->video_speed = mpctx->opts->playback_speed * mpctx->speed_factor_v;
+    double speed = get_playback_speed(mpctx);
+    mpctx->audio_speed = speed * mpctx->speed_factor_a;
+    mpctx->video_speed = speed * mpctx->speed_factor_v;
 
     update_speed_filters(mpctx);
 }
@@ -934,7 +940,7 @@ void audio_start_ao(struct MPContext *mpctx)
     if (pts != MP_NOPTS_VALUE && apts != MP_NOPTS_VALUE && pts < apts &&
         mpctx->video_status != STATUS_EOF)
     {
-        double diff = (apts - pts) / mpctx->opts->playback_speed;
+        double diff = (apts - pts) / get_playback_speed(mpctx);
         if (!get_internal_paused(mpctx))
             mp_set_timeout(mpctx, diff);
         if (mpctx->logged_async_diff != diff) {
