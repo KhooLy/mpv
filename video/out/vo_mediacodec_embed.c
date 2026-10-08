@@ -505,7 +505,11 @@ static void osd_update(struct vo *vo, struct osd_layer *o, struct osd_req *r)
         [SUBBITMAP_LIBASS] = true,
         [SUBBITMAP_BGRA] = true,
     };
+    int64_t t0 = monotonic_ns();
     struct sub_bitmap_list *list = osd_render(vo->osd, res, r->pts, 0, formats);
+    int64_t t1 = monotonic_ns();
+    if (t1 - t0 > 20000000)
+        MP_VERBOSE(vo, "subrender pts=%.3f took %.1f ms\n", r->pts, (t1 - t0) / 1e6);
     if (list->change_id == o->change_id) {
         talloc_free(list);
         return;
