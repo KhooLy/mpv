@@ -51,6 +51,7 @@ struct ad_track {
 int ad_open(struct demuxer *demuxer, const struct ad_ops *ops, void *front,
             struct ad_track *tracks, int num_tracks, const char *filetype);
 void *ad_front(struct demuxer *demuxer);
+int ad_initial_variant(struct demuxer *demuxer, struct variant **vars, int num_vars);
 bool ad_var_allowed(struct demuxer *demuxer, struct variant *v);
 char *ad_resolve_url(void *ctx, const char *base, const char *ref);
 bstr ad_fetch(struct demuxer *demuxer, void *ctx, const char *url, int max);

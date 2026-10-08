@@ -259,6 +259,7 @@ typedef struct MPOpts {
     int hls_bitrate;
     bool hls_adaptive;
     bool hls_native;
+    bool dash_native;
     int abr_max_bitrate;
     int abr_max_height;
     double live_latency;

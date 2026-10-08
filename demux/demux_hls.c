@@ -208,41 +208,6 @@ static struct playlist *load_playlist(struct demuxer *demuxer, const char *url)
 }
 
 
-static int initial_variant(struct demuxer *demuxer, struct master *m)
-{
-    struct MPOpts *o = mp_get_config_group(NULL, demuxer->global, &mp_opt_root);
-    int limit = o->hls_bitrate;
-    talloc_free(o);
-
-    bool any_video = false;
-    for (int n = 0; n < m->num_vars; n++)
-        any_video |= m->vars[n]->video;
-
-    int best = -1;
-    bool best_ok = false;
-    for (int n = 0; n < m->num_vars; n++) {
-        struct variant *v = m->vars[n];
-        if (v->video != any_video)
-            continue;
-        bool ok = (limit < 0 || v->bw <= limit) && ad_var_allowed(demuxer, v);
-        if (limit < 0 && best < 0) {
-            best = n;
-            continue;
-        }
-        if (limit < 0)
-            continue;
-        if (best < 0 || (ok && !best_ok) ||
-            (ok && best_ok && v->bw > m->vars[best]->bw) ||
-            (!ok && !best_ok && v->bw < m->vars[best]->bw))
-        {
-            best = n;
-            best_ok = ok;
-        }
-    }
-    return best;
-}
-
-
 static struct playlist *hls_load(struct demuxer *demuxer, struct variant *v)
 {
     return load_playlist(demuxer, v->url);
@@ -302,7 +267,7 @@ static int d_open(struct demuxer *demuxer, enum demux_check check)
         main.vars[0] = v;
         main.num_vars = 1;
     } else {
-        main.cur = initial_variant(demuxer, m);
+        main.cur = ad_initial_variant(demuxer, m->vars, m->num_vars);
         if (main.cur < 0)
             return -1;
         main.vars = m->vars;

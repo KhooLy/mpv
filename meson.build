@@ -110,6 +110,7 @@ sources = files(
     'demux/demux_mpv.c',
     'demux/demux_null.c',
     'demux/demux_adaptive.c',
+    'demux/demux_dash.c',
     'demux/demux_hls.c',
     'demux/demux_playlist.c',
     'demux/demux_raw.c',

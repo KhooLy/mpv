@@ -376,7 +376,12 @@ static int pick_next_variant(struct demuxer *demuxer, struct lane *l)
     if (!adaptive || p->rate_fast <= 0 || l->num_vars < 2)
         return l->cur;
 
-    double budget = MPMIN(p->rate_fast, p->rate_slow) * 0.75;
+    double share = 1;
+    for (int n = 0; n < p->num_lanes; n++) {
+        if (p->lanes[n]->indep)
+            share = l->indep ? 0.2 : 0.8;
+    }
+    double budget = MPMIN(p->rate_fast, p->rate_slow) * 0.75 * share;
     int best = -1, lowest = -1;
     for (int n = 0; n < l->num_vars; n++) {
         struct variant *v = l->vars[n];
@@ -400,8 +405,8 @@ static int pick_next_variant(struct demuxer *demuxer, struct lane *l)
     }
     l->up_count = 0;
     l->last_switch = now;
-    MP_VERBOSE(demuxer, "Adaptive: %d -> %d kbit/s (estimate %d kbit/s)\n",
-               cur->bw / 1000, l->vars[best]->bw / 1000, (int)(budget / 0.75 / 1000));
+    MP_VERBOSE(demuxer, "Adaptive: %d -> %d kbit/s (budget %d kbit/s)\n",
+               cur->bw / 1000, l->vars[best]->bw / 1000, (int)(budget / 1000));
     return best;
 }
 
@@ -425,7 +430,7 @@ static void finish_segment(struct demuxer *demuxer, struct lane *l)
     update_rates(p, l);
     drop_current(l);
     l->seq++;
-    if (l->main) {
+    if (l->main || l->indep) {
         l->cur = pick_next_variant(demuxer, l);
     } else {
         follow_main(p, l, p->lanes[0]);
@@ -483,10 +488,12 @@ static void read_lane(struct demuxer *demuxer, struct lane *l)
             return;
         }
         {
-            if (demux_cancel_test(demuxer) || ++l->fails > 3) {
+            if (demux_cancel_test(demuxer) || ++l->fails > (p->live ? 20 : 3)) {
                 l->eof = true;
                 return;
             }
+            if (p->live)
+                mp_sleep_ns(500 * INT64_C(1000000));
             int fallback = -1;
             for (int n = 0; n < l->num_vars; n++) {
                 if (!l->vars[n]->bad && l->vars[n]->video == v->video) {
@@ -635,6 +642,40 @@ void ad_close(struct demuxer *demuxer)
     }
 }
 
+
+int ad_initial_variant(struct demuxer *demuxer, struct variant **vars, int num_vars)
+{
+    struct MPOpts *o = mp_get_config_group(NULL, demuxer->global, &mp_opt_root);
+    int limit = o->hls_bitrate;
+    talloc_free(o);
+
+    bool any_video = false;
+    for (int n = 0; n < num_vars; n++)
+        any_video |= vars[n]->video;
+
+    int best = -1;
+    bool best_ok = false;
+    for (int n = 0; n < num_vars; n++) {
+        struct variant *v = vars[n];
+        if (v->video != any_video)
+            continue;
+        bool ok = (limit < 0 || v->bw <= limit) && ad_var_allowed(demuxer, v);
+        if (limit < 0 && best < 0) {
+            best = n;
+            continue;
+        }
+        if (limit < 0)
+            continue;
+        if (best < 0 || (ok && !best_ok) ||
+            (ok && best_ok && v->bw > vars[best]->bw) ||
+            (!ok && !best_ok && v->bw < vars[best]->bw))
+        {
+            best = n;
+            best_ok = ok;
+        }
+    }
+    return best;
+}
 
 static struct lane *new_lane(struct priv *p, bool main, struct variant **vars,
                              int num_vars)

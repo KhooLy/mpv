@@ -5916,6 +5916,15 @@ Network
     encryption, byte ranges, subtitle renditions or discontinuities in
     non-live streams are left to FFmpeg's demuxer.
 
+``--dash-native=<yes|no>``
+    Use mpv's own DASH demuxer instead of FFmpeg's (default: no). It handles
+    single-period static and dynamic manifests that use ``SegmentTemplate``
+    (with or without ``SegmentTimeline``) or ``SegmentList``, with separate
+    video and audio adaptation sets. With ``--hls-adaptive`` video and audio
+    representations are switched per segment without dropping buffered data.
+    Manifests with multiple periods, ``ContentProtection``, subtitle
+    adaptation sets, or ``SegmentBase`` only are left to FFmpeg's demuxer.
+
 ``--abr-max-bitrate=<bits/s>``, ``--abr-max-height=<pixels>``
     Upper limits for the variants ``--hls-adaptive`` may pick, and for the
     initial variant picked by ``--hls-bitrate`` (default: 0, no limit). If every
