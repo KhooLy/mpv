@@ -5909,15 +5909,16 @@ Network
     and ``--abr-max-height`` for limits.
 
 ``--hls-native=<yes|no>``
-    Use mpv's own HLS demuxer instead of FFmpeg's (default: no). It plays
+    Use mpv's own HLS demuxer instead of FFmpeg's (default: yes). It plays
     master and media playlists, MPEG-TS and fMP4 segments, separate audio
     renditions and live streams. With ``--hls-adaptive`` it picks the variant
-    per segment, so switching keeps the buffered data. Playlists using
-    encryption, byte ranges, subtitle renditions or discontinuities in
-    non-live streams are left to FFmpeg's demuxer.
+    per segment, so switching keeps the buffered data. AES-128 encrypted
+    segments are decrypted. Playlists using SAMPLE-AES, byte ranges, subtitle
+    renditions or discontinuities in non-live streams are left to FFmpeg's
+    demuxer.
 
 ``--dash-native=<yes|no>``
-    Use mpv's own DASH demuxer instead of FFmpeg's (default: no). It handles
+    Use mpv's own DASH demuxer instead of FFmpeg's (default: yes). It handles
     single-period static and dynamic manifests that use ``SegmentTemplate``
     (with or without ``SegmentTimeline``) or ``SegmentList``, with separate
     video and audio adaptation sets. With ``--hls-adaptive`` video and audio

@@ -11,6 +11,9 @@ struct seg {
     double start;
     int64_t seq;
     bool discont;
+    char *key_url;
+    unsigned char iv[16];
+    bool has_iv;
 };
 
 struct playlist {

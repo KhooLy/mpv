@@ -81,6 +81,9 @@ static bool parse_playlist(void *ctx, struct demuxer *log, bstr text,
     double next_dur = -1;
     bool next_discont = false;
     char *map_url = NULL;
+    char *key_url = NULL;
+    unsigned char iv[16] = {0};
+    bool has_iv = false;
     char *pending_stream_inf = NULL;
 
     while (text.len) {
@@ -110,9 +113,12 @@ static bool parse_playlist(void *ctx, struct demuxer *log, bstr text,
                 .map_url = map_url,
                 .dur = next_dur > 0 ? next_dur : 0,
                 .discont = next_discont,
+                .key_url = key_url,
+                .has_iv = has_iv,
                 .seq = pl->first_seq + pl->num,
                 .start = pl->total,
             };
+            memcpy(s.iv, iv, sizeof(iv));
             MP_TARRAY_APPEND(pl, pl->segs, pl->num, s);
             pl->total += s.dur;
             next_dur = -1;
@@ -138,8 +144,32 @@ static bool parse_playlist(void *ctx, struct demuxer *log, bstr text,
             map_url = u ? ad_resolve_url(ctx, url, u) : NULL;
         } else if (bstr_eatstart0(&tag, "#EXT-X-KEY:")) {
             char *m = attr_get(ctx, tag, "METHOD");
-            if (m && strcmp(m, "NONE"))
+            char *fmt = attr_get(ctx, tag, "KEYFORMAT");
+            if (!m || !strcmp(m, "NONE")) {
+                key_url = NULL;
+                has_iv = false;
+            } else if (!strcmp(m, "AES-128") && (!fmt || !strcmp(fmt, "identity"))) {
+                char *u = attr_get(ctx, tag, "URI");
+                if (!u)
+                    goto unsupported;
+                key_url = ad_resolve_url(ctx, url, u);
+                char *iv_s = attr_get(ctx, tag, "IV");
+                has_iv = iv_s && strlen(iv_s) > 2;
+                memset(iv, 0, sizeof(iv));
+                if (has_iv) {
+                    const char *hex = iv_s + 2;
+                    size_t n = strlen(hex);
+                    if (n > 32)
+                        goto unsupported;
+                    for (size_t k = 0; k < n; k++) {
+                        int c = hex[n - 1 - k];
+                        int val = c <= '9' ? c - '0' : (c | 0x20) - 'a' + 10;
+                        iv[15 - k / 2] |= (k & 1) ? val << 4 : val;
+                    }
+                }
+            } else {
                 goto unsupported;
+            }
         } else if (bstr_startswith0(line, "#EXT-X-BYTERANGE") ||
                    bstr_startswith0(line, "#EXT-X-I-FRAMES-ONLY") ||
                    bstr_startswith0(line, "#EXT-X-DEFINE"))

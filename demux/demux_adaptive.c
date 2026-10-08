@@ -2,6 +2,9 @@
 #include <limits.h>
 #include <string.h>
 
+#include <libavutil/aes.h>
+#include <libavutil/mem.h>
+
 #include "common/common.h"
 #include "common/msg.h"
 #include "options/m_config.h"
@@ -57,6 +60,8 @@ struct lane {
 
     char *init_url;
     bstr init;
+    char *key_url;
+    unsigned char key[16];
 };
 
 struct priv {
@@ -294,7 +299,66 @@ static struct demuxer *open_segment(struct demuxer *demuxer, struct lane *l,
         .stream_flags = demuxer->stream_origin,
         .depth = demuxer->depth + 1,
     };
-    return demux_open_url(s->url, &params, demuxer->cancel, demuxer->global);
+    if (!s->key_url)
+        return demux_open_url(s->url, &params, demuxer->cancel, demuxer->global);
+
+    if (!l->key_url || strcmp(l->key_url, s->key_url)) {
+        bstr k = ad_fetch(demuxer, l, s->key_url, 64);
+        if (k.len != 16) {
+            MP_ERR(demuxer, "Failed to fetch the decryption key.\n");
+            return NULL;
+        }
+        memcpy(l->key, k.start, 16);
+        talloc_free(l->key_url);
+        l->key_url = talloc_strdup(l, s->key_url);
+    }
+
+    void *tmp = talloc_new(NULL);
+    int64_t t0 = mp_time_ns();
+    bstr enc = ad_fetch(demuxer, tmp, s->url, 256 * 1024 * 1024);
+    l->seg_ns += mp_time_ns() - t0;
+    l->seg_bytes += enc.len;
+    if (!enc.len || enc.len % 16) {
+        talloc_free(tmp);
+        return NULL;
+    }
+    unsigned char iv[16];
+    if (s->has_iv) {
+        memcpy(iv, s->iv, 16);
+    } else {
+        memset(iv, 0, 16);
+        for (int n = 0; n < 8; n++)
+            iv[15 - n] = (uint64_t)s->seq >> (8 * n);
+    }
+    struct AVAES *aes = av_aes_alloc();
+    if (!aes) {
+        talloc_free(tmp);
+        return NULL;
+    }
+    av_aes_init(aes, l->key, 128, 1);
+    uint8_t *plain = av_malloc(enc.len);
+    av_aes_crypt(aes, plain, (const uint8_t *)enc.start, enc.len / 16, iv, 1);
+    av_free(aes);
+    size_t len = enc.len;
+    int pad = plain[len - 1];
+    if (pad >= 1 && pad <= 16)
+        len -= pad;
+    talloc_free(tmp);
+
+    size_t init_len = s->map_url ? l->init.len : 0;
+    char *all = talloc_size(l, init_len + len);
+    if (init_len)
+        memcpy(all, l->init.start, init_len);
+    memcpy(all + init_len, plain, len);
+    av_free(plain);
+    params.init_fragment = (bstr){all, init_len + len};
+    struct demuxer *d = demux_open_url("memory://", &params, demuxer->cancel,
+                                       demuxer->global);
+    if (d)
+        talloc_steal(d, all);
+    else
+        talloc_free(all);
+    return d;
 }
 
 static void account(struct lane *l, struct demuxer *d, int64_t t0)
