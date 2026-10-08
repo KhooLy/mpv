@@ -46,6 +46,7 @@ struct lane {
     double base;
     bool have_base;
     bool any_selected;
+    bool prefilled;
     bool eof;
     struct demux_packet *next;
 
@@ -573,8 +574,11 @@ static void reselect(struct demuxer *demuxer)
         l->any_selected = vs_selected(l);
         if (!was && l->any_selected) {
             l->eof = false;
-            l->dts = MP_NOPTS_VALUE;
-            TA_FREEP(&l->next);
+            if (!l->prefilled) {
+                l->dts = MP_NOPTS_VALUE;
+                TA_FREEP(&l->next);
+            }
+            l->prefilled = false;
         }
         apply_selection(l);
     }
@@ -722,6 +726,22 @@ static bool open_lane(struct demuxer *demuxer, struct lane *l)
 }
 
 
+static double prefill(struct demuxer *demuxer, struct lane *l)
+{
+    for (int n = 0; n < l->num_map; n++) {
+        if (l->map[n])
+            demuxer_select_track(l->d, demux_get_stream(l->d, n), MP_NOPTS_VALUE,
+                                 true);
+    }
+    for (int n = 0; n < 200 && !l->next && !l->eof; n++)
+        read_lane(demuxer, l);
+    if (!l->next)
+        return MP_NOPTS_VALUE;
+    l->prefilled = true;
+    struct demux_packet *pkt = l->next;
+    return pkt->dts != MP_NOPTS_VALUE ? pkt->dts : pkt->pts;
+}
+
 int ad_open(struct demuxer *demuxer, const struct ad_ops *ops, void *front,
             struct ad_track *tracks, int num_tracks, const char *filetype)
 {
@@ -766,7 +786,9 @@ int ad_open(struct demuxer *demuxer, const struct ad_ops *ops, void *front,
     struct playlist *mpl = lane_var(main)->pl;
     p->duration = mpl->endlist ? mpl->total : -1;
     demuxer->duration = p->duration;
-    demuxer->start_time = main->d ? main->d->start_time : 0;
+    double first = prefill(demuxer, main);
+    demuxer->start_time = first != MP_NOPTS_VALUE ? first
+                        : main->d ? main->d->start_time : 0;
     demuxer->seekable = !p->live;
     demuxer->partially_seekable = false;
     demuxer->is_network = true;
