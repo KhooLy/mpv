@@ -33,6 +33,7 @@ struct playlist {
     double total;
     bool endlist;
     bool can_block;
+    bool ll;
     double part_target;
     double hold_back;
 };

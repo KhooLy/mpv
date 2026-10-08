@@ -553,8 +553,10 @@ static struct playlist *dash_load(struct demuxer *demuxer, struct variant *v,
             int64_t first = 0, last;
             if (dynamic) {
                 double ast = parse_datetime(xattr(d->mpd, "availabilityStartTime"));
+                double ato = MPMIN(tpl_num(rep, as, per, "availabilityTimeOffset", 0), sdur);
+                pl->ll = ato > 0;
                 double now = (double)time(NULL);
-                double edge = (now - ast - pstart) / sdur;
+                double edge = (now - ast - pstart + ato) / sdur;
                 last = (int64_t)floor(edge) - 1;
                 double tsbd = parse_duration(xattr(d->mpd, "timeShiftBufferDepth"));
                 int64_t win = tsbd > 0 ? (int64_t)(tsbd / sdur) : 10;

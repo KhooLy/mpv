@@ -825,7 +825,7 @@ static bool open_lane(struct demuxer *demuxer, struct lane *l)
     p->live |= !pl->endlist;
     int start = 0;
     if (!pl->endlist)
-        start = MPMAX(pl->num - 3, 0);
+        start = MPMAX(pl->num - (pl->ll ? 1 : 3), 0);
     l->part = 0;
     if (!pl->endlist && pl->num && pl->segs[pl->num - 1].num_parts &&
         !pl->segs[pl->num - 1].url)

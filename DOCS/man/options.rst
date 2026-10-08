@@ -5925,7 +5925,8 @@ Network
     video and audio adaptation sets. With ``--hls-adaptive`` video and audio
     representations are switched per segment without dropping buffered data.
     Manifests with multiple periods, ``ContentProtection``, subtitle
-    adaptation sets, or ``SegmentBase`` only are left to FFmpeg's demuxer.
+    adaptation sets, or ``SegmentBase`` only are left to FFmpeg's demuxer. Segments advertised with
+    ``availabilityTimeOffset`` are fetched while they are still being produced.
 
 ``--abr-max-bitrate=<bits/s>``, ``--abr-max-height=<pixels>``
     Upper limits for the variants ``--hls-adaptive`` may pick, and for the
