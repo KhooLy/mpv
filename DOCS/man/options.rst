@@ -5920,7 +5920,8 @@ Network
 
 ``--dash-native=<yes|no>``
     Use mpv's own DASH demuxer instead of FFmpeg's (default: yes). It handles
-    single-period static and dynamic manifests that use ``SegmentTemplate``
+    static manifests with several periods and single-period dynamic
+    manifests that use ``SegmentTemplate``
     (with or without ``SegmentTimeline``) or ``SegmentList``, with separate
     video and audio adaptation sets. With ``--hls-adaptive`` video and audio
     representations are switched per segment without dropping buffered data.
