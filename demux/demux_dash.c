@@ -317,16 +317,22 @@ static struct xnode *period_of(struct dash *d)
     return xkid(d->mpd, "Period", 0);
 }
 
-static struct xnode *find_rep(struct dash *d, struct rep_front *f)
+static struct xnode *find_rep(struct xnode *per, struct rep_front *f, int bw)
 {
-    struct xnode *as = xkid(period_of(d), "AdaptationSet", f->as);
+    struct xnode *as = xkid(per, "AdaptationSet", f->as);
+    struct xnode *near = NULL;
     for (int i = 0; as && i < as->num_kids; i++) {
         struct xnode *r = as->kids[i];
+        if (strcmp(r->name, "Representation"))
+            continue;
         const char *id = xattr(r, "id");
-        if (!strcmp(r->name, "Representation") && id && !strcmp(id, f->id))
+        if (id && !strcmp(id, f->id))
             return r;
+        if (!near || fabs(xnum(r, "bandwidth", 0) - bw) <
+                     fabs(xnum(near, "bandwidth", 0) - bw))
+            near = r;
     }
-    return NULL;
+    return near;
 }
 
 static bool is_dynamic(struct dash *d)
@@ -378,11 +384,11 @@ static char *expand(void *ctx, const char *tmpl, const char *rep_id, int bw,
     return out;
 }
 
-static char *base_for(struct dash *d, void *ctx, struct xnode *as,
-                      struct xnode *rep)
+static char *base_for(struct dash *d, void *ctx, struct xnode *per,
+                      struct xnode *as, struct xnode *rep)
 {
     char *base = talloc_strdup(ctx, d->url);
-    struct xnode *chain[4] = {d->mpd, period_of(d), as, rep};
+    struct xnode *chain[4] = {d->mpd, per, as, rep};
     for (int i = 0; i < 4; i++) {
         struct xnode *b = xkid(chain[i], "BaseURL", 0);
         if (b && b->text)
@@ -463,32 +469,31 @@ static void refresh_mpd(struct demuxer *demuxer, struct dash *d)
     talloc_free(ctx);
 }
 
-static struct playlist *dash_load(struct demuxer *demuxer, struct variant *v,
-                                  int64_t msn, int part)
+static struct playlist *load_period(struct dash *d, struct variant *v,
+                                    int idx, void *parent)
 {
-    struct dash *d = ad_front(demuxer);
     struct rep_front *f = v->front;
-    if (v->pl)
-        refresh_mpd(demuxer, d);
-
-    struct xnode *per = period_of(d);
+    struct xnode *per = xkid(d->mpd, "Period", idx);
     struct xnode *as = xkid(per, "AdaptationSet", f->as);
-    struct xnode *rep = find_rep(d, f);
+    struct xnode *rep = find_rep(per, f, v->bw);
     if (!rep)
         return NULL;
 
-    void *own = talloc_new(NULL);
+    void *own = talloc_new(parent);
     struct playlist *pl = talloc_zero(own, struct playlist);
     pl->own = own;
-    char *base = base_for(d, own, as, rep);
+    char *base = base_for(d, own, per, as, rep);
     int bw = (int)xnum(rep, "bandwidth", 0);
-    const char *id = f->id;
+    const char *id = xattr(rep, "id") ? xattr(rep, "id") : f->id;
     bool dynamic = is_dynamic(d);
 
     double pstart = parse_duration(xattr(per, "start"));
     if (pstart < 0)
         pstart = 0;
     double pdur = parse_duration(xattr(per, "duration"));
+    struct xnode *next = xkid(d->mpd, "Period", idx + 1);
+    if (pdur < 0 && next && parse_duration(xattr(next, "start")) > pstart)
+        pdur = parse_duration(xattr(next, "start")) - pstart;
     if (pdur < 0) {
         double total = parse_duration(xattr(d->mpd, "mediaPresentationDuration"));
         pdur = total > 0 ? total - pstart : -1;
@@ -613,6 +618,46 @@ static struct playlist *dash_load(struct demuxer *demuxer, struct variant *v,
     return pl;
 }
 
+static struct playlist *dash_load(struct demuxer *demuxer, struct variant *v,
+                                  int64_t msn, int part)
+{
+    struct dash *d = ad_front(demuxer);
+    if (v->pl)
+        refresh_mpd(demuxer, d);
+    int np = xcount(d->mpd, "Period");
+    if (np == 1 || is_dynamic(d))
+        return load_period(d, v, 0, NULL);
+
+    void *own = talloc_new(NULL);
+    struct playlist *all = talloc_zero(own, struct playlist);
+    all->own = own;
+    all->endlist = true;
+    for (int n = 0; n < np; n++) {
+        struct playlist *pl = load_period(d, v, n, own);
+        if (!pl)
+            continue;
+        int first = all->num;
+        double zero = pl->segs[0].start;
+        for (int i = 0; i < pl->num; i++) {
+            struct seg s = pl->segs[i];
+            s.start += all->total - zero;
+            s.discont = i == 0 && first > 0;
+            MP_TARRAY_APPEND(all, all->segs, all->num, s);
+        }
+        if (!first) {
+            all->first_seq = pl->first_seq;
+            all->target = pl->target;
+        }
+        all->target = MPMAX(all->target, pl->target);
+        all->total += pl->total - zero;
+    }
+    if (!all->num) {
+        talloc_free(own);
+        return NULL;
+    }
+    return all;
+}
+
 static const struct ad_ops dash_ops = {
     .load = dash_load,
 };
@@ -673,8 +718,19 @@ static int d_open(struct demuxer *demuxer, enum demux_check check)
     d->mpd = text.len ? xparse(d->mpd_ctx, text) : NULL;
     if (!d->mpd || strcmp(d->mpd->name, "MPD"))
         return -1;
-    if (xcount(d->mpd, "Period") != 1)
+    int num_periods = xcount(d->mpd, "Period");
+    if (num_periods != 1 && is_dynamic(d))
         return -1;
+    for (int n = 0; n < num_periods; n++) {
+        struct xnode *p = xkid(d->mpd, "Period", n);
+        if (xattr(p, "xlink:href"))
+            return -1;
+        for (int a = 0; a < xcount(p, "AdaptationSet"); a++) {
+            struct xnode *as = xkid(p, "AdaptationSet", a);
+            if (xkid(as, "ContentProtection", 0) || !strcmp(content_type(as), "text"))
+                return -1;
+        }
+    }
 
     struct xnode *per = period_of(d);
     struct ad_track *tracks = NULL;

@@ -168,6 +168,8 @@ static bool codec_same(struct mp_codec_params *a, struct mp_codec_params *b)
     if (a->type == STREAM_AUDIO)
         return a->samplerate == b->samplerate &&
                mp_chmap_equals(&a->channels, &b->channels);
+    if (a->type == STREAM_VIDEO)
+        return a->disp_w == b->disp_w && a->disp_h == b->disp_h;
     return true;
 }
 
@@ -385,6 +387,8 @@ static struct demuxer *open_segment(struct demuxer *demuxer, struct lane *l,
                 ? ad_fetch_range(demuxer, l, s->map_url, s->map_off, s->map_len)
                 : ad_fetch(demuxer, l, s->map_url, 2 * 1024 * 1024);
             l->init_off = s->map_off;
+            if (l->init_url)
+                memset(l->codecs[l->cur], 0, 16 * sizeof(l->codecs[l->cur][0]));
             talloc_free(l->init_url);
             l->init_url = talloc_strdup(l, s->map_url);
             if (!l->init.len)
