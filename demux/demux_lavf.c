@@ -1041,6 +1041,8 @@ static void build_editions(demuxer_t *demuxer)
     int hls_bitrate = mp_opts->hls_bitrate;
     int edition_id = mp_opts->edition_id;
     bool flatten_editions = mp_opts->flatten_editions;
+    int abr_max_bitrate = mp_opts->abr_max_bitrate;
+    int abr_max_height = mp_opts->abr_max_height;
     TA_FREEP(&mp_opts);
     if (flatten_editions) {
         MP_VERBOSE(demuxer, "Flattening track-based editions.\n");
@@ -1140,10 +1142,8 @@ static void build_editions(demuxer_t *demuxer)
                 continue;
             int h = rep->codec ? rep->codec->disp_h : 0;
             bool ok = rep->hls_bitrate <= hls_bitrate &&
-                      (!mp_opts->abr_max_bitrate ||
-                       rep->hls_bitrate <= mp_opts->abr_max_bitrate) &&
-                      (!mp_opts->abr_max_height || !h ||
-                       h <= mp_opts->abr_max_height);
+                      (!abr_max_bitrate || rep->hls_bitrate <= abr_max_bitrate) &&
+                      (!abr_max_height || !h || h <= abr_max_height);
             if (best < 0 || (ok && !best_ok) ||
                 (ok && best_ok && rep->hls_bitrate > best_bitrate) ||
                 (!ok && !best_ok && rep->hls_bitrate < best_bitrate))
