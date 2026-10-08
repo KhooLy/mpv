@@ -58,6 +58,7 @@ extern const demuxer_desc_t demuxer_desc_rawvideo;
 extern const demuxer_desc_t demuxer_desc_mf;
 extern const demuxer_desc_t demuxer_desc_matroska;
 extern const demuxer_desc_t demuxer_desc_lavf;
+extern const demuxer_desc_t demuxer_desc_hls;
 extern const demuxer_desc_t demuxer_desc_playlist;
 extern const demuxer_desc_t demuxer_desc_directory;
 extern const demuxer_desc_t demuxer_desc_disc;
@@ -77,6 +78,7 @@ static const demuxer_desc_t *const demuxer_list[] = {
     &demuxer_desc_rawaudio,
     &demuxer_desc_rawvideo,
     &demuxer_desc_matroska,
+    &demuxer_desc_hls,
 #if HAVE_LIBARCHIVE
     &demuxer_desc_libarchive,
 #endif

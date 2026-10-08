@@ -258,6 +258,7 @@ typedef struct MPOpts {
     bool use_filedir_conf;
     int hls_bitrate;
     bool hls_adaptive;
+    bool hls_native;
     int abr_max_bitrate;
     int abr_max_height;
     double live_latency;

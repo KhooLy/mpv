@@ -5908,6 +5908,14 @@ Network
     buffering stall steps down one variant at once. See ``--abr-max-bitrate``
     and ``--abr-max-height`` for limits.
 
+``--hls-native=<yes|no>``
+    Use mpv's own HLS demuxer instead of FFmpeg's (default: no). It plays
+    master and media playlists, MPEG-TS and fMP4 segments, separate audio
+    renditions and live streams. With ``--hls-adaptive`` it picks the variant
+    per segment, so switching keeps the buffered data. Playlists using
+    encryption, byte ranges, subtitle renditions or discontinuities in
+    non-live streams are left to FFmpeg's demuxer.
+
 ``--abr-max-bitrate=<bits/s>``, ``--abr-max-height=<pixels>``
     Upper limits for the variants ``--hls-adaptive`` may pick, and for the
     initial variant picked by ``--hls-bitrate`` (default: 0, no limit). If every
