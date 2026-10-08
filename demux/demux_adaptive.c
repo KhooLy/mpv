@@ -63,6 +63,7 @@ struct lane {
     double last_switch;
 
     char *init_url;
+    int64_t init_off;
     bstr init;
     char *key_url;
     unsigned char key[16];
@@ -124,6 +125,34 @@ bstr ad_fetch(struct demuxer *demuxer, void *ctx, const char *url, int max)
     return res;
 }
 
+
+bstr ad_fetch_range(struct demuxer *demuxer, void *ctx, const char *url,
+                    int64_t off, int64_t len)
+{
+    if (len <= 0 || len > 256 * 1024 * 1024)
+        return (bstr){0};
+    struct stream *s = stream_create(url, STREAM_READ | demuxer->stream_origin,
+                                     demuxer->cancel, demuxer->global);
+    if (!s)
+        return (bstr){0};
+    bstr res = {0};
+    if (stream_seek(s, off)) {
+        char *buf = talloc_size(ctx, len);
+        int64_t got = 0;
+        while (got < len) {
+            int r = stream_read(s, buf + got, MPMIN(len - got, 1 << 20));
+            if (r <= 0)
+                break;
+            got += r;
+        }
+        if (got == len)
+            res = (bstr){buf, len};
+        else
+            talloc_free(buf);
+    }
+    free_stream(s);
+    return res;
+}
 
 static bool codec_same(struct mp_codec_params *a, struct mp_codec_params *b)
 {
@@ -348,9 +377,14 @@ static struct demuxer *open_segment(struct demuxer *demuxer, struct lane *l,
                                     struct seg *s)
 {
     if (s->map_url) {
-        if (!l->init_url || strcmp(l->init_url, s->map_url)) {
+        if (!l->init_url || strcmp(l->init_url, s->map_url) ||
+            l->init_off != s->map_off)
+        {
             talloc_free(l->init.start);
-            l->init = ad_fetch(demuxer, l, s->map_url, 2 * 1024 * 1024);
+            l->init = s->map_len
+                ? ad_fetch_range(demuxer, l, s->map_url, s->map_off, s->map_len)
+                : ad_fetch(demuxer, l, s->map_url, 2 * 1024 * 1024);
+            l->init_off = s->map_off;
             talloc_free(l->init_url);
             l->init_url = talloc_strdup(l, s->map_url);
             if (!l->init.len)
@@ -366,10 +400,10 @@ static struct demuxer *open_segment(struct demuxer *demuxer, struct lane *l,
     };
     if (l->sub)
         return open_vtt(demuxer, l, s, &params);
-    if (!s->key_url)
+    if (!s->key_url && !s->len)
         return demux_open_url(s->url, &params, demuxer->cancel, demuxer->global);
 
-    if (!l->key_url || strcmp(l->key_url, s->key_url)) {
+    if (s->key_url && (!l->key_url || strcmp(l->key_url, s->key_url))) {
         bstr k = ad_fetch(demuxer, l, s->key_url, 64);
         if (k.len != 16) {
             MP_ERR(demuxer, "Failed to fetch the decryption key.\n");
@@ -382,42 +416,46 @@ static struct demuxer *open_segment(struct demuxer *demuxer, struct lane *l,
 
     void *tmp = talloc_new(NULL);
     int64_t t0 = mp_time_ns();
-    bstr enc = ad_fetch(demuxer, tmp, s->url, 256 * 1024 * 1024);
+    bstr enc = s->len ? ad_fetch_range(demuxer, tmp, s->url, s->off, s->len)
+                      : ad_fetch(demuxer, tmp, s->url, 256 * 1024 * 1024);
     l->seg_ns += mp_time_ns() - t0;
     l->seg_bytes += enc.len;
-    if (!enc.len || enc.len % 16) {
+    if (!enc.len || (s->key_url && enc.len % 16)) {
         talloc_free(tmp);
         return NULL;
     }
-    unsigned char iv[16];
-    if (s->has_iv) {
-        memcpy(iv, s->iv, 16);
-    } else {
-        memset(iv, 0, 16);
-        for (int n = 0; n < 8; n++)
-            iv[15 - n] = (uint64_t)s->seq >> (8 * n);
-    }
-    struct AVAES *aes = av_aes_alloc();
-    if (!aes) {
-        talloc_free(tmp);
-        return NULL;
-    }
-    av_aes_init(aes, l->key, 128, 1);
-    uint8_t *plain = av_malloc(enc.len);
-    av_aes_crypt(aes, plain, (const uint8_t *)enc.start, enc.len / 16, iv, 1);
-    av_free(aes);
+    uint8_t *plain = NULL;
     size_t len = enc.len;
-    int pad = plain[len - 1];
-    if (pad >= 1 && pad <= 16)
-        len -= pad;
-    talloc_free(tmp);
+    if (s->key_url) {
+        unsigned char iv[16];
+        if (s->has_iv) {
+            memcpy(iv, s->iv, 16);
+        } else {
+            memset(iv, 0, 16);
+            for (int n = 0; n < 8; n++)
+                iv[15 - n] = (uint64_t)s->seq >> (8 * n);
+        }
+        struct AVAES *aes = av_aes_alloc();
+        if (!aes) {
+            talloc_free(tmp);
+            return NULL;
+        }
+        av_aes_init(aes, l->key, 128, 1);
+        plain = av_malloc(enc.len);
+        av_aes_crypt(aes, plain, (const uint8_t *)enc.start, enc.len / 16, iv, 1);
+        av_free(aes);
+        int pad = plain[len - 1];
+        if (pad >= 1 && pad <= 16)
+            len -= pad;
+    }
 
     size_t init_len = s->map_url ? l->init.len : 0;
     char *all = talloc_size(l, init_len + len);
     if (init_len)
         memcpy(all, l->init.start, init_len);
-    memcpy(all + init_len, plain, len);
+    memcpy(all + init_len, plain ? plain : (uint8_t *)enc.start, len);
     av_free(plain);
+    talloc_free(tmp);
     params.init_fragment = (bstr){all, init_len + len};
     struct demuxer *d = demux_open_url("memory://", &params, demuxer->cancel,
                                        demuxer->global);

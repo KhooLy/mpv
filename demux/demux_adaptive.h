@@ -20,6 +20,8 @@ struct seg {
     char *key_url;
     unsigned char iv[16];
     bool has_iv;
+    int64_t off, len;
+    int64_t map_off, map_len;
     struct part *parts;
     int num_parts;
 };
@@ -73,6 +75,8 @@ int ad_initial_variant(struct demuxer *demuxer, struct variant **vars, int num_v
 bool ad_var_allowed(struct demuxer *demuxer, struct variant *v);
 char *ad_resolve_url(void *ctx, const char *base, const char *ref);
 bstr ad_fetch(struct demuxer *demuxer, void *ctx, const char *url, int max);
+bstr ad_fetch_range(struct demuxer *demuxer, void *ctx, const char *url,
+                    int64_t off, int64_t len);
 
 bool ad_read_packet(struct demuxer *demuxer, struct demux_packet **out);
 void ad_seek(struct demuxer *demuxer, double pts, int flags);

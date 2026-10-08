@@ -57,6 +57,15 @@ static char *attr_get(void *ctx, bstr list, const char *key)
 }
 
 
+static void parse_range(const char *s, int64_t *len, int64_t *off, bool *has_off)
+{
+    char *end;
+    *len = strtoll(s, &end, 10);
+    *has_off = *end == '@';
+    if (*has_off)
+        *off = strtoll(end + 1, NULL, 10);
+}
+
 static bool has_video_codec(const char *codecs)
 {
     if (!codecs)
@@ -81,6 +90,9 @@ static bool parse_playlist(void *ctx, struct demuxer *log, bstr text,
     double next_dur = -1;
     bool next_discont = false;
     char *map_url = NULL;
+    int64_t map_off = 0, map_len = 0;
+    int64_t next_len = 0, next_off = 0, last_end = 0;
+    char *last_uri = NULL;
     char *key_url = NULL;
     unsigned char iv[16] = {0};
     bool has_iv = false;
@@ -118,10 +130,20 @@ static bool parse_playlist(void *ctx, struct demuxer *log, bstr text,
                 .discont = next_discont,
                 .key_url = key_url,
                 .has_iv = has_iv,
+                .map_off = map_off,
+                .map_len = map_len,
                 .seq = pl->first_seq + pl->num,
                 .start = pl->total,
             };
             memcpy(s.iv, iv, sizeof(iv));
+            if (next_len) {
+                s.len = next_len;
+                s.off = next_off >= 0 ? next_off
+                      : last_uri && !strcmp(last_uri, abs) ? last_end : 0;
+                last_end = s.off + s.len;
+                last_uri = abs;
+                next_len = 0;
+            }
             s.parts = pend;
             s.num_parts = num_pend;
             pend = NULL;
@@ -167,10 +189,16 @@ static bool parse_playlist(void *ctx, struct demuxer *log, bstr text,
                 MP_TARRAY_APPEND(ctx, pend, num_pend, pt);
             }
         } else if (bstr_eatstart0(&tag, "#EXT-X-MAP:")) {
-            if (attr_get(ctx, tag, "BYTERANGE"))
-                goto unsupported;
             char *u = attr_get(ctx, tag, "URI");
             map_url = u ? ad_resolve_url(ctx, url, u) : NULL;
+            char *br = attr_get(ctx, tag, "BYTERANGE");
+            map_len = map_off = 0;
+            if (br) {
+                bool has_off;
+                parse_range(br, &map_len, &map_off, &has_off);
+                if (!has_off)
+                    goto unsupported;
+            }
         } else if (bstr_eatstart0(&tag, "#EXT-X-KEY:")) {
             char *m = attr_get(ctx, tag, "METHOD");
             char *fmt = attr_get(ctx, tag, "KEYFORMAT");
@@ -199,8 +227,12 @@ static bool parse_playlist(void *ctx, struct demuxer *log, bstr text,
             } else {
                 goto unsupported;
             }
-        } else if (bstr_startswith0(line, "#EXT-X-BYTERANGE") ||
-                   bstr_startswith0(line, "#EXT-X-I-FRAMES-ONLY") ||
+        } else if (bstr_eatstart0(&tag, "#EXT-X-BYTERANGE:")) {
+            bool has_off;
+            parse_range(bstrto0(ctx, tag), &next_len, &next_off, &has_off);
+            if (!has_off)
+                next_off = -1;
+        } else if (bstr_startswith0(line, "#EXT-X-I-FRAMES-ONLY") ||
                    bstr_startswith0(line, "#EXT-X-DEFINE"))
         {
             goto unsupported;
