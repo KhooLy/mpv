@@ -1,5 +1,6 @@
 #include <inttypes.h>
 #include <limits.h>
+#include <math.h>
 #include <string.h>
 
 #include <libavutil/aes.h>
@@ -41,6 +42,7 @@ struct lane {
     int num_anchors;
 
     int64_t seq;
+    int part;
     bool opened_any;
     bool pending_discont;
     double ts_offset;
@@ -256,12 +258,35 @@ static struct seg *find_seg(struct playlist *pl, int64_t seq)
     return i >= 0 && i < pl->num ? &pl->segs[i] : NULL;
 }
 
+static bool use_parts(struct lane *l, struct seg *s)
+{
+    return s->num_parts && (l->part > 0 || !s->url);
+}
+
+static bool unit_ready(struct lane *l, struct seg *s)
+{
+    return !use_parts(l, s) || l->part < s->num_parts;
+}
+
+static struct seg unit_seg(struct lane *l, struct seg *s)
+{
+    struct seg u = *s;
+    if (!use_parts(l, s))
+        return u;
+    for (int n = 0; n < l->part && n < s->num_parts; n++)
+        u.start += s->parts[n].dur;
+    u.url = s->parts[l->part].url;
+    u.dur = s->parts[l->part].dur;
+    u.discont = s->discont && l->part == 0;
+    return u;
+}
+
 static bool ensure_playlist(struct demuxer *demuxer, struct variant *v)
 {
     if (v->pl)
         return true;
     struct priv *p = demuxer->priv;
-    v->pl = p->ops->load(demuxer, v);
+    v->pl = p->ops->load(demuxer, v, -1, 0);
     if (!v->pl)
         v->bad = true;
     return v->pl;
@@ -271,7 +296,7 @@ static bool reload_live(struct demuxer *demuxer, struct lane *l)
 {
     struct variant *v = lane_var(l);
     struct priv *p = demuxer->priv;
-    struct playlist *pl = p->ops->load(demuxer, v);
+    struct playlist *pl = p->ops->load(demuxer, v, -1, 0);
     if (!pl)
         return false;
     talloc_free(v->pl->own);
@@ -373,9 +398,11 @@ static bool start_segment(struct demuxer *demuxer, struct lane *l)
     struct variant *v = lane_var(l);
     if (!ensure_playlist(demuxer, v))
         return false;
-    struct seg *s = find_seg(v->pl, l->seq);
-    if (!s)
+    struct seg *full = find_seg(v->pl, l->seq);
+    if (!full || !unit_ready(l, full))
         return false;
+    struct seg su = unit_seg(l, full);
+    struct seg *s = &su;
 
     int64_t t0 = mp_time_ns();
     struct demuxer *d = open_segment(demuxer, l, s);
@@ -494,6 +521,14 @@ static void finish_segment(struct demuxer *demuxer, struct lane *l)
     struct priv *p = demuxer->priv;
     update_rates(p, l);
     drop_current(l);
+    struct variant *cv = lane_var(l);
+    struct seg *cs = cv->pl ? find_seg(cv->pl, l->seq) : NULL;
+    if (cs && use_parts(l, cs)) {
+        l->part++;
+        if (!cs->url || l->part < cs->num_parts)
+            return;
+    }
+    l->part = 0;
     l->seq++;
     if (l->main || l->indep) {
         l->cur = pick_next_variant(demuxer, l);
@@ -505,6 +540,19 @@ static void finish_segment(struct demuxer *demuxer, struct lane *l)
 static bool wait_for_segment(struct demuxer *demuxer, struct lane *l)
 {
     struct variant *v = lane_var(l);
+    struct priv *p = demuxer->priv;
+    if (v->pl->can_block) {
+        int64_t t0 = mp_time_ns();
+        struct playlist *pl = p->ops->load(demuxer, v, l->seq, l->part);
+        if (!pl)
+            return !demux_cancel_test(demuxer);
+        talloc_free(v->pl->own);
+        v->pl = pl;
+        int64_t spent = mp_time_ns() - t0;
+        if (spent < 100 * INT64_C(1000000))
+            mp_sleep_ns(100 * INT64_C(1000000) - spent);
+        return true;
+    }
     double wait = MPMAX(v->pl->target / 2, 0.5);
     int64_t until = mp_time_ns() + (int64_t)(wait * 1e9);
     while (mp_time_ns() < until) {
@@ -518,6 +566,7 @@ static bool wait_for_segment(struct demuxer *demuxer, struct lane *l)
     if (l->seq < v->pl->first_seq) {
         MP_WARN(demuxer, "Fell behind the live window, skipping ahead.\n");
         l->seq = v->pl->first_seq;
+        l->part = 0;
         l->pending_discont = true;
     }
     return true;
@@ -535,7 +584,10 @@ static void read_lane(struct demuxer *demuxer, struct lane *l)
             l->eof = true;
             return;
         }
-        if (l->seq >= v->pl->first_seq + v->pl->num) {
+        struct seg *cur = find_seg(v->pl, l->seq);
+        if (l->seq >= v->pl->first_seq + v->pl->num ||
+            (cur && !unit_ready(l, cur)))
+        {
             if (v->pl->endlist || !p->live) {
                 l->eof = true;
                 return;
@@ -546,6 +598,7 @@ static void read_lane(struct demuxer *demuxer, struct lane *l)
         }
         if (l->seq < v->pl->first_seq) {
             l->seq = v->pl->first_seq;
+            l->part = 0;
             l->pending_discont = true;
         }
         if (start_segment(demuxer, l)) {
@@ -672,6 +725,7 @@ static void seek_lane(struct demuxer *demuxer, struct lane *l, double pts,
     }
     drop_current(l);
     TA_FREEP(&l->next);
+    l->part = 0;
     l->seq = v->pl->first_seq + idx;
     l->eof = false;
     l->dts = MP_NOPTS_VALUE;
@@ -772,8 +826,25 @@ static bool open_lane(struct demuxer *demuxer, struct lane *l)
     int start = 0;
     if (!pl->endlist)
         start = MPMAX(pl->num - 3, 0);
+    l->part = 0;
+    if (!pl->endlist && pl->num && pl->segs[pl->num - 1].num_parts &&
+        !pl->segs[pl->num - 1].url)
+    {
+        start = pl->num - 1;
+        struct seg *tail = &pl->segs[start];
+        int back = pl->part_target > 0 && pl->hold_back > 0
+                   ? (int)ceil(pl->hold_back / pl->part_target) : 3;
+        for (int n = MPMAX(tail->num_parts - back, 0); n >= 0; n--) {
+            if (tail->parts[n].indep) {
+                l->part = n;
+                break;
+            }
+        }
+    }
     l->seq = pl->first_seq + start;
-    struct seg *s = find_seg(pl, l->seq);
+    struct seg *full = find_seg(pl, l->seq);
+    struct seg su = unit_seg(l, full);
+    struct seg *s = &su;
     int64_t t0 = mp_time_ns();
     struct demuxer *d = open_segment(demuxer, l, s);
     if (!d)

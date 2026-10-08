@@ -5913,7 +5913,8 @@ Network
     master and media playlists, MPEG-TS and fMP4 segments, separate audio
     renditions and live streams. With ``--hls-adaptive`` it picks the variant
     per segment, so switching keeps the buffered data. AES-128 encrypted
-    segments are decrypted. Playlists using SAMPLE-AES, byte ranges, subtitle
+    segments are decrypted. Low-latency live playlists with CMAF partial
+    segments are played part by part using blocking playlist reloads. Playlists using SAMPLE-AES, byte ranges, subtitle
     renditions or discontinuities in non-live streams are left to FFmpeg's
     demuxer.
 

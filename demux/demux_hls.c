@@ -85,6 +85,8 @@ static bool parse_playlist(void *ctx, struct demuxer *log, bstr text,
     unsigned char iv[16] = {0};
     bool has_iv = false;
     char *pending_stream_inf = NULL;
+    struct part *pend = NULL;
+    int num_pend = 0;
 
     while (text.len) {
         bstr line = bstr_strip(bstr_getline(text, &text));
@@ -119,6 +121,10 @@ static bool parse_playlist(void *ctx, struct demuxer *log, bstr text,
                 .start = pl->total,
             };
             memcpy(s.iv, iv, sizeof(iv));
+            s.parts = pend;
+            s.num_parts = num_pend;
+            pend = NULL;
+            num_pend = 0;
             MP_TARRAY_APPEND(pl, pl->segs, pl->num, s);
             pl->total += s.dur;
             next_dur = -1;
@@ -137,6 +143,28 @@ static bool parse_playlist(void *ctx, struct demuxer *log, bstr text,
             next_discont = true;
         } else if (bstr_equals0(tag, "#EXT-X-ENDLIST")) {
             pl->endlist = true;
+        } else if (bstr_eatstart0(&tag, "#EXT-X-PART-INF:")) {
+            char *t = attr_get(ctx, tag, "PART-TARGET");
+            pl->part_target = t ? atof(t) : 0;
+        } else if (bstr_eatstart0(&tag, "#EXT-X-SERVER-CONTROL:")) {
+            char *b = attr_get(ctx, tag, "CAN-BLOCK-RELOAD");
+            pl->can_block = b && !strcmp(b, "YES");
+            char *hb = attr_get(ctx, tag, "PART-HOLD-BACK");
+            pl->hold_back = hb ? atof(hb) : 0;
+        } else if (bstr_eatstart0(&tag, "#EXT-X-PART:")) {
+            if (attr_get(ctx, tag, "BYTERANGE"))
+                goto unsupported;
+            char *u = attr_get(ctx, tag, "URI");
+            char *dur = attr_get(ctx, tag, "DURATION");
+            char *ind = attr_get(ctx, tag, "INDEPENDENT");
+            if (u && dur && map_url && !key_url) {
+                struct part pt = {
+                    .url = ad_resolve_url(ctx, url, u),
+                    .dur = atof(dur),
+                    .indep = ind && !strcmp(ind, "YES"),
+                };
+                MP_TARRAY_APPEND(ctx, pend, num_pend, pt);
+            }
         } else if (bstr_eatstart0(&tag, "#EXT-X-MAP:")) {
             if (attr_get(ctx, tag, "BYTERANGE"))
                 goto unsupported;
@@ -202,6 +230,19 @@ static bool parse_playlist(void *ctx, struct demuxer *log, bstr text,
         }
     }
 
+    if (num_pend && !is_master) {
+        struct seg s = {
+            .map_url = map_url,
+            .seq = pl->first_seq + pl->num,
+            .start = pl->total,
+            .parts = pend,
+            .num_parts = num_pend,
+        };
+        for (int n = 0; n < num_pend; n++)
+            s.dur += pend[n].dur;
+        MP_TARRAY_APPEND(pl, pl->segs, pl->num, s);
+    }
+
     if (is_master) {
         if (!master->num_vars)
             return false;
@@ -221,11 +262,17 @@ unsupported:
 }
 
 
-static struct playlist *load_playlist(struct demuxer *demuxer, const char *url)
+static struct playlist *load_playlist(struct demuxer *demuxer, const char *url,
+                                      int64_t msn, int part)
 {
     void *tmp = talloc_new(NULL);
     void *own = talloc_new(NULL);
-    bstr text = ad_fetch(demuxer, tmp, url, 8 * 1024 * 1024);
+    char *full = (char *)url;
+    if (msn >= 0) {
+        full = talloc_asprintf(tmp, "%s%c_HLS_msn=%lld&_HLS_part=%d", url,
+                               strchr(url, '?') ? '&' : '?', (long long)msn, part);
+    }
+    bstr text = ad_fetch(demuxer, tmp, full, 8 * 1024 * 1024);
     struct playlist *pl = NULL;
     struct master m = {0};
     if (!text.len || !parse_playlist(own, demuxer, text, url, &pl, &m) || !pl)
@@ -238,9 +285,10 @@ static struct playlist *load_playlist(struct demuxer *demuxer, const char *url)
 }
 
 
-static struct playlist *hls_load(struct demuxer *demuxer, struct variant *v)
+static struct playlist *hls_load(struct demuxer *demuxer, struct variant *v,
+                                 int64_t msn, int part)
 {
-    return load_playlist(demuxer, v->url);
+    return load_playlist(demuxer, v->url, msn, part);
 }
 
 static const struct ad_ops hls_ops = {

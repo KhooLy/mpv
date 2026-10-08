@@ -4,6 +4,12 @@
 
 struct demuxer;
 
+struct part {
+    char *url;
+    double dur;
+    bool indep;
+};
+
 struct seg {
     char *url;
     char *map_url;
@@ -14,6 +20,8 @@ struct seg {
     char *key_url;
     unsigned char iv[16];
     bool has_iv;
+    struct part *parts;
+    int num_parts;
 };
 
 struct playlist {
@@ -24,6 +32,9 @@ struct playlist {
     double target;
     double total;
     bool endlist;
+    bool can_block;
+    double part_target;
+    double hold_back;
 };
 
 struct variant {
@@ -37,7 +48,8 @@ struct variant {
 };
 
 struct ad_ops {
-    struct playlist *(*load)(struct demuxer *demuxer, struct variant *v);
+    struct playlist *(*load)(struct demuxer *demuxer, struct variant *v,
+                             int64_t msn, int part);
 };
 
 struct ad_track {

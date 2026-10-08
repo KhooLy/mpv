@@ -463,7 +463,8 @@ static void refresh_mpd(struct demuxer *demuxer, struct dash *d)
     talloc_free(ctx);
 }
 
-static struct playlist *dash_load(struct demuxer *demuxer, struct variant *v)
+static struct playlist *dash_load(struct demuxer *demuxer, struct variant *v,
+                                  int64_t msn, int part)
 {
     struct dash *d = ad_front(demuxer);
     struct rep_front *f = v->front;
