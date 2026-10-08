@@ -26,6 +26,8 @@ struct vstream {
 struct lane {
     bool main;
     bool indep;
+    bool sub;
+    double sub_off;
     struct variant **vars;
     int num_vars;
     int cur;
@@ -73,6 +75,7 @@ struct priv {
     int num_lanes;
     double duration;
     bool live;
+    bool ready;
     double rate_fast, rate_slow;
 };
 
@@ -172,12 +175,13 @@ static bool bind_streams(struct demuxer *demuxer, struct lane *l,
     bool used[64] = {0};
     for (int i = 0; i < n_sub; i++) {
         struct sh_stream *sh = demux_get_stream(d, i);
-        if (sh->type != STREAM_VIDEO && sh->type != STREAM_AUDIO)
+        if (l->sub ? sh->type != STREAM_SUB
+                   : sh->type != STREAM_VIDEO && sh->type != STREAM_AUDIO)
             continue;
         if (create) {
             if ((!l->main && l->num_vs) || l->num_vs >= 16)
                 continue;
-            if (!l->main && sh->type != STREAM_AUDIO)
+            if (!l->main && !l->sub && sh->type != STREAM_AUDIO)
                 continue;
             struct sh_stream *new = demux_alloc_sh_stream(sh->type);
             new->codec = sh->codec;
@@ -304,6 +308,42 @@ static bool reload_live(struct demuxer *demuxer, struct lane *l)
     return true;
 }
 
+static struct demuxer *open_vtt(struct demuxer *demuxer, struct lane *l,
+                                struct seg *s, struct demuxer_params *params)
+{
+    bstr txt = ad_fetch(demuxer, l, s->url, 8 * 1024 * 1024);
+    if (!txt.len)
+        return NULL;
+    l->sub_off = 0;
+    bstr head = bstr_splice(txt, 0, MPMIN(txt.len, 2048));
+    int at = bstr_find0(head, "X-TIMESTAMP-MAP=");
+    if (at >= 0) {
+        char *line = bstrto0(NULL, bstr_getline(bstr_cut(head, at), &(bstr){0}));
+        long long ts = 0;
+        int h = 0, m = 0;
+        double sec = 0;
+        char *mp = strstr(line, "MPEGTS:");
+        char *lp = strstr(line, "LOCAL:");
+        if (mp)
+            ts = strtoll(mp + 7, NULL, 10);
+        if (lp && sscanf(lp + 6, "%d:%d:%lf", &h, &m, &sec) < 3) {
+            h = 0;
+            if (sscanf(lp + 6, "%d:%lf", &m, &sec) < 2)
+                sec = atof(lp + 6);
+        }
+        l->sub_off = ts / 90000.0 - (h * 3600.0 + m * 60.0 + sec);
+        talloc_free(line);
+    }
+    params->init_fragment = txt;
+    struct demuxer *d = demux_open_url("memory://", params, demuxer->cancel,
+                                       demuxer->global);
+    if (d)
+        talloc_steal(d, txt.start);
+    else
+        talloc_free(txt.start);
+    return d;
+}
+
 static struct demuxer *open_segment(struct demuxer *demuxer, struct lane *l,
                                     struct seg *s)
 {
@@ -324,6 +364,8 @@ static struct demuxer *open_segment(struct demuxer *demuxer, struct lane *l,
         .stream_flags = demuxer->stream_origin,
         .depth = demuxer->depth + 1,
     };
+    if (l->sub)
+        return open_vtt(demuxer, l, s, &params);
     if (!s->key_url)
         return demux_open_url(s->url, &params, demuxer->cancel, demuxer->global);
 
@@ -423,24 +465,33 @@ static bool start_segment(struct demuxer *demuxer, struct lane *l)
     l->seg_bytes = 0;
     account(l, d, t0);
 
-    if (l->opened_any && (s->discont || l->pending_discont)) {
+    struct lane *main = p->lanes[0];
+    if (l->sub) {
+        l->ts_offset = main->ts_offset + l->sub_off;
+        if (main->have_base) {
+            double at = main->base + s->start + main->ts_offset;
+            if (l->dts == MP_NOPTS_VALUE || at > l->dts)
+                l->dts = at;
+        }
+    } else if (l->opened_any && (s->discont || l->pending_discont)) {
         l->ts_offset = l->end_ts - d->start_time;
         MP_VERBOSE(demuxer, "Discontinuity, new offset %f\n", l->ts_offset);
     }
     l->pending_discont = false;
     l->opened_any = true;
-    if (!l->have_base) {
+    if (!l->have_base && !l->sub) {
         l->base = d->start_time - s->start;
         l->have_base = true;
     }
     demux_set_ts_offset(d, l->ts_offset);
     apply_selection(l);
-    (void)p;
     return true;
 }
 
 static void update_rates(struct priv *p, struct lane *l)
 {
+    if (l->sub)
+        return;
     if (l->seg_bytes < 32768 || l->seg_ns < 5 * INT64_C(1000000))
         return;
     double bps = l->seg_bytes * 8.0 * 1e9 / l->seg_ns;
@@ -680,6 +731,26 @@ bool ad_read_packet(struct demuxer *demuxer, struct demux_packet **out)
     return true;
 }
 
+static void seek_lane(struct demuxer *demuxer, struct lane *l, double pts,
+                      int flags);
+
+static void catch_up(struct demuxer *demuxer, struct lane *l)
+{
+    struct priv *p = demuxer->priv;
+    struct lane *main = p->lanes[0];
+    if (main->dts == MP_NOPTS_VALUE)
+        return;
+    if (p->live) {
+        drop_current(l);
+        TA_FREEP(&l->next);
+        l->seq = main->seq;
+        l->part = 0;
+        l->ts_offset = main->ts_offset;
+    } else {
+        seek_lane(demuxer, l, main->dts, 0);
+    }
+}
+
 static void reselect(struct demuxer *demuxer)
 {
     struct priv *p = demuxer->priv;
@@ -690,6 +761,8 @@ static void reselect(struct demuxer *demuxer)
         bool was = l->any_selected;
         l->any_selected = vs_selected(l);
         if (!was && l->any_selected) {
+            if (p->ready && !l->main && !l->prefilled)
+                catch_up(demuxer, l);
             l->eof = false;
             if (!l->prefilled) {
                 l->dts = MP_NOPTS_VALUE;
@@ -733,7 +806,8 @@ static void seek_lane(struct demuxer *demuxer, struct lane *l, double pts,
     l->ts_offset = 0;
     if (!start_segment(demuxer, l))
         return;
-    demux_seek(l->d, pts, flags);
+    if (!l->sub)
+        demux_seek(l->d, pts, flags);
 }
 
 void ad_seek(struct demuxer *demuxer, double pts, int flags)
@@ -854,8 +928,12 @@ static bool open_lane(struct demuxer *demuxer, struct lane *l)
         return false;
     note_codecs(l, d);
     account(l, d, t0);
-    l->base = d->start_time - s->start;
-    l->have_base = true;
+    if (!l->sub) {
+        l->base = d->start_time - s->start;
+        l->have_base = true;
+    } else {
+        demux_set_ts_offset(d, p->lanes[0]->ts_offset + l->sub_off);
+    }
     l->opened_any = true;
     return true;
 }
@@ -890,6 +968,7 @@ int ad_open(struct demuxer *demuxer, const struct ad_ops *ops, void *front,
         struct lane *l = new_lane(p, t->main, t->vars, t->num_vars);
         l->cur = t->cur;
         l->indep = t->indep;
+        l->sub = t->sub;
         if (!open_lane(demuxer, l)) {
             if (t->main) {
                 MP_ERR(demuxer, "Failed to open the first segment.\n");
@@ -925,6 +1004,7 @@ int ad_open(struct demuxer *demuxer, const struct ad_ops *ops, void *front,
     demuxer->start_time = first != MP_NOPTS_VALUE ? first
                         : main->d ? main->d->start_time : 0;
     demuxer->seekable = !p->live;
+    p->ready = true;
     demuxer->partially_seekable = false;
     demuxer->is_network = true;
     demuxer->is_streaming = true;

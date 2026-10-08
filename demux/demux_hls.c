@@ -13,6 +13,7 @@
 struct media {
     char *group, *name, *lang, *url;
     bool def;
+    bool sub;
 };
 
 struct master {
@@ -20,7 +21,6 @@ struct master {
     int num_vars;
     struct media *media;
     int num_media;
-    bool has_subs;
 };
 
 static char *attr_get(void *ctx, bstr list, const char *key)
@@ -106,6 +106,7 @@ static bool parse_playlist(void *ctx, struct demuxer *log, bstr text,
                 char *codecs = attr_get(ctx, bstr0(pending_stream_inf), "CODECS");
                 v->video = v->h > 0 || has_video_codec(codecs);
                 v->audio = attr_get(ctx, bstr0(pending_stream_inf), "AUDIO");
+                v->subs = attr_get(ctx, bstr0(pending_stream_inf), "SUBTITLES");
                 MP_TARRAY_APPEND(ctx, master->vars, master->num_vars, v);
                 pending_stream_inf = NULL;
                 continue;
@@ -211,13 +212,11 @@ static bool parse_playlist(void *ctx, struct demuxer *log, bstr text,
             char *type = attr_get(ctx, tag, "TYPE");
             if (!type)
                 continue;
-            if (!strcmp(type, "SUBTITLES")) {
-                master->has_subs = true;
-                continue;
-            }
-            if (strcmp(type, "AUDIO"))
+            bool is_sub = !strcmp(type, "SUBTITLES");
+            if (!is_sub && strcmp(type, "AUDIO"))
                 continue;
             struct media m = {
+                .sub = is_sub,
                 .group = attr_get(ctx, tag, "GROUP-ID"),
                 .name = attr_get(ctx, tag, "NAME"),
                 .lang = attr_get(ctx, tag, "LANGUAGE"),
@@ -324,8 +323,6 @@ static int d_open(struct demuxer *demuxer, enum demux_check check)
     struct playlist *first = NULL;
     if (!parse_playlist(own, demuxer, text, base_url, &first, m))
         return -1;
-    if (m->has_subs)
-        return -1;
     if (first) {
         for (int n = 1; n < first->num; n++) {
             if (first->segs[n].discont && first->endlist)
@@ -354,14 +351,28 @@ static int d_open(struct demuxer *demuxer, enum demux_check check)
     MP_TARRAY_APPEND(ctx, tracks, num_tracks, main);
 
     char *group = main.vars[main.cur]->audio;
+    char *sgroup = main.vars[main.cur]->subs;
     for (int n = 0; n < m->num_media; n++) {
         struct media *md = &m->media[n];
-        if (!md->url || !group || strcmp(md->group, group))
+        if (!md->url || !md->sub || !sgroup || !md->group || strcmp(md->group, sgroup))
+            continue;
+        struct ad_track t = {.sub = true, .lang = md->lang, .title = md->name,
+                             .def = md->def};
+        struct variant *v = talloc_zero(ctx, struct variant);
+        v->url = md->url;
+        t.vars = talloc_zero_array(ctx, struct variant *, 1);
+        t.vars[0] = v;
+        t.num_vars = 1;
+        MP_TARRAY_APPEND(ctx, tracks, num_tracks, t);
+    }
+    for (int n = 0; n < m->num_media; n++) {
+        struct media *md = &m->media[n];
+        if (md->sub || !md->url || !group || strcmp(md->group, group))
             continue;
         struct ad_track t = {.lang = md->lang, .title = md->name, .def = md->def};
         for (int i = 0; i < m->num_media; i++) {
             struct media *o2 = &m->media[i];
-            if (!o2->url || strcmp(o2->name ? o2->name : "", md->name ? md->name : ""))
+            if (o2->sub || !o2->url || strcmp(o2->name ? o2->name : "", md->name ? md->name : ""))
                 continue;
             struct variant *v = talloc_zero(ctx, struct variant);
             v->url = o2->url;

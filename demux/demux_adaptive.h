@@ -41,6 +41,7 @@ struct playlist {
 struct variant {
     char *url;
     char *audio;
+    char *subs;
     void *front;
     int bw, w, h;
     bool video;
@@ -59,6 +60,7 @@ struct ad_track {
     int cur;
     bool main;
     bool indep;
+    bool sub;
     char *lang;
     char *title;
     bool def;
