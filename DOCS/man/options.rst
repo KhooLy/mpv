@@ -5915,8 +5915,8 @@ Network
     per segment, so switching keeps the buffered data. AES-128 encrypted
     segments are decrypted. Low-latency live playlists with CMAF partial
     segments are played part by part using blocking playlist reloads. WebVTT subtitle renditions and byte ranges are
-    supported. Playlists using SAMPLE-AES, I-frame-only playlists or
-    discontinuities in non-live streams are left to FFmpeg's demuxer.
+    supported. Playlists using SAMPLE-AES or I-frame-only playlists are left to
+    FFmpeg's demuxer.
 
 ``--dash-native=<yes|no>``
     Use mpv's own DASH demuxer instead of FFmpeg's (default: yes). It handles
@@ -5924,7 +5924,7 @@ Network
     (with or without ``SegmentTimeline``) or ``SegmentList``, with separate
     video and audio adaptation sets. With ``--hls-adaptive`` video and audio
     representations are switched per segment without dropping buffered data.
-    Manifests with multiple periods, ``ContentProtection``, subtitle
+    Dynamic manifests with multiple periods, ``ContentProtection``, subtitle
     adaptation sets, or ``SegmentBase`` only are left to FFmpeg's
     demuxer. Segments advertised with ``availabilityTimeOffset`` are fetched
     while they are still being produced.

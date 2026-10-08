@@ -355,13 +355,6 @@ static int d_open(struct demuxer *demuxer, enum demux_check check)
     struct playlist *first = NULL;
     if (!parse_playlist(own, demuxer, text, base_url, &first, m))
         return -1;
-    if (first) {
-        for (int n = 1; n < first->num; n++) {
-            if (first->segs[n].discont && first->endlist)
-                return -1;
-        }
-    }
-
     struct ad_track *tracks = NULL;
     int num_tracks = 0;
     struct ad_track main = {.main = true};

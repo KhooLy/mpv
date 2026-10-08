@@ -846,8 +846,18 @@ static void seek_lane(struct demuxer *demuxer, struct lane *l, double pts,
     l->dts = MP_NOPTS_VALUE;
     l->pending_discont = false;
     l->ts_offset = 0;
+    bool disc = false;
+    for (int n = 1; n <= idx; n++)
+        disc |= v->pl->segs[n].discont;
+    if (disc)
+        l->opened_any = false;
     if (!start_segment(demuxer, l))
         return;
+    if (disc && !l->sub) {
+        l->opened_any = true;
+        l->ts_offset = base + v->pl->segs[idx].start - l->d->start_time;
+        demux_set_ts_offset(l->d, l->ts_offset);
+    }
     if (!l->sub)
         demux_seek(l->d, pts, flags);
 }
