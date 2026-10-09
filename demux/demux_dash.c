@@ -297,7 +297,15 @@ static double parse_datetime(const char *s)
     tm.tm_year -= 1900;
     tm.tm_mon -= 1;
     tm.tm_sec = (int)sec;
-    return (double)timegm(&tm) + (sec - floor(sec));
+    int64_t y = tm.tm_year + 1900 - (tm.tm_mon < 2);
+    int64_t era = (y >= 0 ? y : y - 399) / 400;
+    int64_t yoe = y - era * 400;
+    int64_t mp = (tm.tm_mon + 10) % 12;
+    int64_t doy = (153 * mp + 2) / 5 + tm.tm_mday - 1;
+    int64_t doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    int64_t days = era * 146097 + doe - 719468;
+    return (double)(days * 86400 + tm.tm_hour * 3600 + tm.tm_min * 60 + tm.tm_sec) +
+           (sec - floor(sec));
 }
 
 struct dash {
