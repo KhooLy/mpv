@@ -41,7 +41,8 @@ int main(int argc, char **argv)
     mpv_set_option_string(mpv, "ao", "avfoundation,null");
     int64_t wid = (int64_t)(intptr_t)layer;
     mpv_set_option(mpv, "wid", MPV_FORMAT_INT64, &wid);
-    bool expect_overlay = false, expect_shaded = false, shaded_slow = false;
+    bool expect_overlay = false, expect_shaded = false, shaded_slow = false, expect_fel = false;
+    int fel_frames = 0, fel_with_el = 0;
     const char *expect_gamma = NULL, *expect_audio = NULL;
     for (int i = 2; i < argc; i++) {
         if (strncmp(argv[i], "expect-gamma=", 13) == 0) {
@@ -58,6 +59,10 @@ int main(int argc, char **argv)
         }
         if (strcmp(argv[i], "expect-shaded=yes") == 0) {
             expect_shaded = true;
+            continue;
+        }
+        if (strcmp(argv[i], "expect-fel=yes") == 0) {
+            expect_fel = true;
             continue;
         }
         if (strcmp(argv[i], "expect-overlay=yes") == 0) {
@@ -101,6 +106,9 @@ int main(int argc, char **argv)
                                &chain_skipped, &chain_checked, &chain_in, &chain_out,
                                &chain_std, &chain_passes) >= 3)
                 chain_reported = true;
+            const char *fel = strstr(lm->text, "fel: frames=");
+            if (fel)
+                sscanf(fel, "fel: frames=%d with_el=%d", &fel_frames, &fel_with_el);
             if (strstr(lm->text, "Metal compile failed") || strstr(lm->text, "Pipeline failed") ||
                 strstr(lm->text, "Metal command buffer failed"))
                 chain_error = true;
@@ -189,6 +197,12 @@ int main(int argc, char **argv)
                 fail = 1;
             }
         }
+    } else if (expect_fel) {
+        printf("fel compose: frames=%d with_el=%d\n", fel_frames, fel_with_el);
+        if (fel_with_el < 10) {
+            printf("FAIL: enhancement layer was not composed\n");
+            fail = 1;
+        }
     } else if (!native) {
         printf("FAIL: video did not use the native decoder\n");
         fail = 1;
@@ -207,7 +221,7 @@ int main(int argc, char **argv)
         printf("FAIL: subtitles were not drawn into the overlay\n");
         fail = 1;
     }
-    if (expected > 0 && fabs(wall - expected) > expected * 0.2 + 0.5) {
+    if (!expect_fel && expected > 0 && fabs(wall - expected) > expected * 0.2 + 0.5) {
         printf("FAIL: wall time does not match media duration\n");
         fail = 1;
     }

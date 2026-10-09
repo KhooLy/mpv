@@ -32,6 +32,7 @@
 #include <stdio.h>
 #define MP_ERR(obj, ...) fprintf(stderr, __VA_ARGS__)
 #define MP_WARN(obj, ...) fprintf(stderr, __VA_ARGS__)
+#define MP_INFO(obj, ...) ((void)0)
 #define MP_VERBOSE(obj, ...) ((void)0)
 #else
 #include "common/msg.h"
@@ -389,8 +390,8 @@ int apple_fel_compose(struct apple_fel *f, void *bl_buf, void *el_buf,
                     int n = atomic_fetch_add(&f->frames, 1);
                     int e = use_el ? atomic_fetch_add(&f->with_el, 1) + 1
                                    : atomic_load(&f->with_el);
-                    if (n % 120 == 119)
-                        MP_VERBOSE(f, "fel: frames=%d with_el=%d\n", n + 1, e);
+                    if (n == 23)
+                        MP_INFO(f, "fel: frames=%d with_el=%d\n", n + 1, e);
                     callback(out);
                 } else {
                     MP_ERR(f, "Metal command buffer failed: %s\n",

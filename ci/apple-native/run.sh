@@ -76,6 +76,7 @@ run "E-AC3 auto passthrough" "$dir/eac3.mkv" audio-spdif=auto expect-audio=spdif
 run "ASS subtitles" "$dir/h264.mkv" sub-files="$dir/sub.ass" expect-overlay=yes
 run "Anime4K fast" "$dir/h264.mkv" hwdec=videotoolbox vo-apple-native-shaders="$mode_a" expect-shaded=yes
 run "Anime4K quality" "$dir/h264.mkv" hwdec=videotoolbox vo-apple-native-shaders="$mode_b" expect-shaded=slow
+run "Dolby Vision P7 FEL" ci/apple-native/fel.mkv hwdec=videotoolbox hwdec-dolby-vision=compose expect-fel=yes
 run "Seek and pause" "$dir/hdr10.mkv" start=2 pause=no
 
 exit $status
