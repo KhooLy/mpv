@@ -857,7 +857,7 @@ static void worker_configure(struct sd *sd, struct sub_worker *w,
     w->cfg_valid = true;
 }
 
-static void *worker_main(void *arg)
+static MP_THREAD_VOID worker_main(void *arg)
 {
     struct sub_worker *w = arg;
     struct sd *sd = w->sd;
@@ -941,7 +941,7 @@ static void *worker_main(void *arg)
     talloc_free(w->cache);
     talloc_free(w->packer);
     ass_renderer_done(w->renderer);
-    return NULL;
+    MP_THREAD_RETURN();
 }
 
 static void workers_stop(struct sd *sd)
