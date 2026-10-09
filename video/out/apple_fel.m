@@ -66,6 +66,9 @@ struct apple_fel {
     id<MTLCommandQueue> queue;
     CVMetalTextureCacheRef cache;
     id<MTLRenderPipelineState> pipeline;
+    id<MTLRenderPipelineState> pipeline_y;
+    id<MTLRenderPipelineState> pipeline_c;
+    bool dv;
     CVPixelBufferPoolRef pool;
     int pool_dims[2];
     atomic_int in_flight;
@@ -125,21 +128,26 @@ static const char source[] =
     "    float2 cuv = uv + float2(0.25 / float(tc.get_width()), 0.0);\n"
     "    return float3(ty.sample(smp, uv).r, tc.sample(smp, cuv).rg) * norm;\n"
     "}\n"
+    "float3 stage(float2 uv, texture2d<float> bly, texture2d<float> blc,\n"
+    "             texture2d<float> ely, texture2d<float> elc, constant Params &P) {\n"
+    "    float3 c = fetch(bly, blc, uv, P.norm);\n"
+    "    float3 sig = clamp(c, float3(0.0), float3(1.0));\n"
+    "    float3 r = float3(reshape(P, 0, sig), reshape(P, 1, sig), reshape(P, 2, sig));\n"
+    "    c = mix(c, clamp(r, P.lo.xyz, P.hi.xyz), P.act.xyz);\n"
+    "    if (P.has_el != 0) {\n"
+    "        float2 euv = uv + float2(P.shift.x, 0.0);\n"
+    "        float3 e = fetch(ely, elc, euv, P.norm) - P.nlq_off.xyz;\n"
+    "        c += sign(e) * (abs(e) * P.nlq_slope.xyz + P.nlq_thr.xyz);\n"
+    "    }\n"
+    "    return c;\n"
+    "}\n"
     "fragment float4 compose(VOut in [[stage_in]],\n"
     "                        texture2d<float> bly [[texture(0)]],\n"
     "                        texture2d<float> blc [[texture(1)]],\n"
     "                        texture2d<float> ely [[texture(2)]],\n"
     "                        texture2d<float> elc [[texture(3)]],\n"
     "                        constant Params &P [[buffer(0)]]) {\n"
-    "    float3 c = fetch(bly, blc, in.uv, P.norm);\n"
-    "    float3 sig = clamp(c, float3(0.0), float3(1.0));\n"
-    "    float3 r = float3(reshape(P, 0, sig), reshape(P, 1, sig), reshape(P, 2, sig));\n"
-    "    c = mix(c, clamp(r, P.lo.xyz, P.hi.xyz), P.act.xyz);\n"
-    "    if (P.has_el != 0) {\n"
-    "        float2 euv = in.uv + float2(P.shift.x, 0.0);\n"
-    "        float3 e = fetch(ely, elc, euv, P.norm) - P.nlq_off.xyz;\n"
-    "        c += sign(e) * (abs(e) * P.nlq_slope.xyz + P.nlq_thr.xyz);\n"
-    "    }\n"
+    "    float3 c = stage(in.uv, bly, blc, ely, elc, P);\n"
     "    float3 d = c - P.ycc_off.xyz;\n"
     "    c = float3(dot(P.ycc[0].xyz, d), dot(P.ycc[1].xyz, d), dot(P.ycc[2].xyz, d));\n"
     "    c = pow(max(c, float3(0.0)), float3(1.0 / M2));\n"
@@ -149,6 +157,25 @@ static const char source[] =
     "    c = pow(max(c, float3(0.0)), float3(M1));\n"
     "    c = pow((C1 + C2 * c) / (1.0 + C3 * c), float3(M2));\n"
     "    return float4(c, 1.0);\n"
+    "}\n"
+    "fragment float4 dv_y(VOut in [[stage_in]],\n"
+    "                     texture2d<float> bly [[texture(0)]],\n"
+    "                     texture2d<float> blc [[texture(1)]],\n"
+    "                     texture2d<float> ely [[texture(2)]],\n"
+    "                     texture2d<float> elc [[texture(3)]],\n"
+    "                     constant Params &P [[buffer(0)]]) {\n"
+    "    float3 c = stage(in.uv, bly, blc, ely, elc, P) / P.norm;\n"
+    "    return float4(clamp(c.x, 0.0, 1.0), 0.0, 0.0, 1.0);\n"
+    "}\n"
+    "fragment float4 dv_c(VOut in [[stage_in]],\n"
+    "                     texture2d<float> bly [[texture(0)]],\n"
+    "                     texture2d<float> blc [[texture(1)]],\n"
+    "                     texture2d<float> ely [[texture(2)]],\n"
+    "                     texture2d<float> elc [[texture(3)]],\n"
+    "                     constant Params &P [[buffer(0)]]) {\n"
+    "    float2 uv = in.uv - float2(0.25 / float(blc.get_width()), 0.0);\n"
+    "    float3 c = stage(uv, bly, blc, ely, elc, P) / P.norm;\n"
+    "    return float4(clamp(c.yz, float2(0.0), float2(1.0)), 0.0, 1.0);\n"
     "}\n";
 
 static void put_row(simd_float4 *dst, const float m[3][3], int row)
@@ -247,21 +274,33 @@ static CVMetalTextureRef plane_texture(struct apple_fel *f, CVPixelBufferRef pix
     return tex;
 }
 
+static CVPixelBufferPoolRef create_pool(OSType format, int w, int h)
+{
+    NSDictionary *attrs = @{
+        (id)kCVPixelBufferPixelFormatTypeKey: @(format),
+        (id)kCVPixelBufferWidthKey: @(w),
+        (id)kCVPixelBufferHeightKey: @(h),
+        (id)kCVPixelBufferMetalCompatibilityKey: @YES,
+        (id)kCVPixelBufferIOSurfacePropertiesKey: @{},
+    };
+    CVPixelBufferPoolRef pool = NULL;
+    CVPixelBufferPoolCreate(kCFAllocatorDefault, NULL, (CFDictionaryRef)attrs, &pool);
+    return pool;
+}
+
 static CVPixelBufferRef create_output(struct apple_fel *f, int w, int h)
 {
     int dims[2] = {w, h};
     if (!f->pool || memcmp(f->pool_dims, dims, sizeof(dims))) {
         if (f->pool)
             CVPixelBufferPoolRelease(f->pool);
-        NSDictionary *attrs = @{
-            (id)kCVPixelBufferPixelFormatTypeKey: @(kCVPixelFormatType_ARGB2101010LEPacked),
-            (id)kCVPixelBufferWidthKey: @(w),
-            (id)kCVPixelBufferHeightKey: @(h),
-            (id)kCVPixelBufferMetalCompatibilityKey: @YES,
-            (id)kCVPixelBufferIOSurfacePropertiesKey: @{},
-        };
-        f->pool = NULL;
-        CVPixelBufferPoolCreate(kCFAllocatorDefault, NULL, (CFDictionaryRef)attrs, &f->pool);
+        if (f->dv) {
+            f->pool = create_pool(kCVPixelFormatType_422YpCbCr16BiPlanarVideoRange, w, h);
+            if (!f->pool)
+                f->pool = create_pool(kCVPixelFormatType_422YpCbCr10BiPlanarVideoRange, w, h);
+        } else {
+            f->pool = create_pool(kCVPixelFormatType_ARGB2101010LEPacked, w, h);
+        }
         memcpy(f->pool_dims, dims, sizeof(dims));
     }
     CVPixelBufferRef out = NULL;
@@ -280,12 +319,13 @@ static void copy_attachment(CVPixelBufferRef from, CVPixelBufferRef to, CFString
     }
 }
 
-struct apple_fel *apple_fel_create(struct mp_log *log)
+struct apple_fel *apple_fel_create(struct mp_log *log, bool dv_domain)
 {
     struct apple_fel *f = calloc(1, sizeof(*f));
     if (!f)
         return NULL;
     f->log = log;
+    f->dv = dv_domain;
     f->device = MTLCreateSystemDefaultDevice();
     if (!f->device) {
         MP_VERBOSE(f, "No Metal device for Dolby Vision composition\n");
@@ -306,12 +346,21 @@ struct apple_fel *apple_fel_create(struct mp_log *log)
     }
     MTLRenderPipelineDescriptor *desc = [[MTLRenderPipelineDescriptor alloc] init];
     desc.vertexFunction = [[lib newFunctionWithName:@"vs"] autorelease];
-    desc.fragmentFunction = [[lib newFunctionWithName:@"compose"] autorelease];
-    desc.colorAttachments[0].pixelFormat = MTLPixelFormatBGR10A2Unorm;
-    f->pipeline = [f->device newRenderPipelineStateWithDescriptor:desc error:&error];
+    if (f->dv) {
+        desc.fragmentFunction = [[lib newFunctionWithName:@"dv_y"] autorelease];
+        desc.colorAttachments[0].pixelFormat = MTLPixelFormatR16Unorm;
+        f->pipeline_y = [f->device newRenderPipelineStateWithDescriptor:desc error:&error];
+        desc.fragmentFunction = [[lib newFunctionWithName:@"dv_c"] autorelease];
+        desc.colorAttachments[0].pixelFormat = MTLPixelFormatRG16Unorm;
+        f->pipeline_c = [f->device newRenderPipelineStateWithDescriptor:desc error:&error];
+    } else {
+        desc.fragmentFunction = [[lib newFunctionWithName:@"compose"] autorelease];
+        desc.colorAttachments[0].pixelFormat = MTLPixelFormatBGR10A2Unorm;
+        f->pipeline = [f->device newRenderPipelineStateWithDescriptor:desc error:&error];
+    }
     [desc release];
     [lib release];
-    if (!f->pipeline) {
+    if (f->dv ? !(f->pipeline_y && f->pipeline_c) : !f->pipeline) {
         MP_ERR(f, "Dolby Vision pipeline failed: %s\n", error.localizedDescription.UTF8String);
         goto fail;
     }
@@ -342,43 +391,61 @@ int apple_fel_compose(struct apple_fel *f, void *bl_buf, void *el_buf,
         CVMetalTextureRef el_y = el ? plane_texture(f, el, 0) : NULL;
         CVMetalTextureRef el_c = el ? plane_texture(f, el, 1) : NULL;
         CVMetalTextureRef target = NULL;
-        if (out)
+        CVMetalTextureRef target_c = NULL;
+        if (out && f->dv) {
+            CVMetalTextureCacheCreateTextureFromImage(
+                kCFAllocatorDefault, f->cache, out, NULL, MTLPixelFormatR16Unorm,
+                w, h, 0, &target);
+            CVMetalTextureCacheCreateTextureFromImage(
+                kCFAllocatorDefault, f->cache, out, NULL, MTLPixelFormatRG16Unorm,
+                w / 2, h, 1, &target_c);
+        } else if (out) {
             CVMetalTextureCacheCreateTextureFromImage(
                 kCFAllocatorDefault, f->cache, out, NULL, MTLPixelFormatBGR10A2Unorm,
                 w, h, 0, &target);
+        }
 
         bool use_el = el && el_y && el_c && dovi->nlq_active;
-        bool ok = out && bl_y && bl_c && target && !(el && dovi->nlq_active && !use_el);
+        bool ok = out && bl_y && bl_c && target && (!f->dv || target_c) &&
+                  !(el && dovi->nlq_active && !use_el);
         if (ok) {
             struct fel_params P;
             fill_params(f, &P, dovi, use_el);
             P.shift[0] = 0.5f / w;
 
             id<MTLCommandBuffer> cb = [f->queue commandBuffer];
-            MTLRenderPassDescriptor *rp = [MTLRenderPassDescriptor renderPassDescriptor];
-            rp.colorAttachments[0].texture = CVMetalTextureGetTexture(target);
-            rp.colorAttachments[0].loadAction = MTLLoadActionDontCare;
-            rp.colorAttachments[0].storeAction = MTLStoreActionStore;
-            id<MTLRenderCommandEncoder> enc = [cb renderCommandEncoderWithDescriptor:rp];
             id<MTLTexture> blt = CVMetalTextureGetTexture(bl_y);
             id<MTLTexture> blc = CVMetalTextureGetTexture(bl_c);
-            [enc setRenderPipelineState:f->pipeline];
-            [enc setFragmentTexture:blt atIndex:0];
-            [enc setFragmentTexture:blc atIndex:1];
-            [enc setFragmentTexture:use_el ? CVMetalTextureGetTexture(el_y) : blt atIndex:2];
-            [enc setFragmentTexture:use_el ? CVMetalTextureGetTexture(el_c) : blc atIndex:3];
-            [enc setFragmentBytes:&P length:sizeof(P) atIndex:0];
-            [enc drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
-            [enc endEncoding];
+            id<MTLTexture> elt = use_el ? CVMetalTextureGetTexture(el_y) : blt;
+            id<MTLTexture> elc = use_el ? CVMetalTextureGetTexture(el_c) : blc;
+            int passes = f->dv ? 2 : 1;
+            for (int i = 0; i < passes; i++) {
+                MTLRenderPassDescriptor *rp = [MTLRenderPassDescriptor renderPassDescriptor];
+                rp.colorAttachments[0].texture =
+                    CVMetalTextureGetTexture(i ? target_c : target);
+                rp.colorAttachments[0].loadAction = MTLLoadActionDontCare;
+                rp.colorAttachments[0].storeAction = MTLStoreActionStore;
+                id<MTLRenderCommandEncoder> enc = [cb renderCommandEncoderWithDescriptor:rp];
+                [enc setRenderPipelineState:!f->dv ? f->pipeline : i ? f->pipeline_c : f->pipeline_y];
+                [enc setFragmentTexture:blt atIndex:0];
+                [enc setFragmentTexture:blc atIndex:1];
+                [enc setFragmentTexture:elt atIndex:2];
+                [enc setFragmentTexture:elc atIndex:3];
+                [enc setFragmentBytes:&P length:sizeof(P) atIndex:0];
+                [enc drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
+                [enc endEncoding];
+            }
 
             copy_attachment(bl, out, kCVImageBufferMasteringDisplayColorVolumeKey);
             copy_attachment(bl, out, kCVImageBufferContentLightLevelInfoKey);
-            CVBufferSetAttachment(out, kCVImageBufferColorPrimariesKey,
-                                  kCVImageBufferColorPrimaries_ITU_R_2020,
-                                  kCVAttachmentMode_ShouldPropagate);
-            CVBufferSetAttachment(out, kCVImageBufferTransferFunctionKey,
-                                  kCVImageBufferTransferFunction_SMPTE_ST_2084_PQ,
-                                  kCVAttachmentMode_ShouldPropagate);
+            if (!f->dv) {
+                CVBufferSetAttachment(out, kCVImageBufferColorPrimariesKey,
+                                      kCVImageBufferColorPrimaries_ITU_R_2020,
+                                      kCVAttachmentMode_ShouldPropagate);
+                CVBufferSetAttachment(out, kCVImageBufferTransferFunctionKey,
+                                      kCVImageBufferTransferFunction_SMPTE_ST_2084_PQ,
+                                      kCVAttachmentMode_ShouldPropagate);
+            }
 
             CFRetain(bl);
             if (el)
@@ -405,6 +472,8 @@ int apple_fel_compose(struct apple_fel *f, void *bl_buf, void *el_buf,
                 if (el_c)
                     CFRelease(el_c);
                 CFRelease(target);
+                if (target_c)
+                    CFRelease(target_c);
                 CVPixelBufferRelease(out);
                 CFRelease(bl);
                 if (el)
@@ -427,6 +496,8 @@ int apple_fel_compose(struct apple_fel *f, void *bl_buf, void *el_buf,
             CFRelease(el_c);
         if (target)
             CFRelease(target);
+        if (target_c)
+            CFRelease(target_c);
         if (out)
             CVPixelBufferRelease(out);
     }
@@ -444,6 +515,8 @@ void apple_fel_destroy(struct apple_fel *f)
     if (f->cache)
         CFRelease(f->cache);
     [f->pipeline release];
+    [f->pipeline_y release];
+    [f->pipeline_c release];
     [f->queue release];
     [f->device release];
     free(f);
@@ -451,7 +524,7 @@ void apple_fel_destroy(struct apple_fel *f)
 
 #else
 
-struct apple_fel *apple_fel_create(struct mp_log *log)
+struct apple_fel *apple_fel_create(struct mp_log *log, bool dv_domain)
 {
     return NULL;
 }

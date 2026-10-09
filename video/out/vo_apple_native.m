@@ -514,7 +514,7 @@ static int preinit(struct vo *vo)
         p->chain = apple_shader_chain_create(vo->global, vo->log, shaders);
 
     if (p->vt.av_device_ref)
-        p->fel = apple_fel_create(vo->log);
+        p->fel = apple_fel_create(vo->log, false);
 
     vo->hwdec_devs = hwdec_devices_create();
     if (!p->chain)

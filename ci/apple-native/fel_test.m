@@ -39,10 +39,10 @@ static double reshape(const struct pl_dovi_metadata *d, int c, const double sig[
     return r;
 }
 
-static void reference(const struct pl_dovi_metadata *d, const double bl[3], const double *el,
-                      double out[3])
+static void ipt_reference(const struct pl_dovi_metadata *d, const double bl[3],
+                          const double *el, double c[3])
 {
-    double c[3], sig[3];
+    double sig[3];
     for (int i = 0; i < 3; i++)
         sig[i] = c[i] = bl[i] / 1023;
     for (int i = 0; i < 3; i++)
@@ -52,6 +52,13 @@ static void reference(const struct pl_dovi_metadata *d, const double bl[3], cons
         double sgn = e > 0 ? 1 : e < 0 ? -1 : 0;
         c[i] += sgn * (fabs(e) * d->nlq[i].deadzone_slope + d->nlq[i].deadzone_threshold);
     }
+}
+
+static void reference(const struct pl_dovi_metadata *d, const double bl[3], const double *el,
+                      double out[3])
+{
+    double c[3];
+    ipt_reference(d, bl, el, c);
     double v[3], lin[3];
     for (int i = 0; i < 3; i++) {
         double t = c[i] - d->nonlinear_offset[i] * (1024.0 / 1023.0);
@@ -109,7 +116,8 @@ static CVPixelBufferRef make_p010(int w, int h, const int code[3], bool ramp)
     return pix;
 }
 
-static int run_case(struct apple_fel *fel, const struct pl_dovi_metadata *d, bool use_el)
+static int run_case(struct apple_fel *fel, const struct pl_dovi_metadata *d, bool use_el,
+                    bool dv)
 {
     const int bl_code[3] = {300, 470, 560};
     const int el_code[3] = {530, 500, 490};
@@ -140,9 +148,25 @@ static int run_case(struct apple_fel *fel, const struct pl_dovi_metadata *d, boo
         double in[3] = {bl_code[0] + y * 6, bl_code[1], bl_code[2]};
         double want[3];
         double el_in[3] = {el_code[0], el_code[1], el_code[2]};
-        reference(d, in, use_el ? el_in : NULL, want);
-        uint32_t px = row[W / 2];
-        double got[3] = {(px >> 20) & 0x3ff, (px >> 10) & 0x3ff, px & 0x3ff};
+        double got[3];
+        if (dv) {
+            ipt_reference(d, in, use_el ? el_in : NULL, want);
+            for (int i = 0; i < 3; i++)
+                want[i] = fmin(fmax(want[i], 0), 1) * 1023;
+            const uint16_t *yrow = CVPixelBufferGetBaseAddressOfPlane(result, 0) +
+                                   y * CVPixelBufferGetBytesPerRowOfPlane(result, 0);
+            const uint16_t *crow = CVPixelBufferGetBaseAddressOfPlane(result, 1) +
+                                   y * CVPixelBufferGetBytesPerRowOfPlane(result, 1);
+            got[0] = yrow[W / 2] / 64.0;
+            got[1] = crow[W / 2] / 64.0;
+            got[2] = crow[W / 2 + 1] / 64.0;
+        } else {
+            reference(d, in, use_el ? el_in : NULL, want);
+            uint32_t px = row[W / 2];
+            got[0] = (px >> 20) & 0x3ff;
+            got[1] = (px >> 10) & 0x3ff;
+            got[2] = px & 0x3ff;
+        }
         for (int i = 0; i < 3; i++) {
             double err = fabs(got[i] - want[i]);
             worst = fmax(worst, err);
@@ -153,7 +177,7 @@ static int run_case(struct apple_fel *fel, const struct pl_dovi_metadata *d, boo
         }
     }
     CVPixelBufferUnlockBaseAddress(result, kCVPixelBufferLock_ReadOnly);
-    printf("%s: worst error %.1f codes\n", use_el ? "with EL" : "without EL", worst);
+    printf("%s%s: worst error %.1f codes\n", dv ? "DV domain " : "", use_el ? "with EL" : "without EL", worst);
 
     CFRelease(result);
     CVPixelBufferRelease(bl);
@@ -164,7 +188,7 @@ static int run_case(struct apple_fel *fel, const struct pl_dovi_metadata *d, boo
 
 int main(void)
 {
-    struct apple_fel *fel = apple_fel_create(NULL);
+    struct apple_fel *fel = apple_fel_create(NULL, false);
     if (!fel) {
         printf("FAIL: could not create the compose pipeline\n");
         return 1;
@@ -201,9 +225,18 @@ int main(void)
     float mmr[7] = {0.5f, 0.25f, 0.1f, 0.05f, 0, 0, 0};
     memcpy(d.comp[2].mmr_coeffs[0][0], mmr, sizeof(mmr));
 
-    int fail = run_case(fel, &d, false);
-    fail |= run_case(fel, &d, true);
+    int fail = run_case(fel, &d, false, false);
+    fail |= run_case(fel, &d, true, false);
     apple_fel_destroy(fel);
+
+    struct apple_fel *dv = apple_fel_create(NULL, true);
+    if (!dv) {
+        printf("FAIL: could not create the DV domain pipeline\n");
+        return 1;
+    }
+    fail |= run_case(dv, &d, false, true);
+    fail |= run_case(dv, &d, true, true);
+    apple_fel_destroy(dv);
     return fail;
 }
 
