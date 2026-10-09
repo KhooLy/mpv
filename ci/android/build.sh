@@ -143,8 +143,7 @@ meson_dep harfbuzz -Dglib=disabled -Dgobject=disabled -Dcairo=disabled \
     -Dutilities=disabled -Dbenchmark=disabled -Dgraphite2=disabled \
     -Dsubset=disabled -Draster=disabled -Dvector=disabled -Dgpu=disabled
 
-fetch libass https://github.com/libass/libass.git b2fe9d8770678a7b5271387d38c20657ebf3429a \
-    libass-android-fontprovider.patch
+fetch libass https://github.com/KhooLy/libass.git a026fc834e28cfe99a8729a7356d5c0da2dc1ca7
 meson_dep libass -Dfontconfig=disabled -Ddirectwrite=disabled -Dcoretext=disabled \
     -Dlibunibreak=disabled -Dtest=disabled -Dcompare=disabled -Dprofile=disabled \
     -Dcheckasm=disabled -Dfuzz=disabled -Drequire-system-font-provider=false

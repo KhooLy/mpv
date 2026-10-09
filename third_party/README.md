@@ -43,8 +43,9 @@ behavior.
 
 ## libass Android font provider
 
-Apply `libass-android-fontprovider.patch` to libass `b2fe9d8` before building
-it for Android. libass has no system font provider there, so without it only
+The Android build uses the `KhooLy/libass` fork, which contains
+`libass-android-fontprovider.patch` already; apply the patch yourself only to
+a plain libass `b2fe9d8` checkout. libass has no system font provider there, so without it only
 embedded fonts and the single default font work, and scripts that font lacks
 (CJK, Arabic, Devanagari, ...) render as boxes.
 

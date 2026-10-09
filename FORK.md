@@ -21,9 +21,10 @@ Android (arm64, needs the NDK; `ANDROID_NDK_HOME` or the default SDK path):
 ci/android/build.sh
 ```
 
-This fetches every dependency at a pinned revision, applies
-`third_party/ffmpeg-mediacodec.patch` and
-`third_party/libass-android-fontprovider.patch`, and leaves `libmpv.so`,
+This fetches every dependency at a pinned revision (libass from the
+`KhooLy/libass` fork, which carries the Android font provider, NEON blur and
+rasterizer, and the render-ahead API), applies
+`third_party/ffmpeg-mediacodec.patch`, and leaves `libmpv.so`,
 `libc++_shared.so` and the headers in `android-build/out`.
 `ci/android/testapp` is a harness app that plays through it.
 
