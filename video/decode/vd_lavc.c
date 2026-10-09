@@ -1290,6 +1290,7 @@ static void filter_nal(struct mp_filter *vd, const uint8_t *nal, size_t len)
     append_nal(ctx, nal, len);
 }
 
+#if HAVE_LIBDOVI
 static bool leb128(const uint8_t **p, const uint8_t *end, uint64_t *v)
 {
     *v = 0;
@@ -1301,6 +1302,7 @@ static bool leb128(const uint8_t **p, const uint8_t *end, uint64_t *v)
     }
     return false;
 }
+#endif
 
 static void scan_obus(struct mp_filter *vd, AVPacket *pkt)
 {
