@@ -35,6 +35,7 @@
 #include "demux/stheader.h"
 #include "filters/f_decoder_wrapper.h"
 #include "filters/filter_internal.h"
+#include "video/hwdec.h"
 #include "video/mp_image.h"
 #include "video/out/apple_native.h"
 
@@ -43,6 +44,7 @@
 struct priv {
     struct mp_decoder public;
     struct mp_log *log;
+    struct mpv_global *global;
     struct mp_codec_params *codec;
     AVSampleBufferDisplayLayer *layer;
     CMTimebaseRef timebase;
@@ -214,6 +216,10 @@ static bool init_format(struct priv *p)
 {
     struct mp_codec_params *c = p->codec;
     const char *codec = c->codec;
+    if (c->dovi_layer == 2) {
+        MP_VERBOSE(p, "Dolby Vision enhancement layer, not using native decoding\n");
+        return false;
+    }
     const uint8_t *extradata = c->extradata;
     int extradata_size = c->extradata_size;
     if (!extradata_size && c->lav_codecpar) {
@@ -249,6 +255,12 @@ static bool init_format(struct priv *p)
     atoms[atom] = [NSData dataWithBytes:extradata length:extradata_size];
 
     const AVDOVIDecoderConfigurationRecord *dovi = get_dovi(c);
+    if (dovi && dovi->dv_profile == 7 && c->dovi_layer == 1 &&
+        mp_hwdec_dolby_vision(p->global) == 4)
+    {
+        MP_VERBOSE(p, "Dolby Vision profile 7 is composed from both layers\n");
+        return false;
+    }
     if (dovi && type == kCMVideoCodecType_HEVC) {
 #if TARGET_OS_OSX
         bool display = true;
@@ -554,6 +566,7 @@ static struct mp_decoder *create(struct mp_filter *parent,
 
     struct priv *p = f->priv;
     p->log = f->log;
+    p->global = f->global;
     p->codec = codec;
     p->public.f = f;
     p->need_keyframe = true;

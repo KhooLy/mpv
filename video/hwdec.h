@@ -121,6 +121,9 @@ struct hwcontext_fns {
 // recursive includes). May return NULL for unknown device types.
 const struct hwcontext_fns *hwdec_get_hwcontext_fns(int av_hwdevice_type);
 
+// Value of --hwdec-dolby-vision: 0 auto, 1 native, 2 convert, 3 base-layer, 4 compose.
+int mp_hwdec_dolby_vision(struct mpv_global *global);
+
 extern const struct hwcontext_fns hwcontext_fns_cuda;
 extern const struct hwcontext_fns hwcontext_fns_d3d11;
 extern const struct hwcontext_fns hwcontext_fns_drmprime;

@@ -243,6 +243,14 @@ const struct m_sub_options hwdec_conf = {
     },
 };
 
+int mp_hwdec_dolby_vision(struct mpv_global *global)
+{
+    struct hwdec_opts *opts = mp_get_config_group(NULL, global, &hwdec_conf);
+    int mode = opts->dolby_vision;
+    talloc_free(opts);
+    return mode;
+}
+
 struct hwdec_info {
     char name[64];
     char method_name[24]; // non-unique name describing the hwdec method
