@@ -49,6 +49,7 @@
 
 struct apple_opts {
     char **shaders;
+    bool dv_output;
 };
 
 struct priv {
@@ -250,13 +251,59 @@ static void set_display_criteria(AVSampleBufferDisplayLayer *layer,
 #endif
 }
 
+static int dv_level(int width, float fps)
+{
+    int step = fps <= 24.5f ? 0 : fps <= 30.5f ? 1 : fps <= 48.5f ? 2 : 3;
+    if (width > 2560)
+        return 6 + step;
+    if (width > 1280)
+        return step < 2 ? 3 + step : 5;
+    return step < 1 ? 1 : 2;
+}
+
+static CMFormatDescriptionRef create_dv_format(int w, int h, float fps)
+{
+    int level = dv_level(w, fps);
+    uint8_t config[24] = {1, 0};
+    config[2] = 8 << 1 | level >> 5;
+    config[3] = (level & 31) << 3 | 1 << 2 | 1;
+    config[4] = 1 << 4;
+    NSDictionary *ext = @{
+        (id)kCMFormatDescriptionExtension_SampleDescriptionExtensionAtoms:
+            @{@"dvvC": [NSData dataWithBytes:config length:sizeof(config)]},
+        (id)kCMFormatDescriptionExtension_ColorPrimaries:
+            (id)kCMFormatDescriptionColorPrimaries_ITU_R_2020,
+        (id)kCMFormatDescriptionExtension_TransferFunction:
+            (id)kCMFormatDescriptionTransferFunction_SMPTE_ST_2084_PQ,
+        (id)kCMFormatDescriptionExtension_YCbCrMatrix:
+            (id)kCMFormatDescriptionYCbCrMatrix_ITU_R_2020,
+    };
+    CMFormatDescriptionRef format = NULL;
+    if (CMVideoFormatDescriptionCreate(kCFAllocatorDefault, 'dvh1', w, h,
+                                       (CFDictionaryRef)ext, &format) != noErr)
+        return NULL;
+    return format;
+}
+
 static void update_display_criteria(struct vo *vo, struct mp_image *mpi)
 {
     struct priv *p = vo->priv;
-    if (mpi->imgfmt != IMGFMT_APPLE_NATIVE || !mpi->planes[3] || mpi->nominal_fps <= 0)
+    if (mpi->nominal_fps <= 0)
         return;
-    CMFormatDescriptionRef format = (CMFormatDescriptionRef)mpi->planes[3];
-    if (format == p->criteria_format && mpi->nominal_fps == p->criteria_fps)
+    CMFormatDescriptionRef format = NULL;
+    CMFormatDescriptionRef owned = NULL;
+    if (p->opts.dv_output && p->fel && mpi->imgfmt == IMGFMT_VIDEOTOOLBOX &&
+        mpi->params.repr.dovi)
+    {
+        if (p->criteria_format && mpi->nominal_fps == p->criteria_fps)
+            return;
+        format = owned = create_dv_format(mpi->w, mpi->h, mpi->nominal_fps);
+    } else if (mpi->imgfmt == IMGFMT_APPLE_NATIVE) {
+        format = (CMFormatDescriptionRef)mpi->planes[3];
+        if (format == p->criteria_format && mpi->nominal_fps == p->criteria_fps)
+            return;
+    }
+    if (!format)
         return;
     if (p->criteria_format)
         CFRelease(p->criteria_format);
@@ -272,6 +319,8 @@ static void update_display_criteria(struct vo *vo, struct mp_image *mpi)
         CFRelease(format);
         [layer release];
     });
+    if (owned)
+        CFRelease(owned);
 }
 
 static void update_size(struct vo *vo)
@@ -514,7 +563,7 @@ static int preinit(struct vo *vo)
         p->chain = apple_shader_chain_create(vo->global, vo->log, shaders);
 
     if (p->vt.av_device_ref)
-        p->fel = apple_fel_create(vo->log, false);
+        p->fel = apple_fel_create(vo->log, p->opts.dv_output);
 
     vo->hwdec_devs = hwdec_devices_create();
     if (!p->chain)
@@ -573,6 +622,7 @@ const struct vo_driver video_out_apple_native = {
     .priv_size = sizeof(struct priv),
     .options = (const m_option_t[]) {
         {"shaders", OPT_PATHLIST(opts.shaders), .flags = M_OPT_FILE},
+        {"dv-output", OPT_BOOL(opts.dv_output)},
         {0}
     },
     .options_prefix = "vo-apple-native",

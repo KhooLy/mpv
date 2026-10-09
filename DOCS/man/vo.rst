@@ -760,6 +760,12 @@ Available video output drivers are:
     this way whenever they come from VideoToolbox, which also fixes profile 5
     on displays without Dolby Vision.
 
+    ``--vo-apple-native-dv-output=yes`` (experimental) keeps the composed
+    signal in the Dolby Vision domain instead: 16-bit 4:2:2 Y'CbCr is
+    displayed and the display criteria request a Dolby Vision profile 8.1
+    mode. This has not been verified on a Dolby Vision display and shows
+    wrong colors if the display does not switch to Dolby Vision.
+
     Subtitles and OSD are drawn into a ``CALayer`` added above the video.
     Video filters are not available with this driver.
 

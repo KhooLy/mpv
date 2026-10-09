@@ -438,14 +438,16 @@ int apple_fel_compose(struct apple_fel *f, void *bl_buf, void *el_buf,
 
             copy_attachment(bl, out, kCVImageBufferMasteringDisplayColorVolumeKey);
             copy_attachment(bl, out, kCVImageBufferContentLightLevelInfoKey);
-            if (!f->dv) {
-                CVBufferSetAttachment(out, kCVImageBufferColorPrimariesKey,
-                                      kCVImageBufferColorPrimaries_ITU_R_2020,
+            CVBufferSetAttachment(out, kCVImageBufferColorPrimariesKey,
+                                  kCVImageBufferColorPrimaries_ITU_R_2020,
+                                  kCVAttachmentMode_ShouldPropagate);
+            CVBufferSetAttachment(out, kCVImageBufferTransferFunctionKey,
+                                  kCVImageBufferTransferFunction_SMPTE_ST_2084_PQ,
+                                  kCVAttachmentMode_ShouldPropagate);
+            if (f->dv)
+                CVBufferSetAttachment(out, kCVImageBufferYCbCrMatrixKey,
+                                      kCVImageBufferYCbCrMatrix_ITU_R_2020,
                                       kCVAttachmentMode_ShouldPropagate);
-                CVBufferSetAttachment(out, kCVImageBufferTransferFunctionKey,
-                                      kCVImageBufferTransferFunction_SMPTE_ST_2084_PQ,
-                                      kCVAttachmentMode_ShouldPropagate);
-            }
 
             CFRetain(bl);
             if (el)
