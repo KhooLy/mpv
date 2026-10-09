@@ -809,7 +809,6 @@ static void adjust_audio_drift_compensation(struct MPContext *mpctx, double vsyn
 static void handle_display_sync_frame(struct MPContext *mpctx,
                                       struct vo_frame *frame)
 {
-    struct MPOpts *opts = mpctx->opts;
     struct vo *vo = mpctx->video_out;
     int mode = vo->opts->video_sync;
 
