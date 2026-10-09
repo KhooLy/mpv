@@ -1062,6 +1062,16 @@ static struct sub_bitmaps *async_lookup(struct sd *sd, const struct async_cfg *c
             best_score = score;
         }
     }
+    if (best < 0) {
+        double newest = 0;
+        for (int n = 0; n < ctx->num_queue; n++) {
+            double lag = pts - ctx->queue[n].pts;
+            if (lag > 0 && lag <= 3 * ctx->step && (best < 0 || lag < newest)) {
+                best = n;
+                newest = lag;
+            }
+        }
+    }
     if (best >= 0 && !ctx->queue[best].dep) {
         struct render_entry *e = &ctx->queue[best];
         res = sub_bitmaps_copy(&ctx->copy_cache, e->bm);
