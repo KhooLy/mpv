@@ -1881,8 +1881,9 @@ Video
     count will not have this problem, because mpv retains the packets.
 
 ``--hwdec-dolby-vision=<auto|native|convert|base-layer|compose>``
-    How Dolby Vision is decoded with ``--hwdec=mediacodec`` on Android. Other
-    hwdecs and software decoding ignore this.
+    How Dolby Vision is decoded with ``--hwdec=mediacodec`` on Android, and
+    whether profile 7 is composed on Apple platforms. Other hwdecs and software
+    decoding ignore this.
 
     :auto:       Use the Dolby Vision decoder if the display supports Dolby
                  Vision, and the backward-compatible base layer (HDR10, HLG or
@@ -1898,7 +1899,11 @@ Video
     :compose:    Decode the profile 7 base and enhancement layers as plain HEVC
                  and compose them on the GPU, applying the RPU reshaping and
                  the full enhancement layer residual. Needs libdovi and
-                 ``--vo=mediacodec_embed`` with GLES 3 support.
+                 ``--vo=mediacodec_embed`` with GLES 3 support on Android. On
+                 macOS, iOS and tvOS it needs ``--vo=apple_native`` with
+                 ``--hwdec=videotoolbox`` and FFmpeg with the ``dovi_split``
+                 bitstream filter; both layers are decoded by VideoToolbox and
+                 composed by a Metal shader into 10-bit BT.2020 PQ.
 
     Converting needs mpv built with libdovi; without it, profile 7 falls back
     to the base layer whenever a conversion would be needed. When the device

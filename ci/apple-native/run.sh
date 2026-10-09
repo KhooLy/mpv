@@ -6,6 +6,9 @@ build=${1:-build}
 cc -o "$dir/harness" ci/apple-native/harness.m -Iinclude -L"$build" -lmpv \
     -framework Foundation -framework AVFoundation -framework QuartzCore -framework CoreMedia || exit 1
 
+cc -o "$dir/fel_test" ci/apple-native/fel_test.m $(pkg-config --cflags libplacebo) \
+    -framework Foundation -framework CoreVideo -framework Metal || exit 1
+
 video="-f lavfi -i testsrc2=size=1280x720:rate=24 -t 5"
 audio="-f lavfi -i sine=frequency=440:sample_rate=48000 -t 5"
 hdr="hdr10=1:colorprim=bt2020:transfer=smpte2084:colormatrix=bt2020nc:master-display=G(13250,34500)B(7500,3000)R(34000,16000)WP(15635,16450)L(10000000,1):max-cll=1000,400"
@@ -53,6 +56,14 @@ run() {
         status=1
     fi
 }
+
+echo "::group::Dolby Vision compose"
+"$dir/fel_test"
+if [ $? -ne 0 ]; then
+    echo "::error::Dolby Vision compose failed"
+    status=1
+fi
+echo "::endgroup::"
 
 run "H.264 MKV" "$dir/h264.mkv"
 run "HEVC HDR10 MKV" "$dir/hdr10.mkv" expect-gamma=pq

@@ -752,6 +752,14 @@ Available video output drivers are:
     of profile 7. Requires ``--wid=(intptr_t)(AVSampleBufferDisplayLayer *)``.
     Streams the layer cannot decode fall back to ``--hwdec=videotoolbox``.
 
+    With ``--hwdec=videotoolbox --hwdec-dolby-vision=compose``, profile 7
+    streams (including FEL) are not handed to the layer. Both layers are
+    decoded by VideoToolbox and composed with the RPU reshaping and
+    enhancement layer residual in a Metal pass, and the 10-bit BT.2020 PQ
+    result is displayed. Frames that carry Dolby Vision metadata are composed
+    this way whenever they come from VideoToolbox, which also fixes profile 5
+    on displays without Dolby Vision.
+
     Subtitles and OSD are drawn into a ``CALayer`` added above the video.
     Video filters are not available with this driver.
 

@@ -50,7 +50,11 @@ export PKG_CONFIG_LIBDIR="$prefix/lib/pkgconfig"
 export PKG_CONFIG_PATH=
 
 fetch() {
-    [ -d "$work/$1" ] || git clone -q --depth 1 --recursive --branch "$3" "$2" "$work/$1"
+    [ -d "$work/$1" ] && return
+    git init -q "$work/$1"
+    git -C "$work/$1" fetch -q --depth 1 "$2" "$3"
+    git -C "$work/$1" checkout -q FETCH_HEAD
+    git -C "$work/$1" submodule -q update --init --depth 1
 }
 
 meson_dep() {
@@ -62,7 +66,7 @@ meson_dep() {
     touch "$work/$name/.done"
 }
 
-fetch ffmpeg https://github.com/FFmpeg/FFmpeg.git n8.0
+fetch ffmpeg https://github.com/FFmpeg/FFmpeg.git n9.0.1
 if [ ! -f "$work/ffmpeg/.done" ]; then
     mkdir -p "$work/ffmpeg/build"
     cd "$work/ffmpeg/build"
@@ -92,7 +96,7 @@ fetch libass https://github.com/libass/libass.git 0.17.4
 meson_dep libass -Dfontconfig=disabled -Dcoretext=enabled -Dlibunibreak=disabled \
     -Drequire-system-font-provider=false -Dasm=disabled -Dtest=disabled
 
-fetch libplacebo https://code.videolan.org/videolan/libplacebo.git v7.360.1
+fetch libplacebo https://github.com/haasn/libplacebo.git 22ee762e8e0890fc54068beb670310f0edce7263
 meson_dep libplacebo -Dvulkan=disabled -Dopengl=disabled -Dd3d11=disabled \
     -Dglslang=disabled -Dshaderc=disabled -Dlcms=disabled -Ddovi=enabled \
     -Dlibdovi=disabled -Dxxhash=disabled -Dunwind=disabled -Ddemos=false -Dtests=false

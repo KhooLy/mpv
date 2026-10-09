@@ -24,8 +24,21 @@ jobs:
           brew update
           if brew list ffmpeg &> /dev/null; then brew unlink ffmpeg; fi
           brew install -q pkgconf python freetype fribidi little-cms2 luajit libass \
-            ffmpeg-full meson uchardet libplacebo zimg
+            ffmpeg-full meson uchardet xxhash zimg
           brew link ffmpeg-full
+
+      - name: Build libplacebo
+        run: |
+          git clone -q --filter=blob:none https://github.com/haasn/libplacebo.git "$RUNNER_TEMP/libplacebo"
+          cd "$RUNNER_TEMP/libplacebo"
+          git checkout -q 22ee762e8e0890fc54068beb670310f0edce7263
+          git submodule update --init --depth 1
+          export CPPFLAGS="-I$(brew --prefix xxhash)/include"
+          export LDFLAGS="-L$(brew --prefix xxhash)/lib"
+          meson setup build -Dtests=false -Ddemos=false -Dvulkan=disabled -Dopengl=enabled \
+            --prefix "$RUNNER_TEMP/libplacebo-install"
+          meson install -C build
+          echo "PKG_CONFIG_PATH=$RUNNER_TEMP/libplacebo-install/lib/pkgconfig:$(brew --prefix)/lib/pkgconfig" >> "$GITHUB_ENV"
 
       - name: Build libmpv
         run: |
