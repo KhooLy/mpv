@@ -44,7 +44,8 @@ jobs:
         run: |
           meson setup build --werror -Dlibmpv=true -Dcplayer=true \
             -Dobjc_args="-Wno-error=deprecated -Wno-error=deprecated-declarations" \
-            -Davfoundation=enabled -Dvideotoolbox-gl=enabled
+            -Davfoundation=enabled -Dvideotoolbox-gl=enabled \
+            -Dcocoa=disabled -Dswift-build=disabled -Dmacos-cocoa-cb=disabled
           meson compile -C build -j4
 
       - name: List video outputs
