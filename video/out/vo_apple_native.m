@@ -37,6 +37,7 @@
 #include "sub/osd.h"
 #include "video/hwdec.h"
 #include "video/mp_image.h"
+#include "apple_fel.h"
 #include "apple_native.h"
 #include "apple_shader_chain.h"
 #include "options/m_option.h"
@@ -53,6 +54,7 @@ struct apple_opts {
 struct priv {
     struct apple_opts opts;
     struct apple_shader_chain *chain;
+    struct apple_fel *fel;
     struct apple_native_sink sink;
     struct mp_hwdec_ctx vt;
     AVSampleBufferDisplayLayer *layer;
@@ -183,6 +185,49 @@ static void enqueue_shaded(struct vo *vo, struct mp_image *mpi)
         [layer release];
         enqueue_pixel_buffer(vo, mpi);
     }
+}
+
+static void enqueue_composed(struct vo *vo, struct mp_image *mpi)
+{
+    struct priv *p = vo->priv;
+    CVPixelBufferRef bl = (CVPixelBufferRef)mpi->planes[3];
+    struct mp_image *eli = mpi->enhancement_layer;
+    CVPixelBufferRef el = eli && eli->imgfmt == IMGFMT_VIDEOTOOLBOX
+                          ? (CVPixelBufferRef)eli->planes[3] : NULL;
+    double pts = mpi->pts;
+    if (!bl || pts == MP_NOPTS_VALUE)
+        return;
+
+    AVSampleBufferDisplayLayer *layer = [p->layer retain];
+    int ret = apple_fel_compose(p->fel, bl, el, mpi->params.repr.dovi,
+                                ^(CVPixelBufferRef output) {
+        CMVideoFormatDescriptionRef format = NULL;
+        if (CMVideoFormatDescriptionCreateForImageBuffer(kCFAllocatorDefault, output,
+                                                         &format) == noErr)
+        {
+            CMSampleTimingInfo timing = {
+                .duration = kCMTimeInvalid,
+                .presentationTimeStamp = CMTimeMake(llrint(pts * 1e6), 1000000),
+                .decodeTimeStamp = kCMTimeInvalid,
+            };
+            CMSampleBufferRef sample = NULL;
+            if (CMSampleBufferCreateReadyWithImageBuffer(kCFAllocatorDefault, output, format,
+                                                         &timing, &sample) == noErr)
+            {
+                [layer enqueueSampleBuffer:sample];
+                CFRelease(sample);
+            }
+            CFRelease(format);
+        }
+        [layer release];
+    });
+    if (ret == APPLE_FEL_QUEUED) {
+        p->pixel_buffers = true;
+        return;
+    }
+    [layer release];
+    if (ret == APPLE_FEL_UNSUPPORTED)
+        enqueue_pixel_buffer(vo, mpi);
 }
 
 static void set_display_criteria(AVSampleBufferDisplayLayer *layer,
@@ -344,7 +389,9 @@ static bool draw_frame(struct vo *vo, struct vo_frame *frame)
 
     @autoreleasepool {
         if (mpi->imgfmt == IMGFMT_VIDEOTOOLBOX) {
-            if (p->chain)
+            if (p->fel && mpi->params.repr.dovi)
+                enqueue_composed(vo, mpi);
+            else if (p->chain)
                 enqueue_shaded(vo, mpi);
             else
                 enqueue_pixel_buffer(vo, mpi);
@@ -466,13 +513,16 @@ static int preinit(struct vo *vo)
     if (shaders && shaders[0] && p->vt.av_device_ref)
         p->chain = apple_shader_chain_create(vo->global, vo->log, shaders);
 
+    if (p->vt.av_device_ref)
+        p->fel = apple_fel_create(vo->log);
+
     vo->hwdec_devs = hwdec_devices_create();
     if (!p->chain)
         hwdec_devices_add(vo->hwdec_devs, &p->sink.hwctx);
     if (p->vt.av_device_ref)
         hwdec_devices_add(vo->hwdec_devs, &p->vt);
 
-    vo_set_queue_params(vo, p->chain ? SHADER_QUEUE_AHEAD_NS : QUEUE_AHEAD_NS, 1);
+    vo_set_queue_params(vo, p->chain || p->fel ? SHADER_QUEUE_AHEAD_NS : QUEUE_AHEAD_NS, 1);
     return 0;
 }
 
@@ -481,6 +531,7 @@ static void uninit(struct vo *vo)
     struct priv *p = vo->priv;
 
     apple_shader_chain_destroy(p->chain);
+    apple_fel_destroy(p->fel);
     if (vo->hwdec_devs) {
         if (!p->chain)
             hwdec_devices_remove(vo->hwdec_devs, &p->sink.hwctx);

@@ -868,6 +868,7 @@ if features['avfoundation']
     sources += files('audio/out/ao_avfoundation.m',
                      'audio/decode/ad_avfoundation.m',
                      'video/decode/vd_apple_native.m',
+                     'video/out/apple_fel.m',
                      'video/out/apple_shader_chain.m',
                      'video/out/apple_shaders.c',
                      'video/out/vo_apple_native.m')
