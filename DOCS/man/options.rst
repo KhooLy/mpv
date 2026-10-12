@@ -5102,9 +5102,10 @@ Screenshot
     hover position (preferring the scrubbing direction) and a coarse grid of
     every 16th slot are generated, and nothing is decoded while idle.
 
-``--thumbnail-cache-dir=<path>``
-    Store generated thumbnails here and reuse them when the same file is
-    opened again. Disabled if unset.
+``--thumbnail-memory=<MiB>``
+    Upper bound on the memory used for decoded thumbnails. Thumbnails beyond
+    it are dropped, farthest from the hover position first, and decoded again
+    when needed. ``0`` derives the bound from the RAM size (default: 0).
 
 ``--thumbnail-url=<url>``
     Read thumbnails from this URL instead of the file being played, for
@@ -5121,6 +5122,12 @@ Screenshot
     Wait this long before generating thumbnails nobody asked for, so playback
     can start first (default: 5). Positions near the hover position are always
     generated immediately.
+
+``--thumbnail-workers=<0-16>``
+    Number of threads generating thumbnails in parallel, each with its own
+    decoder. ``0`` picks a count from the CPU core count (one per four cores,
+    between 1 and 4), or twice the core count (4 to 12) for low resolution HLS
+    sources, which are limited by request latency (default: 0).
 
 ``--thumbnail-hwdec=<no|auto|mediacodec>``
     Decode thumbnails in hardware. ``auto`` uses VideoToolbox on Apple

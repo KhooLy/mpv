@@ -26,7 +26,13 @@
 #include <windows.h>
 #endif
 
+#ifndef _WIN32
+#include <unistd.h>
+#endif
+
 #include <libavcodec/avcodec.h>
+#include <libavformat/avformat.h>
+#include <libavutil/cpu.h>
 #include <libavutil/hwcontext.h>
 
 #include "osdep/io.h"
@@ -53,15 +59,18 @@
 #include "video/sws_utils.h"
 #include "thumbnail.h"
 
-enum { SLOT_EMPTY, SLOT_DONE, SLOT_FAILED };
+enum { SLOT_EMPTY, SLOT_DONE, SLOT_FAILED, SLOT_BUSY };
 
-static const char magic[] = "mpvthmb1";
+#define HLS_HEAD (128 * 1024)
 
-struct cache_header {
-    char magic[8];
-    uint64_t key;
-    int32_t w, h, count;
-    double step;
+struct hls_seg {
+    double start;
+    char *url;
+};
+
+struct membuf {
+    const uint8_t *data;
+    size_t size, pos;
 };
 
 struct thumbnailer {
@@ -74,7 +83,6 @@ struct thumbnailer {
     double interval;
     int max_count;
     bool sweep;
-    char *cache_dir;
     char *headers;
     double delay;
     int hwdec;
@@ -100,100 +108,33 @@ struct thumbnailer {
     uint8_t *state;
     uint8_t **slots;
     int done;
+    int resident;
+    int cap;
+    int64_t memory;
 
-    FILE *cache;
     size_t slot_size;
     struct mp_sws_context *out_sws;
+    int workers;
+    mp_thread *threads;
+    int nthreads;
+    bool auto_workers;
+    struct hls_seg *segs;
+    int nsegs;
+    uint8_t *init;
+    size_t init_size;
+    AVDictionary *net;
+    int strides[3];
+    int nstrides;
+    int pass;
+    struct sh_stream *sh;
+    double hls_duration;
 };
-
-static uint64_t fnv(uint64_t h, const void *p, size_t size)
-{
-    const uint8_t *b = p;
-    for (size_t n = 0; n < size; n++)
-        h = (h ^ b[n]) * 0x100000001b3ULL;
-    return h;
-}
-
-static void open_cache(struct thumbnailer *t, struct demuxer *d)
-{
-    if (!t->cache_dir || !t->cache_dir[0])
-        return;
-    char *dir = mp_get_user_path(NULL, t->global, t->cache_dir);
-    mp_mkdirp(dir);
-
-    struct cache_header hdr = {
-        .w = t->w, .h = t->h, .count = t->count, .step = t->step,
-    };
-    memcpy(hdr.magic, magic, sizeof(hdr.magic));
-    uint64_t key = 0xcbf29ce484222325ULL;
-    key = fnv(key, t->url, strlen(t->url));
-    key = fnv(key, &d->filesize, sizeof(d->filesize));
-    key = fnv(key, &d->duration, sizeof(d->duration));
-    hdr.key = key;
-
-    char name[40];
-    snprintf(name, sizeof(name), "%016llx.thumbs", (unsigned long long)key);
-    char *path = mp_path_join(NULL, dir, name);
-    talloc_free(dir);
-
-    FILE *f = fopen(path, "r+b");
-    struct cache_header old;
-    if (f && (fread(&old, sizeof(old), 1, f) != 1 ||
-              memcmp(&old, &hdr, sizeof(hdr)) != 0))
-    {
-        fclose(f);
-        f = NULL;
-    }
-    if (f) {
-        fread(t->state, t->count, 1, f);
-        for (int i = 0; i < t->count; i++) {
-            if (t->state[i] != SLOT_DONE)
-                continue;
-            uint8_t *buf = talloc_size(t, t->slot_size);
-            long off = sizeof(hdr) + t->count + (long)i * t->slot_size;
-            if (fseek(f, off, SEEK_SET) || fread(buf, t->slot_size, 1, f) != 1) {
-                talloc_free(buf);
-                t->state[i] = SLOT_EMPTY;
-                continue;
-            }
-            t->slots[i] = buf;
-            t->done++;
-        }
-        MP_VERBOSE(t, "Loaded %d thumbnails from %s\n", t->done, path);
-    } else {
-        f = fopen(path, "w+b");
-        if (f) {
-            fwrite(&hdr, sizeof(hdr), 1, f);
-            fwrite(t->state, t->count, 1, f);
-        } else {
-            MP_WARN(t, "Could not create thumbnail cache %s\n", path);
-        }
-    }
-    for (int i = 0; i < t->count; i++) {
-        if (t->state[i] == SLOT_FAILED)
-            t->state[i] = SLOT_EMPTY;
-    }
-    t->cache = f;
-    talloc_free(path);
-}
-
-static void store_cache(struct thumbnailer *t, int i)
-{
-    if (!t->cache)
-        return;
-    long base = sizeof(struct cache_header);
-    fseek(t->cache, base + (long)t->count + (long)i * t->slot_size, SEEK_SET);
-    fwrite(t->slots[i], t->slot_size, 1, t->cache);
-    fseek(t->cache, base + i, SEEK_SET);
-    fwrite(&t->state[i], 1, 1, t->cache);
-    fflush(t->cache);
-}
 
 static int next_index(struct thumbnailer *t)
 {
     if (t->want >= 0 && t->state[t->want] == SLOT_EMPTY)
         return t->want;
-    if (t->hold || !t->eager)
+    if (t->hold || !t->eager || t->resident >= t->cap)
         return -1;
     if (t->hover >= 0) {
         for (int d = 1; d <= 8; d++) {
@@ -215,10 +156,16 @@ static int next_index(struct thumbnailer *t)
         }
         return -1;
     }
-    for (int stride = 8; stride >= 1; stride /= 2) {
-        for (int i = 0; i < t->count; i += stride) {
-            if (t->state[i] == SLOT_EMPTY)
-                return i;
+    for (int n = 0; n < t->nstrides; n++) {
+        for (int i = 0; i < t->count; i += t->strides[n]) {
+            if (t->state[i] != SLOT_EMPTY)
+                continue;
+            if (n > t->pass) {
+                t->pass = n;
+                MP_VERBOSE(t, "Refining to every %.1fs, %d/%d done\n",
+                           t->strides[n] * t->step, t->done, t->count);
+            }
+            return i;
         }
     }
     return -1;
@@ -306,16 +253,228 @@ static uint8_t *scale_frame(struct thumbnailer *t, struct mp_sws_context *sws,
     return buf;
 }
 
+static int interrupted(void *ctx)
+{
+    return mp_cancel_test(ctx);
+}
+
+static uint8_t *fetch(struct thumbnailer *t, const char *url, int64_t limit, size_t *size)
+{
+    AVDictionary *opts = NULL;
+    av_dict_copy(&opts, t->net, 0);
+    if (t->headers)
+        av_dict_set(&opts, "headers", t->headers, 0);
+    if (limit)
+        av_dict_set_int(&opts, "end_offset", limit, 0);
+    av_dict_set_int(&opts, "rw_timeout", 15000000, 0);
+    AVIOInterruptCB cb = {interrupted, t->cancel};
+    AVIOContext *io = NULL;
+    int r = avio_open2(&io, url, AVIO_FLAG_READ, &cb, &opts);
+    av_dict_free(&opts);
+    if (r < 0)
+        return NULL;
+    size_t cap = limit ? limit : 1024 * 1024, n = 0;
+    uint8_t *buf = av_malloc(cap + 1);
+    for (;;) {
+        if (n == cap) {
+            if (limit)
+                break;
+            cap *= 2;
+            buf = av_realloc(buf, cap + 1);
+        }
+        r = avio_read(io, buf + n, cap - n);
+        if (r <= 0)
+            break;
+        n += r;
+    }
+    avio_closep(&io);
+    if (!n) {
+        av_free(buf);
+        return NULL;
+    }
+    buf[n] = 0;
+    *size = n;
+    return buf;
+}
+
+static bool hls_load(struct thumbnailer *t)
+{
+    if (strncmp(t->url, "http", 4))
+        return false;
+    mp_setup_av_network_options(&t->net, NULL, t->global, t->log);
+    av_dict_set(&t->net, "reconnect", NULL, 0);
+    av_dict_set(&t->net, "icy", NULL, 0);
+    size_t n;
+    char *pl = (char *)fetch(t, t->url, 0, &n);
+    char *map = NULL;
+    if (!pl || strncmp(pl, "#EXTM3U", 7))
+        goto fail;
+    double dur = 0, at = 0;
+    for (char *line = pl, *next; line && *line; line = next) {
+        next = strchr(line, '\n');
+        if (next)
+            *next++ = 0;
+        size_t len = strlen(line);
+        if (len && line[len - 1] == '\r')
+            line[len - 1] = 0;
+        if (!strncmp(line, "#EXTINF:", 8)) {
+            dur = atof(line + 8);
+        } else if (!strncmp(line, "#EXT-X-MAP:", 11)) {
+            char *u = strstr(line, "URI=\"");
+            char *e = u ? strchr(u + 5, '"') : NULL;
+            if (!e)
+                goto fail;
+            *e = 0;
+            map = talloc_strdup(t, u + 5);
+        } else if (!strncmp(line, "#EXT-X-KEY", 10) ||
+                   !strncmp(line, "#EXT-X-BYTERANGE", 16)) {
+            goto fail;
+        } else if (*line && *line != '#') {
+            if (strncmp(line, "http", 4) || dur <= 0)
+                goto fail;
+            struct hls_seg seg = {at, talloc_strdup(t, line)};
+            MP_TARRAY_APPEND(t, t->segs, t->nsegs, seg);
+            at += dur;
+            dur = 0;
+        }
+    }
+    if (!map || !t->nsegs)
+        goto fail;
+    t->hls_duration = at;
+    uint8_t *init = fetch(t, map, 0, &t->init_size);
+    if (!init)
+        goto fail;
+    t->init = init;
+    av_free(pl);
+    return true;
+
+fail:
+    t->nsegs = 0;
+    av_free(pl);
+    return false;
+}
+
+static int mem_read(void *opaque, uint8_t *buf, int size)
+{
+    struct membuf *m = opaque;
+    if (m->pos >= m->size)
+        return AVERROR_EOF;
+    int c = MPMIN((size_t)size, m->size - m->pos);
+    memcpy(buf, m->data + m->pos, c);
+    m->pos += c;
+    return c;
+}
+
+static bool hls_try(struct thumbnailer *t, int i, AVPacket *pkt)
+{
+    for (int64_t head = HLS_HEAD; head <= 4 * HLS_HEAD; head *= 4) {
+        size_t n;
+        uint8_t *part = fetch(t, t->segs[i].url, head, &n);
+        if (!part)
+            part = fetch(t, t->segs[i].url, 0, &n);
+        if (!part)
+            return false;
+        uint8_t *data = av_malloc(t->init_size + n);
+        memcpy(data, t->init, t->init_size);
+        memcpy(data + t->init_size, part, n);
+        av_free(part);
+        struct membuf m = {data, t->init_size + n, 0};
+        uint8_t *iobuf = av_malloc(32768);
+        AVIOContext *io = iobuf ? avio_alloc_context(iobuf, 32768, 0, &m, mem_read, NULL, NULL) : NULL;
+        AVFormatContext *fc = io ? avformat_alloc_context() : NULL;
+        bool ok = false;
+        if (fc) {
+            fc->pb = io;
+            fc->flags |= AVFMT_FLAG_CUSTOM_IO;
+            if (avformat_open_input(&fc, NULL, NULL, NULL) >= 0) {
+                while (av_read_frame(fc, pkt) >= 0) {
+                    if (pkt->stream_index == 0 && (pkt->flags & AV_PKT_FLAG_KEY) &&
+                        !(pkt->flags & AV_PKT_FLAG_CORRUPT))
+                    {
+                        ok = true;
+                        break;
+                    }
+                    av_packet_unref(pkt);
+                }
+                avformat_close_input(&fc);
+            }
+        }
+        if (io)
+            av_freep(&io->buffer);
+        avio_context_free(&io);
+        av_free(data);
+        if (ok)
+            return true;
+        if (n < head)
+            return false;
+    }
+    return false;
+}
+
+static bool hls_keyframe(struct thumbnailer *t, double pts, AVPacket *pkt)
+{
+    int i = 0;
+    while (i + 1 < t->nsegs && t->segs[i + 1].start <= pts)
+        i++;
+    return hls_try(t, i, pkt);
+}
+
+static struct sh_stream *hls_stream(struct thumbnailer *t)
+{
+    struct membuf m = {t->init, t->init_size, 0};
+    uint8_t *iobuf = av_malloc(32768);
+    AVIOContext *io = iobuf ? avio_alloc_context(iobuf, 32768, 0, &m, mem_read, NULL, NULL) : NULL;
+    AVFormatContext *fc = io ? avformat_alloc_context() : NULL;
+    struct sh_stream *sh = NULL;
+    if (fc) {
+        fc->pb = io;
+        fc->flags |= AVFMT_FLAG_CUSTOM_IO;
+        if (avformat_open_input(&fc, NULL, NULL, NULL) >= 0) {
+            AVCodecParameters *par = fc->nb_streams ? fc->streams[0]->codecpar : NULL;
+            if (par && par->codec_type == AVMEDIA_TYPE_VIDEO && par->width > 0 &&
+                par->height > 0)
+            {
+                sh = demux_alloc_sh_stream(STREAM_VIDEO);
+                struct mp_codec_params *c = sh->codec;
+                c->codec = talloc_strdup(sh, avcodec_get_name(par->codec_id));
+                c->disp_w = par->width;
+                c->disp_h = par->height;
+                if (par->sample_aspect_ratio.num > 0) {
+                    c->par_w = par->sample_aspect_ratio.num;
+                    c->par_h = par->sample_aspect_ratio.den;
+                }
+                if (par->extradata_size > 0) {
+                    c->extradata = talloc_memdup(sh, par->extradata, par->extradata_size);
+                    c->extradata_size = par->extradata_size;
+                }
+                talloc_steal(t, sh);
+            }
+            avformat_close_input(&fc);
+        }
+    }
+    if (io)
+        av_freep(&io->buffer);
+    avio_context_free(&io);
+    return sh;
+}
+
 static uint8_t *grab(struct thumbnailer *t, struct demuxer *d,
                      struct sh_stream *sh, AVCodecContext *avctx,
                      struct mp_sws_context *sws, AVPacket *pkt, AVFrame *frame,
                      double pts)
 {
-    demux_seek(d, pts, 0);
     avcodec_flush_buffers(avctx);
-    AVRational tb = mp_get_codec_timebase(sh->codec);
     bool sent = false;
-    for (int n = 0; n < 500 && !mp_cancel_test(t->cancel); n++) {
+    if (t->nsegs) {
+        AVPacket *hp = av_packet_alloc();
+        if (hp && hls_keyframe(t, pts, hp))
+            sent = avcodec_send_packet(avctx, hp) >= 0;
+        av_packet_free(&hp);
+    }
+    if (!sent && d)
+        demux_seek(d, pts, 0);
+    AVRational tb = mp_get_codec_timebase(sh->codec);
+    for (int n = 0; !sent && d && n < 500 && !mp_cancel_test(t->cancel); n++) {
         struct demux_packet *dp = demux_read_any_packet(d);
         if (!dp)
             break;
@@ -386,7 +545,36 @@ static struct sh_stream *pick_video(struct demuxer *d, int width)
     return best;
 }
 
-static void setup(struct thumbnailer *t, struct demuxer *d, struct sh_stream *sh)
+static int64_t ram_bytes(void)
+{
+#ifdef _WIN32
+    MEMORYSTATUSEX status = {.dwLength = sizeof(status)};
+    return GlobalMemoryStatusEx(&status) ? (int64_t)status.ullTotalPhys : 0;
+#else
+    long pages = sysconf(_SC_PHYS_PAGES);
+    long page_size = sysconf(_SC_PAGESIZE);
+    return pages > 0 && page_size > 0 ? (int64_t)pages * page_size : 0;
+#endif
+}
+
+static int64_t slot_budget(void)
+{
+    int64_t ram = ram_bytes();
+    if (ram <= 0)
+        return 64 * 1024 * 1024;
+    return MPCLAMP(ram / 32, 32 * 1024 * 1024, 128 * 1024 * 1024);
+}
+
+static int auto_workers(const char *url, struct sh_stream *sh, int nsegs)
+{
+    int cpus = av_cpu_count();
+    bool remote = !strncmp(url, "http://", 7) || !strncmp(url, "https://", 8);
+    if (remote && sh->codec->disp_h <= 720)
+        return nsegs ? MPCLAMP(cpus * 2, 4, 12) : MPCLAMP(cpus, 4, 8);
+    return MPCLAMP(cpus / 4, 1, 4);
+}
+
+static void setup(struct thumbnailer *t, double duration, struct sh_stream *sh)
 {
     struct mp_codec_params *c = sh->codec;
     double aspect = (double)c->disp_w / c->disp_h;
@@ -394,9 +582,19 @@ static void setup(struct thumbnailer *t, struct demuxer *d, struct sh_stream *sh
         aspect = aspect * c->par_w / c->par_h;
     t->w = MPMAX(t->width & ~1, 16);
     t->h = MPMAX((int)lrint(t->w / aspect) & ~1, 16);
-    t->step = MPMAX(t->interval, d->duration / t->max_count);
-    t->count = MPMAX((int)ceil(d->duration / t->step), 1);
     t->slot_size = t->w * t->h * 3 / 2;
+    t->step = MPMAX(t->interval, duration / t->max_count);
+    t->count = MPMAX((int)ceil(duration / t->step), 1);
+    int64_t budget = t->memory > 0 ? t->memory : slot_budget();
+    t->cap = MPMIN(t->count, MPMAX((int)(budget / t->slot_size), 16));
+    static const double passes[] = {30, 15};
+    t->nstrides = 0;
+    for (int n = 0; n < 2; n++) {
+        int stride = lrint(passes[n] / t->step);
+        if (stride > 1 && (!t->nstrides || stride < t->strides[t->nstrides - 1]))
+            t->strides[t->nstrides++] = stride;
+    }
+    t->strides[t->nstrides++] = 1;
     t->state = talloc_zero_array(t, uint8_t, t->count);
     t->slots = talloc_zero_array(t, uint8_t *, t->count);
 }
@@ -412,61 +610,91 @@ static void lower_priority(void)
 #endif
 }
 
-static MP_THREAD_VOID thumbnail_thread(void *arg)
-{
-    struct thumbnailer *t = arg;
-    mp_thread_set_name("thumbnail");
-    lower_priority();
+struct worker {
+    struct demuxer *d;
+    struct sh_stream *sh;
+    AVCodecContext *avctx;
+    struct mp_sws_context *sws;
+    AVPacket *pkt;
+    AVFrame *frame;
+    int hwdec;
+    bool hw_ok;
+};
 
-    mp_stream_lavf_set_thread_headers(t->headers);
+static struct demuxer *open_demux(struct thumbnailer *t, struct sh_stream **sh_out)
+{
     struct demuxer_params params = {.stream_flags = t->stream_flags | STREAM_SPARSE_READS};
     struct demuxer *d = demux_open_url(t->url, &params, t->cancel, t->global);
-    if (!d) {
-        MP_WARN(t, "Could not open %s\n", t->url);
-        goto out;
-    }
+    if (!d)
+        return NULL;
     if (t->rebase)
         demux_set_ts_offset(d, -d->start_time);
     struct sh_stream *sh = pick_video(d, t->width);
     if (!sh || !d->seekable || !(d->duration > 0)) {
-        MP_VERBOSE(t, "Nothing to thumbnail.\n");
-        goto out;
+        demux_free(d);
+        return NULL;
     }
     demuxer_select_track(d, sh, MP_NOPTS_VALUE, true);
+    *sh_out = sh;
+    return d;
+}
 
-    AVCodecContext *avctx = NULL;
-    struct mp_sws_context *sws = mp_sws_alloc(NULL);
-    sws->flags = mp_sws_fast_flags;
-    AVPacket *pkt = av_packet_alloc();
-    AVFrame *frame = av_frame_alloc();
-
-    setup(t, d, sh);
-    open_cache(t, d);
-
-    int hwdec = t->hwdec;
-    avctx = hwdec ? open_decoder(t, sh, hwdec) : NULL;
-    if (!avctx && hwdec) {
+static bool worker_open(struct thumbnailer *t, struct worker *w)
+{
+    w->sws = mp_sws_alloc(NULL);
+    w->sws->flags = mp_sws_fast_flags;
+    w->pkt = av_packet_alloc();
+    w->frame = av_frame_alloc();
+    w->hwdec = t->hwdec;
+    w->avctx = w->hwdec ? open_decoder(t, w->sh, w->hwdec) : NULL;
+    if (!w->avctx && w->hwdec) {
         MP_VERBOSE(t, "Hardware decoding unavailable, using software.\n");
-        hwdec = 0;
+        w->hwdec = 0;
     }
-    if (!avctx)
-        avctx = open_decoder(t, sh, 0);
-    bool hw_ok = false;
-    if (!avctx) {
-        MP_WARN(t, "Could not open decoder for %s\n", sh->codec->codec);
-        goto done;
-    }
+    if (!w->avctx)
+        w->avctx = open_decoder(t, w->sh, 0);
+    return w->avctx != NULL;
+}
 
-    double start = mp_time_sec();
-    mp_mutex_lock(&t->lock);
-    t->ready = true;
-    t->changed = true;
-    MP_VERBOSE(t, "%dx%d, %d thumbnails every %.1fs\n", t->w, t->h, t->count, t->step);
-    t->wakeup(t->wakeup_ctx);
-    double last_wakeup = mp_time_sec();
+static void worker_close(struct worker *w)
+{
+    avcodec_free_context(&w->avctx);
+    mp_free_av_packet(&w->pkt);
+    av_frame_free(&w->frame);
+    talloc_free(w->sws);
+    demux_free(w->d);
+}
+
+static int distance(int a, int b)
+{
+    return a > b ? a - b : b - a;
+}
+
+static void evict(struct thumbnailer *t, int keep)
+{
+    int ref = t->hover >= 0 ? t->hover : keep;
+    int victim = -1;
+    for (int j = 0; j < t->count; j++) {
+        if (j == keep || !t->slots[j])
+            continue;
+        if (victim < 0 || distance(j, ref) > distance(victim, ref))
+            victim = j;
+    }
+    if (victim < 0)
+        return;
+    talloc_free(t->slots[victim]);
+    t->slots[victim] = NULL;
+    t->state[victim] = SLOT_EMPTY;
+    t->resident--;
+    t->done--;
+}
+
+static void work(struct thumbnailer *t, struct worker *w)
+{
     int64_t eager_at = mp_time_ns() + MP_TIME_S_TO_NS(t->delay);
+    double last_wakeup = mp_time_sec();
     bool pending = false;
-    bool primed = false;
+    mp_mutex_lock(&t->lock);
     while (!t->quit) {
         int i = next_index(t);
         if (i < 0) {
@@ -475,7 +703,7 @@ static MP_THREAD_VOID thumbnail_thread(void *arg)
                 pending = false;
             }
             if (t->done == t->count) {
-                MP_VERBOSE(t, "Done in %.2fs\n", mp_time_sec() - start);
+                mp_cond_broadcast(&t->cond);
                 break;
             }
             if (t->eager) {
@@ -485,37 +713,28 @@ static MP_THREAD_VOID thumbnail_thread(void *arg)
             }
             continue;
         }
-        if (!primed && t->state[0] != SLOT_EMPTY) {
-            mp_mutex_unlock(&t->lock);
-            talloc_free(grab(t, d, sh, avctx, sws, pkt, frame, 0));
-            mp_mutex_lock(&t->lock);
-            primed = true;
-            continue;
-        }
-        if (!primed)
-            i = 0;
-        primed = true;
+        t->state[i] = SLOT_BUSY;
         mp_mutex_unlock(&t->lock);
-        uint8_t *buf = grab(t, d, sh, avctx, sws, pkt, frame, i * t->step);
-        if (!buf && hwdec && !hw_ok && !mp_cancel_test(t->cancel)) {
-            AVCodecContext *sw = open_decoder(t, sh, 0);
+        uint8_t *buf = grab(t, w->d, w->sh, w->avctx, w->sws, w->pkt, w->frame, i * t->step);
+        if (!buf && w->hwdec && !w->hw_ok && !mp_cancel_test(t->cancel)) {
+            AVCodecContext *sw = open_decoder(t, w->sh, 0);
             uint8_t *sw_buf = NULL;
             if (sw) {
                 if (i)
-                    talloc_free(grab(t, d, sh, sw, sws, pkt, frame, 0));
-                sw_buf = grab(t, d, sh, sw, sws, pkt, frame, i * t->step);
+                    talloc_free(grab(t, w->d, w->sh, sw, w->sws, w->pkt, w->frame, 0));
+                sw_buf = grab(t, w->d, w->sh, sw, w->sws, w->pkt, w->frame, i * t->step);
             }
             if (sw_buf) {
                 MP_VERBOSE(t, "Hardware decoding failed, using software.\n");
-                avcodec_free_context(&avctx);
-                avctx = sw;
-                hwdec = 0;
+                avcodec_free_context(&w->avctx);
+                w->avctx = sw;
+                w->hwdec = 0;
                 buf = sw_buf;
             } else {
                 avcodec_free_context(&sw);
             }
         }
-        hw_ok |= !!buf;
+        w->hw_ok |= !!buf;
         mp_mutex_lock(&t->lock);
         if (mp_cancel_test(t->cancel)) {
             talloc_free(buf);
@@ -523,6 +742,11 @@ static MP_THREAD_VOID thumbnail_thread(void *arg)
         }
         t->state[i] = buf ? SLOT_DONE : SLOT_FAILED;
         t->slots[i] = buf;
+        if (buf) {
+            t->resident++;
+            while (t->resident > t->cap)
+                evict(t, i);
+        }
         bool wanted = t->want == i;
         if (wanted)
             t->want = -1;
@@ -536,21 +760,84 @@ static MP_THREAD_VOID thumbnail_thread(void *arg)
         } else {
             pending = true;
         }
-        if (buf) {
-            mp_mutex_unlock(&t->lock);
-            store_cache(t, i);
-            mp_mutex_lock(&t->lock);
-        }
     }
     mp_mutex_unlock(&t->lock);
+}
 
-done:
-    avcodec_free_context(&avctx);
-    mp_free_av_packet(&pkt);
-    av_frame_free(&frame);
-    talloc_free(sws);
+static MP_THREAD_VOID worker_thread(void *arg)
+{
+    struct thumbnailer *t = arg;
+    mp_thread_set_name("thumbnail");
+    lower_priority();
+
+    mp_stream_lavf_set_thread_headers(t->headers);
+    struct worker w = {0};
+    if (t->nsegs) {
+        w.sh = t->sh;
+    } else {
+        w.d = open_demux(t, &w.sh);
+        if (!w.d)
+            MP_THREAD_RETURN();
+    }
+    if (worker_open(t, &w))
+        work(t, &w);
+    worker_close(&w);
+    MP_THREAD_RETURN();
+}
+
+static MP_THREAD_VOID thumbnail_thread(void *arg)
+{
+    struct thumbnailer *t = arg;
+    mp_thread_set_name("thumbnail");
+    lower_priority();
+
+    mp_stream_lavf_set_thread_headers(t->headers);
+    hls_load(t);
+    struct worker w = {0};
+    if (t->nsegs) {
+        w.sh = hls_stream(t);
+        if (!w.sh)
+            t->nsegs = 0;
+    }
+    if (!w.sh) {
+        w.d = open_demux(t, &w.sh);
+        if (!w.d) {
+            MP_WARN(t, "Could not open %s\n", t->url);
+            goto out;
+        }
+    }
+    if (t->auto_workers)
+        t->workers = auto_workers(t->url, w.sh, t->nsegs);
+    t->sh = w.sh;
+    setup(t, w.d ? w.d->duration : t->hls_duration, w.sh);
+    if (!worker_open(t, &w)) {
+        MP_WARN(t, "Could not open decoder for %s\n", w.sh->codec->codec);
+        worker_close(&w);
+        goto out;
+    }
+    if (t->state[0] != SLOT_EMPTY)
+        talloc_free(grab(t, w.d, w.sh, w.avctx, w.sws, w.pkt, w.frame, 0));
+
+    double start = mp_time_sec();
+    mp_mutex_lock(&t->lock);
+    t->ready = true;
+    t->changed = true;
+    MP_VERBOSE(t, "%dx%d, %d thumbnails every %.1fs, %d workers\n",
+               t->w, t->h, t->count, t->step, t->workers);
+    t->wakeup(t->wakeup_ctx);
+    mp_mutex_unlock(&t->lock);
+
+    for (int n = 1; n < t->workers; n++) {
+        if (mp_thread_create(&t->threads[t->nthreads], worker_thread, t) == 0)
+            t->nthreads++;
+    }
+    work(t, &w);
+    for (int n = 0; n < t->nthreads; n++)
+        mp_thread_join(t->threads[n]);
+    MP_VERBOSE(t, "Done in %.2fs\n", mp_time_sec() - start);
+    worker_close(&w);
+
 out:
-    demux_free(d);
     mp_mutex_lock(&t->lock);
     t->finished = true;
     mp_mutex_unlock(&t->lock);
@@ -576,8 +863,8 @@ void mp_thumbnails_start(struct MPContext *mpctx)
     t->width = opts->thumbnail_width;
     t->interval = opts->thumbnail_interval;
     t->max_count = opts->thumbnail_max;
+    t->memory = (int64_t)opts->thumbnail_memory * 1024 * 1024;
     t->sweep = opts->thumbnail_sweep;
-    t->cache_dir = talloc_strdup(t, opts->thumbnail_cache_dir);
     t->delay = opts->thumbnail_delay;
     t->eager = t->delay <= 0;
     t->headers = NULL;
@@ -588,6 +875,9 @@ void mp_thumbnails_start(struct MPContext *mpctx)
     if (t->headers)
         talloc_steal(t, t->headers);
     t->hwdec = opts->thumbnail_hwdec;
+    t->auto_workers = opts->thumbnail_workers <= 0;
+    t->workers = opts->thumbnail_workers;
+    t->threads = talloc_zero_array(t, mp_thread, 16);
     t->wakeup = mp_wakeup_core_cb;
     t->wakeup_ctx = mpctx;
     t->cancel = mp_cancel_new(t);
@@ -617,10 +907,10 @@ static void reap(struct MPContext *mpctx, bool wait)
         if (!finished && !wait)
             continue;
         mp_thread_join(t->thread);
-        if (t->cache)
-            fclose(t->cache);
         mp_mutex_destroy(&t->lock);
         mp_cond_destroy(&t->cond);
+        av_dict_free(&t->net);
+        av_free(t->init);
         talloc_free(t);
         MP_TARRAY_REMOVE_AT(mpctx->old_thumbnailers, mpctx->num_old_thumbnailers, n);
     }
@@ -633,7 +923,7 @@ void mp_thumbnails_stop(struct MPContext *mpctx)
         return;
     mp_mutex_lock(&t->lock);
     t->quit = true;
-    mp_cond_signal(&t->cond);
+    mp_cond_broadcast(&t->cond);
     mp_mutex_unlock(&t->lock);
     mp_cancel_trigger(t->cancel);
     MP_TARRAY_APPEND(mpctx, mpctx->old_thumbnailers, mpctx->num_old_thumbnailers, t);
@@ -657,7 +947,7 @@ void mp_thumbnails_update(struct MPContext *mpctx)
     bool hold = mpctx->paused_for_cache;
     if (hold != t->hold) {
         t->hold = hold;
-        mp_cond_signal(&t->cond);
+        mp_cond_broadcast(&t->cond);
     }
     bool changed = t->changed;
     t->changed = false;
@@ -677,7 +967,7 @@ bool mp_thumbnails_info(struct MPContext *mpctx, struct mpv_node *res)
         node_init(res, MPV_FORMAT_NODE_MAP, NULL);
         node_map_add_int64(res, "w", t->w);
         node_map_add_int64(res, "h", t->h);
-        node_map_add_int64(res, "count", t->count);
+        node_map_add_int64(res, "count", t->cap);
         node_map_add_int64(res, "done", t->done);
         node_map_add_double(res, "interval", t->step);
     }
@@ -705,11 +995,11 @@ void cmd_thumbnail(void *p)
     t->hover = want;
     if (!t->eager) {
         t->eager = true;
-        mp_cond_signal(&t->cond);
+        mp_cond_broadcast(&t->cond);
     }
     if (t->state[want] == SLOT_EMPTY && t->want != want) {
         t->want = want;
-        mp_cond_signal(&t->cond);
+        mp_cond_broadcast(&t->cond);
     }
     int best = -1;
     for (int d = 0; d < t->count && best < 0; d++) {
