@@ -297,6 +297,63 @@ static uint8_t *fetch(struct thumbnailer *t, const char *url, int64_t limit, siz
     return buf;
 }
 
+static char *hls_resolve(struct thumbnailer *t, const char *base, const char *ref)
+{
+    if (!strncmp(ref, "http://", 7) || !strncmp(ref, "https://", 8))
+        return talloc_strdup(t, ref);
+    const char *host = strstr(base, "://");
+    if (!host)
+        return NULL;
+    host += 3;
+    if (ref[0] == '/') {
+        const char *end = strchr(host, '/');
+        return talloc_asprintf(t, "%.*s%s", (int)(end ? end - base : strlen(base)), base, ref);
+    }
+    size_t len = strcspn(base, "?#");
+    while (len > (size_t)(host - base) && base[len - 1] != '/')
+        len--;
+    return talloc_asprintf(t, "%.*s%s", (int)len, base, ref);
+}
+
+static char *hls_variant(struct thumbnailer *t, char *pl, const char *base)
+{
+    char *best = NULL;
+    int best_bw = 0, best_w = 0, bw = 0, w = 0;
+    bool pending = false;
+    for (char *line = pl, *next; line && *line; line = next) {
+        next = strchr(line, '\n');
+        if (next)
+            *next++ = 0;
+        size_t len = strlen(line);
+        if (len && line[len - 1] == '\r')
+            line[len - 1] = 0;
+        if (!strncmp(line, "#EXT-X-STREAM-INF:", 18)) {
+            char *b = strstr(line, "BANDWIDTH=");
+            char *r = strstr(line, "RESOLUTION=");
+            bw = b ? atoi(b + 10) : 0;
+            w = r ? atoi(r + 11) : 0;
+            pending = true;
+        } else if (pending && *line && *line != '#') {
+            pending = false;
+            bool fits = w >= t->width;
+            bool best_fits = best_w >= t->width;
+            if (!best || (fits && !best_fits) ||
+                (fits == best_fits && fits && bw < best_bw) ||
+                (!fits && !best_fits && bw > best_bw))
+            {
+                char *url = hls_resolve(t, base, line);
+                if (!url)
+                    continue;
+                talloc_free(best);
+                best = url;
+                best_bw = bw;
+                best_w = w;
+            }
+        }
+    }
+    return best;
+}
+
 static bool hls_load(struct thumbnailer *t)
 {
     if (strncmp(t->url, "http", 4))
@@ -305,9 +362,22 @@ static bool hls_load(struct thumbnailer *t)
     av_dict_set(&t->net, "reconnect", NULL, 0);
     av_dict_set(&t->net, "icy", NULL, 0);
     size_t n;
-    char *pl = (char *)fetch(t, t->url, 0, &n);
+    const char *base = t->url;
+    char *pl = NULL;
     char *map = NULL;
-    if (!pl || strncmp(pl, "#EXTM3U", 7))
+    for (int depth = 0; depth < 2; depth++) {
+        pl = (char *)fetch(t, base, 0, &n);
+        if (!pl || strncmp(pl, "#EXTM3U", 7))
+            goto fail;
+        if (!strstr(pl, "#EXT-X-STREAM-INF"))
+            break;
+        base = hls_variant(t, pl, base);
+        av_free(pl);
+        pl = NULL;
+        if (!base)
+            goto fail;
+    }
+    if (!pl)
         goto fail;
     double dur = 0, at = 0;
     for (char *line = pl, *next; line && *line; line = next) {
@@ -325,14 +395,17 @@ static bool hls_load(struct thumbnailer *t)
             if (!e)
                 goto fail;
             *e = 0;
-            map = talloc_strdup(t, u + 5);
+            map = hls_resolve(t, base, u + 5);
+            if (!map)
+                goto fail;
         } else if (!strncmp(line, "#EXT-X-KEY", 10) ||
                    !strncmp(line, "#EXT-X-BYTERANGE", 16)) {
             goto fail;
         } else if (*line && *line != '#') {
-            if (strncmp(line, "http", 4) || dur <= 0)
+            char *url = dur > 0 ? hls_resolve(t, base, line) : NULL;
+            if (!url)
                 goto fail;
-            struct hls_seg seg = {at, talloc_strdup(t, line)};
+            struct hls_seg seg = {at, url};
             MP_TARRAY_APPEND(t, t->segs, t->nsegs, seg);
             at += dur;
             dur = 0;
@@ -411,12 +484,32 @@ static bool hls_try(struct thumbnailer *t, int i, AVPacket *pkt)
     return false;
 }
 
-static bool hls_keyframe(struct thumbnailer *t, double pts, AVPacket *pkt)
+static int hls_index(struct thumbnailer *t, double pts)
 {
     int i = 0;
     while (i + 1 < t->nsegs && t->segs[i + 1].start <= pts)
         i++;
-    return hls_try(t, i, pkt);
+    return i;
+}
+
+static bool hls_keyframe(struct thumbnailer *t, double pts, AVPacket *pkt)
+{
+    return hls_try(t, hls_index(t, pts), pkt);
+}
+
+static uint8_t *twin_slot(struct thumbnailer *t, int i)
+{
+    if (!t->nsegs)
+        return NULL;
+    int seg = hls_index(t, i * t->step);
+    for (int d = 1; d <= 3; d++) {
+        for (int j = i - d; j <= i + d; j += 2 * d) {
+            if (j >= 0 && j < t->count && t->slots[j] &&
+                hls_index(t, j * t->step) == seg)
+                return talloc_memdup(NULL, t->slots[j], t->slot_size);
+        }
+    }
+    return NULL;
 }
 
 static struct sh_stream *hls_stream(struct thumbnailer *t)
@@ -714,8 +807,10 @@ static void work(struct thumbnailer *t, struct worker *w)
             continue;
         }
         t->state[i] = SLOT_BUSY;
+        uint8_t *buf = twin_slot(t, i);
         mp_mutex_unlock(&t->lock);
-        uint8_t *buf = grab(t, w->d, w->sh, w->avctx, w->sws, w->pkt, w->frame, i * t->step);
+        if (!buf)
+            buf = grab(t, w->d, w->sh, w->avctx, w->sws, w->pkt, w->frame, i * t->step);
         if (!buf && w->hwdec && !w->hw_ok && !mp_cancel_test(t->cancel)) {
             AVCodecContext *sw = open_decoder(t, w->sh, 0);
             uint8_t *sw_buf = NULL;
