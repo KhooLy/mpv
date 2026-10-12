@@ -658,11 +658,11 @@ static int64_t slot_budget(void)
     return MPCLAMP(ram / 32, 32 * 1024 * 1024, 128 * 1024 * 1024);
 }
 
-static int auto_workers(const char *url, struct sh_stream *sh, int nsegs)
+static int auto_workers(const char *url, int nsegs)
 {
     int cpus = av_cpu_count();
     bool remote = !strncmp(url, "http://", 7) || !strncmp(url, "https://", 8);
-    if (remote && sh->codec->disp_h <= 720)
+    if (remote)
         return nsegs ? MPCLAMP(cpus * 2, 4, 12) : MPCLAMP(cpus, 4, 8);
     return MPCLAMP(cpus / 4, 1, 4);
 }
@@ -902,7 +902,7 @@ static MP_THREAD_VOID thumbnail_thread(void *arg)
         }
     }
     if (t->auto_workers)
-        t->workers = auto_workers(t->url, w.sh, t->nsegs);
+        t->workers = auto_workers(t->url, t->nsegs);
     t->sh = w.sh;
     setup(t, w.d ? w.d->duration : t->hls_duration, w.sh);
     if (!worker_open(t, &w)) {
@@ -944,15 +944,18 @@ void mp_thumbnails_start(struct MPContext *mpctx)
 {
     mp_thumbnails_stop(mpctx);
     struct MPOpts *opts = mpctx->opts;
-    if (!opts->thumbnails || !mpctx->stream_open_filename || !mpctx->vo_chain ||
-        mpctx->vo_chain->is_coverart || !mpctx->demuxer || !mpctx->demuxer->seekable)
+    bool external = opts->thumbnail_url && opts->thumbnail_url[0];
+    if (!opts->thumbnails)
+        return;
+    if (!external && (!mpctx->stream_open_filename || !mpctx->vo_chain ||
+                      mpctx->vo_chain->is_coverart || !mpctx->demuxer ||
+                      !mpctx->demuxer->seekable))
         return;
 
     struct thumbnailer *t = talloc_zero(NULL, struct thumbnailer);
     t->global = mpctx->global;
     t->log = mp_log_new(t, mpctx->log, "thumbnail");
-    t->url = talloc_strdup(t, opts->thumbnail_url && opts->thumbnail_url[0]
-                              ? opts->thumbnail_url : mpctx->stream_open_filename);
+    t->url = talloc_strdup(t, external ? opts->thumbnail_url : mpctx->stream_open_filename);
     t->stream_flags = mpctx->playing ? mpctx->playing->stream_flags : 0;
     t->rebase = opts->rebase_start_time;
     t->width = opts->thumbnail_width;
@@ -990,6 +993,15 @@ void mp_thumbnails_start(struct MPContext *mpctx)
     }
     mpctx->thumbnailer = t;
     mp_notify_property(mpctx, "thumbnail-info");
+}
+
+void mp_thumbnails_file_loaded(struct MPContext *mpctx)
+{
+    struct thumbnailer *t = mpctx->thumbnailer;
+    const char *url = mpctx->opts->thumbnail_url;
+    if (t && url && url[0] && !strcmp(t->url, url))
+        return;
+    mp_thumbnails_start(mpctx);
 }
 
 static void reap(struct MPContext *mpctx, bool wait)

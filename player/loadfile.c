@@ -2045,7 +2045,7 @@ static void play_current_file(struct MPContext *mpctx)
     mpctx->playlist->playlist_started = true;
     mp_notify(mpctx, MPV_EVENT_FILE_LOADED, NULL);
     update_screensaver_state(mpctx);
-    mp_thumbnails_start(mpctx);
+    mp_thumbnails_file_loaded(mpctx);
     clear_playlist_paths(mpctx);
 
     // Clear out subs from the previous file if the video track is a still image.

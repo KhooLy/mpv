@@ -6,6 +6,7 @@ struct MPContext;
 struct mpv_node;
 
 void mp_thumbnails_start(struct MPContext *mpctx);
+void mp_thumbnails_file_loaded(struct MPContext *mpctx);
 void mp_thumbnails_stop(struct MPContext *mpctx);
 void mp_thumbnails_uninit(struct MPContext *mpctx);
 void mp_thumbnails_update(struct MPContext *mpctx);
