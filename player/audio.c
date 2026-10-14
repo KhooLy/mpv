@@ -545,7 +545,7 @@ static int reinit_audio_filters_and_output(struct MPContext *mpctx)
         ao_get_format(mpctx->ao, &ao_rate, &ao_format, &ao_channels);
 
     // Verify passthrough format was not changed.
-    if (mpctx->ao && af_fmt_is_spdif(out_format)) {
+    if (mpctx->ao && !af_fmt_is_pcm(out_format)) {
         if (out_rate != ao_rate || out_format != ao_format ||
             !mp_chmap_equals(&out_channels, &ao_channels))
         {

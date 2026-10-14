@@ -83,6 +83,22 @@ chmap = executable('chmap', 'chmap.c', include_directories: incdir,
                    link_with: test_utils)
 test('chmap', chmap)
 
+swresample_files = [
+    'audio/aframe.c',
+    'audio/chmap_avchannel.c',
+    'audio/fmt-conversion.c',
+    'demux/packet.c',
+    'demux/packet_pool.c',
+    'filters/f_swresample.c',
+    'filters/filter.c',
+    'filters/frame.c',
+]
+swresample_objects = libmpv.extract_objects(swresample_files)
+swresample = executable('swresample', 'swresample.c', include_directories: incdir,
+                        dependencies: [libavcodec, libavutil, libswresample, libplacebo],
+                        objects: swresample_objects, link_with: [img_utils, test_utils])
+test('swresample', swresample)
+
 gl_video_objects = libmpv.extract_objects('video/out/gpu/ra.c',
                                           'video/out/gpu/utils.c')
 gl_video = executable('gl-video', 'gl_video.c', objects: gl_video_objects,
@@ -115,6 +131,16 @@ paths = executable('paths', 'paths.c', include_directories: incdir,
                    objects: paths_objects, link_with: test_utils)
 test('paths', paths)
 
+if features['libcurl']
+    avio_crypto_objects = libmpv.extract_objects('demux/avio_crypto.c')
+    avio_crypto = executable('avio-crypto', files('avio_crypto.c'),
+                             include_directories: incdir,
+                             dependencies: [libavformat, libavutil],
+                             objects: avio_crypto_objects,
+                             link_with: test_utils)
+    test('avio-crypto', avio_crypto)
+endif
+
 if get_option('libmpv')
     file = join_paths(source_root, 'etc', 'mpv-icon-8bit-16x16.png')
 
@@ -129,6 +155,11 @@ if get_option('libmpv')
     exe = executable('libmpv-test-options', 'libmpv_test_options.c',
                      include_directories: incdir, dependencies: libmpv_dep)
     test('libmpv-test-options', exe, suite: 'libmpv')
+
+    exe = executable('libmpv-test-aes-ctr', 'libmpv_test_aes_ctr.c',
+                     include_directories: incdir,
+                     dependencies: [libmpv_dep, libavutil])
+    test('libmpv-test-aes-ctr', exe, suite: 'libmpv')
 
     # Old versions of ffmpeg are bugged when setting forced tracks and older
     # versions of meson don't support the custom version checking argument.

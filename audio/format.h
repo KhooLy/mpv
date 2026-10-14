@@ -52,6 +52,12 @@ enum af_format {
     // AOs that take the codec directly (compressed offload).
     AF_FORMAT_S_AAC_RAW,
     AF_FORMAT_S_MP3_RAW,
+    // DSD-over-PCM (DoP): 16 DSD bits and a marker byte in the 24 MSBs of
+    // 32-bit samples.
+    AF_FORMAT_S_DOP,
+
+    // Raw DSD bitstream, MSBF interleaved.
+    AF_FORMAT_DSD,
 
     AF_FORMAT_COUNT
 };

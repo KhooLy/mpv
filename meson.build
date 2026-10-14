@@ -66,11 +66,13 @@ sources = files(
     'audio/chmap.c',
     'audio/chmap_avchannel.c',
     'audio/chmap_sel.c',
+    'audio/decode/ad_dsd.c',
     'audio/decode/ad_lavc.c',
     'audio/decode/ad_spdif.c',
     'audio/filter/af_drop.c',
     'audio/filter/af_format.c',
     'audio/filter/af_lavcac3enc.c',
+    'audio/filter/af_lavfi_tempo.c',
     'audio/filter/af_scaletempo.c',
     'audio/filter/af_scaletempo2.c',
     'audio/filter/af_scaletempo2_internals.c',
@@ -179,6 +181,7 @@ sources = files(
     'player/command.c',
     'player/configfiles.c',
     'player/error_report.c',
+    'player/discnav.c',
     'player/external_files.c',
     'player/loadfile.c',
     'player/main.c',
@@ -199,6 +202,7 @@ sources = files(
     'stream/cookies.c',
     'stream/network.c',
     'stream/stream.c',
+    'stream/stream_aes_ctr.c',
     'stream/stream_avdevice.c',
     'stream/stream_cb.c',
     'stream/stream_concat.c',
@@ -210,6 +214,8 @@ sources = files(
     'stream/stream_mpv.c',
     'stream/stream_null.c',
     'stream/stream_slice.c',
+    'stream/stream_bstr.c',
+    'stream/stream_env.c',
 
     ## Subtitles
     'sub/ass_mp.c',
@@ -243,6 +249,7 @@ sources = files(
     'video/out/dither.c',
     'video/out/dr_helper.c',
     'video/out/filter_kernels.c',
+    'video/out/terminal_swapchain.c',
     'video/out/gpu/context.c',
     'video/out/gpu/error_diffusion.c',
     'video/out/gpu/hwdec.c',
@@ -640,11 +647,12 @@ if darwin
     subdir(join_paths('TOOLS', 'osxbundle'))
 endif
 
-libcurl = dependency('libcurl', version: '>= 7.87.0', required: get_option('libcurl'))
+libcurl = dependency('libcurl', version: '>= 7.88.0', required: get_option('libcurl'))
 features += {'libcurl': libcurl.found()}
 if features['libcurl']
     dependencies += [libcurl]
-    sources += files('stream/stream_curl.c')
+    sources += files('demux/avio_crypto.c',
+                     'stream/stream_curl.c')
 endif
 
 cdda_opt = get_option('cdda').require(
@@ -670,11 +678,22 @@ if features['dvbin']
                      'stream/stream_dvb.c')
 endif
 
+dvda_opt = get_option('dvda').require(
+    get_option('gpl'),
+    error_message: 'the build is not GPL!',
+)
+dvdread = dependency('dvdread', version: '>= 7.1.1', required: dvda_opt)
+features += {'dvda': dvdread.found()}
+if features['dvda']
+    dependencies += dvdread
+    sources += files('stream/stream_dvda.c')
+endif
+
 dvdnav_opt = get_option('dvdnav').require(
     get_option('gpl'),
     error_message: 'the build is not GPL!',
 )
-dvdnav = dependency('dvdnav', version: '>= 4.2.0', required: dvdnav_opt)
+dvdnav = dependency('dvdnav', version: '>= 6.1.0', required: dvdnav_opt)
 features += {'dvdnav': dvdnav.found()}
 if features['dvdnav']
     dependencies += dvdnav
@@ -716,7 +735,7 @@ if features['libavdevice']
     dependencies += libavdevice
 endif
 
-libbluray = dependency('libbluray', version: '>= 0.5.0', required: get_option('libbluray'))
+libbluray = dependency('libbluray', version: '>= 1.0.2', required: get_option('libbluray'))
 features += {'libbluray': libbluray.found()}
 if features['libbluray']
     dependencies += libbluray
@@ -1364,7 +1383,7 @@ vulkan_opt = get_option('vulkan').require(
     error_message: 'libplacebo compiled without vulkan support!',
 )
 # libplacebo/ffmpeg public headers depend on Vulkan 1.3
-vulkan = dependency('vulkan', version: '>= 1.3.238', required: vulkan_opt)
+vulkan = dependency('vulkan', version: '>= 1.4.309', required: vulkan_opt)
 features += {'vulkan': vulkan.found() and (vulkan.type_name() == 'internal' or
                        cc.has_header_symbol('vulkan/vulkan_core.h',
                                             'VK_VERSION_1_3',
@@ -1761,7 +1780,7 @@ if rst2man.found()
           docutils_wrapper, rst2man,
           '--record-dependencies', '@DEPFILE@',
           '--strip-elements-with-class=contents',
-          '@INPUT@', '@OUTPUT@'],
+          '--output=@OUTPUT@', '@INPUT@'],
         depfile: 'mpv.1.dep',
         install: true,
         install_tag: 'man',

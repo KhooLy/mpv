@@ -440,10 +440,7 @@ static void update_hook_opts(struct gpu_next_priv *p, char **opts, const char *s
     if (!opts)
         return;
 
-    const char *basename = mp_basename(shaderpath);
-    struct bstr shadername;
-    if (!mp_splitext(basename, &shadername))
-        shadername = bstr0(basename);
+    struct bstr shadername = mp_strip_ext(mp_basename_bstr(bstr0(shaderpath)));
 
     for (int n = 0; opts[n * 2]; n++) {
         struct bstr k = bstr0(opts[n * 2 + 0]);
@@ -821,7 +818,8 @@ static void update_queue_params(struct gpu_next_priv *p)
         req_frames += ceilf(p->pars->params.frame_mixer->kernel->radius) *
                       (p->pars->params.skip_anti_aliasing ? 1 : 2);
     }
-    vo_set_queue_params(p->vo, 0, MPMIN(VO_MAX_REQ_FRAMES, req_frames));
+    req_frames = MPMIN(VO_MAX_REQ_FRAMES, req_frames);
+    vo_set_queue_params(p->vo, 0, req_frames, 2 * req_frames - 1);
 }
 
 void lgn_update_external(struct render_backend *ctx, struct vo *vo)

@@ -141,12 +141,12 @@ bool ra_gl_ctx_init(struct ra_ctx *ctx, GL *gl, struct ra_ctx_params params)
     };
 
     if (!gl->version && !gl->es)
-        return false;
+        goto fail;
 
     if (gl->mpgl_caps & MPGL_CAP_SW) {
         MP_WARN(p, "Suspected software renderer or indirect context.\n");
         if (ctx->opts.probing && !ctx->opts.allow_sw)
-            return false;
+            goto fail;
     }
 
     gl->debug_context = ctx->opts.debug;
@@ -158,7 +158,14 @@ bool ra_gl_ctx_init(struct ra_ctx *ctx, GL *gl, struct ra_ctx_params params)
     }
 
     ctx->ra = ra_create_gl(p->gl, ctx->log);
-    return !!ctx->ra;
+    if (!ctx->ra)
+        goto fail;
+
+    return true;
+
+fail:
+    ra_gl_ctx_uninit(ctx);
+    return false;
 }
 
 void ra_gl_ctx_resize(struct ra_swapchain *sw, int w, int h, int fbo)
@@ -184,6 +191,12 @@ int ra_gl_ctx_color_depth(struct ra_swapchain *sw)
         return 0;
 
     if ((gl->es < 300 && !gl->version) || !(gl->mpgl_caps & MPGL_CAP_FB))
+        return 0;
+
+    // The *_SIZE attachment queries need GL_ARB_framebuffer_object or
+    // GL 3.0+; GL_EXT_framebuffer_object does not provide them.
+    if (gl->version && gl->version < 300 &&
+        !gl_check_extension(gl->extensions, "GL_ARB_framebuffer_object"))
         return 0;
 
     gl->BindFramebuffer(GL_FRAMEBUFFER, p->main_fb);
