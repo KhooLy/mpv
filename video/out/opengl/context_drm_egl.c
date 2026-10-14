@@ -332,6 +332,7 @@ static void queue_flip(struct ra_ctx *ctx, struct gbm_frame *frame)
     if (ret)
         MP_WARN(ctx->vo, "Failed to commit atomic request: %s\n", mp_strerror(ret));
     drm->waiting_for_flip = !ret;
+    p->allow_modeset = !ret;
 
     drmModeAtomicFree(atomic_ctx->request);
     atomic_ctx->request = drmModeAtomicAlloc();
@@ -552,7 +553,8 @@ static pl_color_space_t drm_egl_preferred_csp(struct ra_ctx *ctx)
 static bool drm_egl_set_color(struct ra_ctx *ctx, struct mp_image_params *params)
 {
     struct priv *p = ctx->priv;
-    p->allow_modeset = vo_drm_set_color(ctx->vo, &params->color);
+    struct pl_color_space sdr = pl_color_space_srgb;
+    p->allow_modeset |= vo_drm_set_color(ctx->vo, params ? &params->color : &sdr);
     return true;
 }
 
@@ -562,6 +564,8 @@ static bool drm_egl_init(struct ra_ctx *ctx)
         goto err;
 
     struct priv *p = ctx->priv = talloc_zero(ctx, struct priv);
+    p->drm_params.fd = -1;
+    p->drm_params.render_fd = -1;
     struct vo_drm_state *drm = ctx->vo->drm;
 
     if (ctx->vo->drm->opts->draw_surface_size.wh_valid) {

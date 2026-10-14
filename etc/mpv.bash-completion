@@ -29,11 +29,30 @@ _mpv_get_args()
   local partial="$2"
   local type=$(echo "$doc" | awk '{print $2;}')
 
+  # Complete aliases like their target (e.g. --sub-file -> --sub-files-append)
+  local opt="$1"
+  if [ "$type" = "alias" ]; then
+    opt=--$(echo "$doc" | awk '{sub(/^--/, "", $4); print $4;}')
+    doc=$(_mpv_options | grep -E "^\\s*$opt\\s")
+    type=$(echo "$doc" | awk '{print $2;}')
+  fi
+  # List actions are listed without a type; complete them like the list option
+  if [ -z "$type" ]; then
+    local list=$(echo "$opt" | sed -E 's/-(add|append|del|pre|remove|set|toggle)$//')
+    if [ "$list" != "$opt" ]; then
+      doc=$(_mpv_options | grep -E "^\\s*$list\\s")
+      type=$(echo "$doc" | awk '{print $2;}')
+    fi
+  fi
+
   # We special-case profiles to ensure we read the config
   if [ "$1" = "--show-profile" ]; then
     type="ShowProfile"
   elif [ "$1" = "--profile" ]; then
     type="Profile"
+  elif [ "$1" = "--help" -o "$1" = "--h" ]; then
+    # --help=<substring> filters by option name, not String values
+    type="Help"
   fi
 
   declare -a candidates
@@ -70,6 +89,13 @@ _mpv_get_args()
     ShowProfile)
       candidates=($(mpv $1= | grep -v ':' | awk '{print $1;}'))
       ;;
+    Help)
+      # Mirror zsh help-options: bare option names (no "--"),
+      # excluding no-* and *-(add|append|clr|pre|set|remove|toggle).
+      candidates=($(_mpv_options | awk '{print $1;}' | grep '^--' | \
+        grep -vE '^--no-' | grep -vE '^--.*-(add|append|clr|pre|set|remove|toggle)$' | \
+        sed 's/^--//'))
+      ;;
     *)
       # There are other categories; some of which we could do something smarter
       # about, with enough work.
@@ -81,8 +107,11 @@ _mpv_get_args()
   fi
 }
 
-# This regex detects special options where we don't want an '=' appended
-_mpv_special_regex='\s(Flag.*\[not in config files\]|Print)'
+# Options where '=' is not appended:
+#   - Print options and "not in config files" flags
+#   - list-type sub-options with no argument (e.g. --af-clr, --vo-help)
+# --help/--h are intentionally excluded (they take a substring filter).
+_mpv_special_regex='\s(Flag.*\[not in config files\]|Print)|^\s+--[[:alnum:]-]+-(clr|help)\s*$'
 _mpv_skip_regex='\sremoved \[deprecated\]'
 
 _mpv_regular_options()

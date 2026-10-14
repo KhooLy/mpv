@@ -1891,6 +1891,12 @@ static void reinit_scaler(struct gl_video *p, struct scaler *scaler,
     float *weights = talloc_array(NULL, float, lut_size * stride);
     mp_compute_lut(scaler->kernel, lut_size, stride, weights);
 
+    for (int n = 0; n < lut_size; n++) {
+        float *row = weights + n * stride;
+        for (int i = size; i < stride; i++)
+            row[i] = row[i - num_components];
+    }
+
     bool use_1d = scaler->kernel->polar && (p->ra->caps & RA_CAP_TEX_1D);
 
     struct ra_tex_params lut_params = {
@@ -2156,10 +2162,7 @@ static void update_user_shader_opts(struct gl_video *p, const char *path,
     if (!p->opts.user_shader_opts)
         return;
 
-    const char *basename = mp_basename(path);
-    struct bstr shadername;
-    if (!mp_splitext(basename, &shadername))
-        shadername = bstr0(basename);
+    struct bstr shadername = mp_strip_ext(mp_basename_bstr(bstr0(path)));
 
     for (int n = 0; p->opts.user_shader_opts[n * 2]; n++) {
         struct bstr key = bstr0(p->opts.user_shader_opts[n * 2 + 0]);
@@ -3797,12 +3800,6 @@ void gl_video_set_osd_pts(struct gl_video *p, double pts)
     p->osd_pts = pts;
 }
 
-bool gl_video_check_osd_change(struct gl_video *p, struct mp_osd_res *res,
-                               double pts)
-{
-    return p->osd ? mpgl_osd_check_change(p->osd, res, pts) : false;
-}
-
 void gl_video_resize(struct gl_video *p,
                      struct mp_rect *src, struct mp_rect *dst,
                      struct mp_osd_res *osd)
@@ -4402,7 +4399,8 @@ void gl_video_configure_queue(struct gl_video *p, struct vo *vo)
         }
     }
 
-    vo_set_queue_params(vo, 0, queue_size);
+    queue_size = MPMIN(queue_size, VO_MAX_REQ_FRAMES);
+    vo_set_queue_params(vo, 0, queue_size, queue_size + 1);
 }
 
 static int validate_error_diffusion_opt(struct mp_log *log, const m_option_t *opt,

@@ -499,12 +499,6 @@ Configurable Options
 
     Set to ``yes`` to reduce festivity (i.e. disable santa hat in December.)
 
-``livemarkers``
-    Default: yes
-
-    Update chapter markers positions on duration changes, e.g. live streams.
-    The updates are unoptimized - consider disabling it on very low-end systems.
-
 ``chapter_fmt``
     Default: ``Chapter: %s``
 
@@ -714,6 +708,10 @@ continuously called while the mouse button is held down.
 ``maximize_mbtn_mid_command=``
 
 ``maximize_mbtn_right_command=``
+
+``seekbar_wheel_down_command=seek -10``
+
+``seekbar_wheel_up_command=seek 10``
 
 Custom Buttons
 ~~~~~~~~~~~~~~

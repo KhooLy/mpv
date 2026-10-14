@@ -156,7 +156,7 @@ void mp_update_logging(struct MPContext *mpctx, bool preinit)
         terminal_setup_getch(mpctx->input);
 
     if (enabled)
-        encoder_update_log(mpctx->global);
+        mp_encoder_update_log(mpctx->global);
 }
 
 void mp_print_version(struct mp_log *log, int always)
@@ -195,6 +195,7 @@ void mp_destroy(struct MPContext *mpctx)
 
     command_uninit(mpctx);
     error_report_uninit(mpctx);
+    disc_nav_destroy(mpctx);
 
     mp_clients_destroy(mpctx);
 

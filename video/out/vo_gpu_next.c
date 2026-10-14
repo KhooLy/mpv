@@ -75,7 +75,8 @@ struct osd_entry {
 
 struct osd_state {
     struct osd_entry entries[MAX_OSD_PARTS];
-    struct pl_overlay overlays[MAX_OSD_PARTS];
+    struct pl_overlay *overlays;
+    int num_overlays;
 };
 
 struct scaler_params {
@@ -149,6 +150,7 @@ struct priv {
     double last_pts;
     bool is_interpolated;
     bool want_reset;
+    bool want_seek_reset;
     bool flush_cache;
     bool frame_pending;
     bool paused;
@@ -192,7 +194,7 @@ static const struct m_opt_choice_alternatives lut_types[] = {
 #define OPT_BASE_STRUCT struct gl_next_opts
 const struct m_sub_options gl_next_conf = {
     .opts = (const struct m_option[]) {
-        {"sub-hdr-peak", OPT_CHOICE(sub_hdr_peak, {"sdr", PL_COLOR_SDR_WHITE}),
+        {"sub-hdr-peak", OPT_CHOICE(sub_hdr_peak, {"auto", 0}, {"sdr", PL_COLOR_SDR_WHITE}),
             M_RANGE(10, 10000)},
         {"image-subs-hdr-peak", OPT_CHOICE(image_subs_hdr_peak, {"sdr", PL_COLOR_SDR_WHITE},
             {"video", -1}, {"video-static", -2}, {"video-dynamic", -3}),  M_RANGE(10, 10000)},
@@ -221,7 +223,6 @@ const struct m_sub_options gl_next_conf = {
         .border_background = BACKGROUND_COLOR,
         .background_blur_radius = 16.0f,
         .inter_preserve = true,
-        .sub_hdr_peak = PL_COLOR_SDR_WHITE,
         .image_subs_hdr_peak = 1000,
         .target_hint = -1,
         .target_hint_strict = true,
@@ -304,10 +305,175 @@ static struct mp_image *get_image(struct vo *vo, int imgfmt, int w, int h,
     return mpi;
 }
 
+static bool upload_overlay_tex(struct vo *vo, struct osd_entry *entry,
+                               const struct sub_bitmaps *item)
+{
+    struct priv *p = vo->priv;
+    if (!entry->tex)
+        MP_TARRAY_POP(p->sub_tex, p->num_sub_tex, &entry->tex);
+    bool ok = pl_tex_recreate(p->gpu, &entry->tex, &(struct pl_tex_params) {
+        .format = p->osd_fmt[item->format],
+        .w = MPMAX(item->packed_w, entry->tex ? entry->tex->params.w : 0),
+        .h = MPMAX(item->packed_h, entry->tex ? entry->tex->params.h : 0),
+        .host_writable = true,
+        .sampleable = true,
+    });
+    if (!ok) {
+        MP_ERR(vo, "Failed recreating OSD texture!\n");
+        return false;
+    }
+    struct pl_tex_transfer_params upload_params = {
+        .tex        = entry->tex,
+        .rc         = { .x1 = item->packed_w, .y1 = item->packed_h, },
+        .row_pitch  = item->packed->stride[0],
+        .ptr        = item->packed->planes[0],
+    };
+    // Keep the image alive until it's fully read.
+    if (p->gpu->limits.callbacks) {
+        upload_params.callback = talloc_free;
+        upload_params.priv = mp_image_new_ref(item->packed);
+    }
+    if (!pl_tex_upload(p->gpu, &upload_params)) {
+        MP_ERR(vo, "Failed uploading OSD texture!\n");
+        talloc_free(upload_params.priv);
+        return false;
+    }
+    return true;
+}
+
+// Duplicate overlay parts for each eye in stereo 3D modes
+static void dup_stereo_parts(struct priv *p, struct osd_entry *entry, int start,
+                             struct mp_osd_res res, const int div[2])
+{
+    int num_eye_parts = entry->num_parts - start;
+    for (int x = 0; x < div[0]; x++) {
+        for (int y = 0; y < div[1]; y++) {
+            if (x == 0 && y == 0)
+                continue;
+            float off_x = res.w * x;
+            float off_y = res.h * y;
+            for (int i = 0; i < num_eye_parts; i++) {
+                struct pl_overlay_part duped = entry->parts[start + i];
+                duped.dst.x0 += off_x;
+                duped.dst.x1 += off_x;
+                duped.dst.y0 += off_y;
+                duped.dst.y1 += off_y;
+                MP_TARRAY_APPEND(p, entry->parts, entry->num_parts, duped);
+            }
+        }
+    }
+}
+
+static struct pl_color_space bgra_overlay_color(struct priv *p,
+                                                const struct sub_bitmaps *item,
+                                                const struct sub_bitmap *b,
+                                                const struct mp_image *src,
+                                                float ref_luma)
+{
+    struct pl_color_space color = pl_color_space_srgb;
+
+    if (src && (item->video_color_space || b->bgra.video_color_space)) {
+        // Muxed image subtitles and overlays tagged with video_colorspace
+        // are in the video's colorspace
+        color = src->params.color;
+        if (pl_color_transfer_is_hdr(color.transfer)) {
+            // Don't apply `image_subs_hdr_peak` for overlays.
+            if (!b->bgra.video_color_space) {
+                bool use_static = p->next_opts->image_subs_hdr_peak == -2;
+                if (use_static || p->next_opts->image_subs_hdr_peak == -3) {
+                    float max;
+                    pl_color_space_nominal_luma_ex(pl_nominal_luma_params(
+                        .color      = &color,
+                        .metadata   = use_static ? PL_HDR_METADATA_HDR10 : PL_HDR_METADATA_ANY,
+                        .scaling    = PL_HDR_NITS,
+                        .out_max    = &max,
+                    ));
+                    color.hdr = (struct pl_hdr_metadata) {
+                        .max_luma = max,
+                    };
+                } else if (p->next_opts->image_subs_hdr_peak != -1) {
+                    color.hdr = (struct pl_hdr_metadata) {
+                        .max_luma = p->next_opts->image_subs_hdr_peak,
+                    };
+                }
+            }
+        } else if (ref_luma) {
+            color.hdr.max_luma = ref_luma;
+        }
+    } else {
+        // sRGB, unless tagged explicitly
+        if (b->bgra.primaries)
+            color.primaries = b->bgra.primaries;
+        if (b->bgra.transfer)
+            color.transfer = b->bgra.transfer;
+        if (!pl_color_transfer_is_hdr(color.transfer) && ref_luma)
+            color.hdr.max_luma = ref_luma;
+    }
+
+    // Explicit luminance peak overrides every other metadata
+    if (b->bgra.max_luma) {
+        color.hdr = (struct pl_hdr_metadata) {
+            .max_luma = b->bgra.max_luma,
+        };
+    }
+
+    return color;
+}
+
+static struct pl_color_space libass_overlay_color(struct priv *p,
+                                                  const struct sub_bitmaps *item,
+                                                  const struct mp_image *src,
+                                                  float ref_luma)
+{
+    struct pl_color_space color = pl_color_space_srgb;
+
+    if (src && item->video_color_space && !pl_color_transfer_is_hdr(src->params.color.transfer))
+        color = src->params.color;
+    if (src && pl_color_transfer_is_hdr(src->params.color.transfer) &&
+        p->next_opts->sub_hdr_peak)
+    {
+        color.hdr = (struct pl_hdr_metadata) {
+            .max_luma = p->next_opts->sub_hdr_peak,
+        };
+    } else if (ref_luma && !pl_color_transfer_is_hdr(color.transfer)) {
+        color.hdr.max_luma = ref_luma;
+    }
+
+    return color;
+}
+
+static void add_run_overlay(struct priv *p, struct osd_state *state,
+                            const struct osd_entry *entry,
+                            const struct sub_bitmaps *item,
+                            const struct pl_color_space *color, int start,
+                            enum pl_overlay_coords coords)
+{
+    MP_TARRAY_GROW(p, state->overlays, state->num_overlays);
+    struct pl_overlay *ol = &state->overlays[state->num_overlays++];
+    *ol = (struct pl_overlay) {
+        .tex = entry->tex,
+        .parts = entry->parts + start,
+        .num_parts = entry->num_parts - start,
+        .color = *color,
+        .coords = coords,
+    };
+
+    switch (item->format) {
+    case SUBBITMAP_BGRA:
+        ol->mode = PL_OVERLAY_NORMAL;
+        ol->repr.alpha = PL_ALPHA_PREMULTIPLIED;
+        break;
+    case SUBBITMAP_LIBASS:
+        ol->mode = PL_OVERLAY_MONOCHROME;
+        ol->repr.alpha = PL_ALPHA_INDEPENDENT;
+        break;
+    }
+}
+
 static void update_overlays(struct vo *vo, struct mp_osd_res res,
                             int flags, enum pl_overlay_coords coords,
                             struct osd_state *state, struct pl_frame *frame,
-                            struct mp_image *src, int stereo_mode)
+                            struct mp_image *src, int stereo_mode, float ref_luma)
 {
     struct priv *p = vo->priv;
     double pts = src ? src->pts : 0;
@@ -317,138 +483,58 @@ static void update_overlays(struct vo *vo, struct mp_osd_res res,
     res.h /= div[1];
     struct sub_bitmap_list *subs = osd_render(vo->osd, res, pts, flags, mp_draw_sub_formats);
 
-    frame->overlays = state->overlays;
-    frame->num_overlays = 0;
+    state->num_overlays = 0;
 
     for (int n = 0; n < subs->num_items; n++) {
         const struct sub_bitmaps *item = subs->items[n];
         if (!item->num_parts || !item->packed)
             continue;
         struct osd_entry *entry = &state->entries[item->render_index];
-        pl_fmt tex_fmt = p->osd_fmt[item->format];
-        if (!entry->tex)
-            MP_TARRAY_POP(p->sub_tex, p->num_sub_tex, &entry->tex);
-        bool ok = pl_tex_recreate(p->gpu, &entry->tex, &(struct pl_tex_params) {
-            .format = tex_fmt,
-            .w = MPMAX(item->packed_w, entry->tex ? entry->tex->params.w : 0),
-            .h = MPMAX(item->packed_h, entry->tex ? entry->tex->params.h : 0),
-            .host_writable = true,
-            .sampleable = true,
-        });
-        if (!ok) {
-            MP_ERR(vo, "Failed recreating OSD texture!\n");
+        if (!upload_overlay_tex(vo, entry, item))
             break;
-        }
-        struct pl_tex_transfer_params upload_params = {
-            .tex        = entry->tex,
-            .rc         = { .x1 = item->packed_w, .y1 = item->packed_h, },
-            .row_pitch  = item->packed->stride[0],
-            .ptr        = item->packed->planes[0],
-        };
-        // Keep the image alive until it's fully read.
-        if (p->gpu->limits.callbacks) {
-            upload_params.callback = talloc_free;
-            upload_params.priv = mp_image_new_ref(item->packed);
-        }
-        ok = pl_tex_upload(p->gpu, &upload_params);
-        if (!ok) {
-            MP_ERR(vo, "Failed uploading OSD texture!\n");
-            talloc_free(upload_params.priv);
-            break;
-        }
 
+        MP_TARRAY_GROW(p, entry->parts, item->num_parts * div[0] * div[1]);
         entry->num_parts = 0;
+        struct pl_color_space color = {0};
+        int start = -1;
         for (int i = 0; i < item->num_parts; i++) {
             const struct sub_bitmap *b = &item->parts[i];
             if (b->dw == 0 || b->dh == 0)
                 continue;
-            uint32_t c = b->libass.color;
+            struct pl_color_space part_color = item->format == SUBBITMAP_BGRA
+                                    ? bgra_overlay_color(p, item, b, src, ref_luma)
+                                    : libass_overlay_color(p, item, src, ref_luma);
+            // Emit pl_overlay per each distinct colorspace run
+            if (start >= 0 && !pl_color_space_equal(&color, &part_color)) {
+                dup_stereo_parts(p, entry, start, res, div);
+                add_run_overlay(p, state, entry, item, &color, start, coords);
+                start = -1;
+            }
+            if (start < 0) {
+                start = entry->num_parts;
+                color = part_color;
+            }
             struct pl_overlay_part part = {
                 .src = { b->src_x, b->src_y, b->src_x + b->w, b->src_y + b->h },
                 .dst = { b->x, b->y, b->x + b->dw, b->y + b->dh },
-                .color = {
-                    (c >> 24) / 255.0f,
-                    ((c >> 16) & 0xFF) / 255.0f,
-                    ((c >> 8) & 0xFF) / 255.0f,
-                    (255 - (c & 0xFF)) / 255.0f,
-                }
             };
+            if (item->format == SUBBITMAP_LIBASS) {
+                uint32_t c = b->libass.color;
+                part.color[0] = (c >> 24) / 255.0f;
+                part.color[1] = ((c >> 16) & 0xFF) / 255.0f;
+                part.color[2] = ((c >> 8) & 0xFF) / 255.0f;
+                part.color[3] = (255 - (c & 0xFF)) / 255.0f;
+            }
             MP_TARRAY_APPEND(p, entry->parts, entry->num_parts, part);
         }
-
-        struct pl_overlay *ol = &state->overlays[frame->num_overlays++];
-        *ol = (struct pl_overlay) {
-            .tex = entry->tex,
-            .parts = entry->parts,
-            .num_parts = entry->num_parts,
-            .color = pl_color_space_srgb,
-            .coords = coords,
-        };
-
-        switch (item->format) {
-        case SUBBITMAP_BGRA:
-            ol->mode = PL_OVERLAY_NORMAL;
-            ol->repr.alpha = PL_ALPHA_PREMULTIPLIED;
-            // Infer bitmap colorspace from source
-            if (src) {
-                ol->color = src->params.color;
-                if (pl_color_transfer_is_hdr(ol->color.transfer)) {
-                    bool use_static = p->next_opts->image_subs_hdr_peak == -2;
-                    if (use_static || p->next_opts->image_subs_hdr_peak == -3) {
-                        float max;
-                        pl_color_space_nominal_luma_ex(pl_nominal_luma_params(
-                            .color      = &ol->color,
-                            .metadata   = use_static ? PL_HDR_METADATA_HDR10 : PL_HDR_METADATA_ANY,
-                            .scaling    = PL_HDR_NITS,
-                            .out_max    = &max,
-                        ));
-                        ol->color.hdr = (struct pl_hdr_metadata) {
-                            .max_luma = max,
-                        };
-                    } else if (p->next_opts->image_subs_hdr_peak != -1) {
-                        ol->color.hdr = (struct pl_hdr_metadata) {
-                            .max_luma = p->next_opts->image_subs_hdr_peak,
-                        };
-                    }
-                }
-            }
-            break;
-        case SUBBITMAP_LIBASS:
-            if (src && item->video_color_space && !pl_color_space_is_hdr(&src->params.color))
-                ol->color = src->params.color;
-            if (src && pl_color_transfer_is_hdr(frame->color.transfer)) {
-                ol->color.hdr = (struct pl_hdr_metadata) {
-                    .max_luma = p->next_opts->sub_hdr_peak,
-                };
-            }
-            ol->mode = PL_OVERLAY_MONOCHROME;
-            ol->repr.alpha = PL_ALPHA_INDEPENDENT;
-            break;
-        }
-
-        // Duplicate overlay parts for each eye in stereo 3D modes
-        if (div[0] > 1 || div[1] > 1) {
-            int orig_num = entry->num_parts;
-            for (int x = 0; x < div[0]; x++) {
-                for (int y = 0; y < div[1]; y++) {
-                    if (x == 0 && y == 0)
-                        continue;
-                    float off_x = res.w * x;
-                    float off_y = res.h * y;
-                    for (int i = 0; i < orig_num; i++) {
-                        struct pl_overlay_part duped = entry->parts[i];
-                        duped.dst.x0 += off_x;
-                        duped.dst.x1 += off_x;
-                        duped.dst.y0 += off_y;
-                        duped.dst.y1 += off_y;
-                        MP_TARRAY_APPEND(p, entry->parts, entry->num_parts, duped);
-                    }
-                }
-            }
-            ol->parts = entry->parts;
-            ol->num_parts = entry->num_parts;
+        if (start >= 0) {
+            dup_stereo_parts(p, entry, start, res, div);
+            add_run_overlay(p, state, entry, item, &color, start, coords);
         }
     }
+
+    frame->overlays = state->overlays;
+    frame->num_overlays = state->num_overlays;
 
     talloc_free(subs);
 }
@@ -789,6 +875,37 @@ static bool format_supported(struct vo *vo, int format, bool use_uint)
     return true;
 }
 
+// Effective reference white luminance in nits to assume for SDR content.
+static float get_ref_luma(struct priv *p)
+{
+    const struct gl_video_opts *opts = p->opts_cache->opts;
+    if (opts->hdr_reference_white)
+        return opts->hdr_reference_white;
+
+#if PL_API_VER >= 371
+    // auto: follow the system reference white, if available
+    // Use auto mode only on libplacebo >= 371, to avoid luminance mismatches,
+    // on SDR->SDR in some corner cases. User override is still respected, to
+    // preserve previous behavior.
+    struct ra_swapchain *sw = p->ra_ctx->swapchain;
+    if (sw->fns->target_ref_luma)
+        return sw->fns->target_ref_luma(sw);
+#endif
+
+    return 0;
+}
+
+static bool use_ref_luma(const struct pl_color_space *csp, const struct pl_color_space *target_csp)
+{
+    if (!pl_color_transfer_is_hdr(csp->transfer))
+        return true;
+#if PL_API_VER >= 362
+    if (csp->transfer == PL_COLOR_TRC_SCRGB && target_csp && !pl_color_transfer_is_hdr(target_csp->transfer))
+        return true;
+#endif
+    return false;
+}
+
 static bool upload_planes_sw(struct vo *vo, pl_gpu gpu, struct mp_image *mpi,
                              struct pl_frame *frame, pl_tex tex[4])
 {
@@ -879,9 +996,9 @@ static bool map_frame(pl_gpu gpu, pl_tex *tex, const struct pl_source_frame *src
     };
 
     const struct gl_video_opts *opts = p->opts_cache->opts;
-    if (opts->hdr_reference_white && !pl_color_transfer_is_hdr(frame->color.transfer))
-        frame->color.hdr.max_luma = opts->hdr_reference_white;
-
+    float ref_luma;
+    if (!pl_color_transfer_is_hdr(frame->color.transfer) && (ref_luma = get_ref_luma(p)))
+        frame->color.hdr.max_luma = ref_luma;
 
     if (opts->treat_srgb_as_power22 & 1 && frame->color.transfer == PL_COLOR_TRC_SRGB) {
         // The sRGB EOTF is a pure gamma 2.2 function. See reference display in
@@ -1078,7 +1195,8 @@ static void apply_target_contrast(struct priv *p, struct pl_color_space *color, 
 }
 
 static void apply_target_options(struct priv *p, struct pl_frame *target,
-                                 float min_luma, bool hint)
+                                 float min_luma, bool hint, float target_ref_luma,
+                                 const struct pl_color_space *target_csp)
 {
     update_lut(p, &p->next_opts->target_lut);
     target->lut = p->next_opts->target_lut.lut;
@@ -1095,9 +1213,9 @@ static void apply_target_options(struct priv *p, struct pl_frame *target,
         target->color.transfer = opts->target_trc;
     if (opts->target_peak && (!target->color.hdr.max_luma || !hint))
         target->color.hdr.max_luma = opts->target_peak;
-    if (opts->hdr_reference_white && (!target->color.hdr.max_luma || !hint) &&
-        !pl_color_transfer_is_hdr(target->color.transfer)) {
-        target->color.hdr.max_luma = opts->hdr_reference_white;
+    if (target_ref_luma && (!target->color.hdr.max_luma || !hint) &&
+        use_ref_luma(&target->color, target_csp)) {
+        target->color.hdr.max_luma = target_ref_luma;
     }
     if ((!target->color.hdr.min_luma || !hint))
         apply_target_contrast(p, &target->color, min_luma);
@@ -1233,6 +1351,13 @@ static bool draw_frame(struct vo *vo, struct vo_frame *frame)
         params.distort_params = NULL;
     }
 
+    // Frames up to last_id were pushed before the seek. Redraws of them keep
+    // the queue as it is, the reset happens with the first new frame.
+    if (p->want_seek_reset && frame->num_frames && frame->frame_id > p->last_id) {
+        p->want_seek_reset = false;
+        p->want_reset = true;
+    }
+
     // pl_queue advances its internal virtual PTS and culls available frames
     // based on this value and the VPS/FPS ratio. Requesting a non-monotonic PTS
     // is an invalid use of pl_queue. Reset it if this happens in an attempt to
@@ -1243,7 +1368,7 @@ static bool draw_frame(struct vo *vo, struct vo_frame *frame)
     // already requested. Clamp the check to 0, as we don't have the previous
     // frame in vo_frame anyway.
     struct pl_source_frame vpts;
-    if (frame->current && !p->want_reset) {
+    if (frame->current && !p->want_reset && !p->want_seek_reset) {
         if (pl_queue_peek(p->queue, 0, &vpts) &&
             frame->current->pts + MPMAX(0, pts_offset) < vpts.pts)
         {
@@ -1315,9 +1440,12 @@ static bool draw_frame(struct vo *vo, struct vo_frame *frame)
     // Assume HDR is supported, if target_csp() is not available
     // TODO: Remove this fallback when all backends support target_csp()
     bool target_unknown = target_csp.transfer == PL_COLOR_TRC_UNKNOWN;
+    float target_ref_luma = 0;
     if (target_unknown) {
         target_csp = (struct pl_color_space){
             .transfer = opts->target_trc ? opts->target_trc : pl_color_space_hdr10.transfer };
+    } else {
+        target_ref_luma = get_ref_luma(p);
     }
     bool external_params = false;
     if (target_hint && frame->current) {
@@ -1382,8 +1510,8 @@ static bool draw_frame(struct vo *vo, struct vo_frame *frame)
             hint.transfer = opts->target_trc;
         if (opts->target_peak)
             hint.hdr.max_luma = opts->target_peak;
-        if (opts->hdr_reference_white && !pl_color_transfer_is_hdr(hint.transfer))
-            hint.hdr.max_luma = opts->hdr_reference_white;
+        if (target_ref_luma && use_ref_luma(&hint, &target_csp))
+            hint.hdr.max_luma = target_ref_luma;
         // Always set maxCLL, display uses this metadata and we shouldn't let it
         // fallback to default value.
         if (!hint.hdr.max_cll)
@@ -1447,7 +1575,8 @@ static bool draw_frame(struct vo *vo, struct vo_frame *frame)
     if (external_params)
         target.color = hint;
     bool strict_sw_params = target_hint && p->next_opts->target_hint_strict;
-    apply_target_options(p, &target, hint.hdr.min_luma, strict_sw_params);
+    apply_target_options(p, &target, hint.hdr.min_luma, strict_sw_params,
+                         target_ref_luma, &target_csp);
     bool clip_gamut = pl_primaries_valid(&target.color.hdr.prim);
 #if PL_API_VER >= 362
     clip_gamut = clip_gamut && target.color.transfer != PL_COLOR_TRC_SCRGB;
@@ -1500,7 +1629,7 @@ static bool draw_frame(struct vo *vo, struct vo_frame *frame)
     update_overlays(vo, p->osd_res,
                     (frame->current && opts->blend_subs) ? OSD_DRAW_OSD_ONLY : 0,
                     PL_OVERLAY_COORDS_DST_FRAME, &p->osd_state, &target, frame->current,
-                    frame->current ? frame->current->params.stereo3d : 0);
+                    frame->current ? frame->current->params.stereo3d : 0, get_ref_luma(p));
     stats_time_end(p->stats, "osd-update");
     apply_crop(&target, p->dst, swframe.fbo->params.w, swframe.fbo->params.h);
     update_tm_viz(&pars->color_map_params, &target);
@@ -1576,7 +1705,7 @@ static bool draw_frame(struct vo *vo, struct vo_frame *frame)
                     stats_time_start(p->stats, "osd-blend-update");
                     update_overlays(vo, res, OSD_DRAW_SUB_ONLY,
                                     rel, &fp->subs, image, mpi,
-                                    mpi->params.stereo3d);
+                                    mpi->params.stereo3d, get_ref_luma(p));
                     stats_time_end(p->stats, "osd-blend-update");
                     fp->osd_sync = p->osd_sync;
                 }
@@ -1626,7 +1755,7 @@ static bool draw_frame(struct vo *vo, struct vo_frame *frame)
     vo->target_params = &p->target_params;
 
     if (vo->params) {
-        // Augment metadata with peak detection max_pq_y / avg_pq_y
+        // Augment metadata with the peak detection results
         vo->has_peak_detect_values = pl_renderer_get_hdr_metadata(p->rr, &vo->params->color.hdr);
     }
     mp_mutex_unlock(&vo->params_mutex);
@@ -1810,6 +1939,12 @@ static void video_screenshot(struct vo *vo, struct voctrl_screenshot *args)
     // the resulting mix is the correct frame for this PTS
     struct pl_frame image = *(struct pl_frame *) mix.frames[0];
     struct mp_image *mpi = image.user_data;
+
+    // Clear reference luminance before taking a screenshot, we want screenshot
+    // to be independent of the system reference luminance.
+    if (!pl_color_transfer_is_hdr(image.color.transfer))
+        image.color.hdr.max_luma = 0;
+
     struct mp_rect src = p->src, dst = p->dst;
     struct mp_osd_res osd = p->osd_res;
     if (!args->scaled) {
@@ -1884,7 +2019,7 @@ static void video_screenshot(struct vo *vo, struct voctrl_screenshot *args)
     const struct gl_video_opts *opts = p->opts_cache->opts;
     if (args->scaled) {
         // Apply target LUT, ICC profile and CSP override only in window mode
-        apply_target_options(p, &target, 0, false);
+        apply_target_options(p, &target, 0, false, 0, NULL);
     } else if (args->native_csp) {
         target.color = image.color;
     } else {
@@ -1931,12 +2066,12 @@ static void video_screenshot(struct vo *vo, struct voctrl_screenshot *args)
             ? PL_OVERLAY_COORDS_SRC_CROP : PL_OVERLAY_COORDS_DST_CROP;
         update_overlays(vo, res, osd_flags,
                         rel, &fp->subs, &image, mpi,
-                        mpi->params.stereo3d);
+                        mpi->params.stereo3d, 0);
     } else {
         // Disable overlays when blend_subs is disabled
         update_overlays(vo, osd, osd_flags, PL_OVERLAY_COORDS_DST_FRAME,
                         &p->osd_state, &target, mpi,
-                        mpi->params.stereo3d);
+                        mpi->params.stereo3d, 0);
         image.num_overlays = 0;
     }
 
@@ -2070,7 +2205,7 @@ static int control(struct vo *vo, uint32_t request, void *data)
 
     case VOCTRL_RESET:
         // Defer until the first new frame (unique ID) actually arrives
-        p->want_reset = true;
+        p->want_seek_reset = true;
         return VO_TRUE;
 
     case VOCTRL_PERFORMANCE_DATA: {
@@ -2640,10 +2775,7 @@ static void update_hook_opts(struct priv *p, char **opts, const char *shaderpath
     if (!opts)
         return;
 
-    const char *basename = mp_basename(shaderpath);
-    struct bstr shadername;
-    if (!mp_splitext(basename, &shadername))
-        shadername = bstr0(basename);
+    struct bstr shadername = mp_strip_ext(mp_basename_bstr(bstr0(shaderpath)));
 
     for (int n = 0; opts[n * 2]; n++) {
         struct bstr k = bstr0(opts[n * 2 + 0]);
@@ -2748,7 +2880,9 @@ static void update_render_options(struct vo *vo)
         req_frames += ceilf(pars->params.frame_mixer->kernel->radius) *
                       (pars->params.skip_anti_aliasing ? 1 : 2);
     }
-    vo_set_queue_params(vo, 0, MPMIN(VO_MAX_REQ_FRAMES, req_frames));
+    req_frames = MPMIN(VO_MAX_REQ_FRAMES, req_frames);
+    // pl_queue also retains past frames for the symmetric mixing window,
+    vo_set_queue_params(vo, 0, req_frames, 2 * req_frames - 1);
 
     pars->params.deband_params = opts->deband ? &pars->deband_params : NULL;
     pars->deband_params.iterations = opts->deband_opts->iterations;

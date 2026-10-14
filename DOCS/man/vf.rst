@@ -361,7 +361,8 @@ Available mpv-only filters are:
     ``<stereo-in>``
         Set the stereo mode the video is assumed to be encoded in. Use
         ``--vf=format:stereo-in=help`` to list all available modes. Check with
-        the ``stereo3d`` filter documentation to see what the names mean.
+        the ``stereo3d`` filter documentation to see what the names mean. The
+        default ``no`` keeps the mode signaled by the source.
 
     ``<rotate>``
         Set the rotation the video is assumed to be encoded with in degrees.
@@ -766,7 +767,8 @@ Available mpv-only filters are:
         of the d3d11 frame.
 
     ``nvidia-true-hdr``
-        Enable NVIDIA RTX Video HDR processing.
+        Enable NVIDIA RTX Video HDR processing. This only converts SDR to HDR,
+        so it is ignored when the source is already HDR.
 
 ``amf_frc``
     AMD Frame Rate Conversion filter. Requires AMD hardware and drivers

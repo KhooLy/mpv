@@ -29,7 +29,7 @@ static bool might_be_subtitle_file(mpv_node *sub_exts, char *file)
          mpv_node sub_ext = sub_exts->u.list->values[i];
          if (sub_ext.format != MPV_FORMAT_STRING)
              continue;
-         if (!bstrcasecmp0(bstr_get_ext(bstr0(file)), sub_ext.u.string))
+         if (!bstrcasecmp0(mp_get_ext(bstr0(file)), sub_ext.u.string))
              return true;
     }
     return false;
@@ -113,6 +113,10 @@ static MP_THREAD_VOID mpv_event_loop_fn(void *arg)
     bool enabled = false;
     mpv_observe_property(mpv, 0, "dropped-files", MPV_FORMAT_NODE);
     mpv_observe_property(mpv, 0, "input-builtin-drag-and-drop", MPV_FORMAT_FLAG);
+
+    int enabled_flag;
+    if (mpv_get_property(mpv, "input-builtin-drag-and-drop", MPV_FORMAT_FLAG, &enabled_flag) == MPV_ERROR_SUCCESS)
+        enabled = enabled_flag;
 
     while (1) {
         mpv_event *event = mpv_wait_event(mpv, -1);

@@ -17,6 +17,7 @@
 
 #include <windows.h>
 #include <d3d11.h>
+#include <d3d11sdklayers.h>
 #include <dxgi1_6.h>
 #include <versionhelpers.h>
 
@@ -26,6 +27,7 @@
 #include "osdep/io.h"
 #include "osdep/threads.h"
 #include "osdep/windows_utils.h"
+#include "video/out/win32/displayconfig.h"
 
 #include "d3d11_helpers.h"
 
@@ -992,6 +994,8 @@ void mp_dxgi_factory_uninit(struct mp_dxgi_factory_ctx *ctx)
 
     SAFE_RELEASE(ctx->factory);
     SAFE_RELEASE(ctx->last_matched_output);
+    ctx->white_level_monitor = NULL;
+    ctx->sdr_white_level = 0;
 }
 
 bool mp_dxgi_output_desc_from_hwnd(struct mp_dxgi_factory_ctx *ctx,
@@ -1006,6 +1010,10 @@ bool mp_dxgi_output_desc_from_hwnd(struct mp_dxgi_factory_ctx *ctx,
         return false;
 
     if (!ctx->factory || !IDXGIFactory1_IsCurrent(ctx->factory)) {
+        // This also clears `white_level_monitor`, to invalidate cached value.
+        // While we are using displayconfig API to get reference luminance,
+        // DXGI IsCurrent() is actually tracking reference luminance changes in
+        // settings. There is no window message sent on this change.
         mp_dxgi_factory_uninit(ctx);
         PFN_CREATE_DXGI_FACTORY pCreateDXGIFactory1 = get_CreateDXGIFactory1();
         if (FAILED(pCreateDXGIFactory1(&IID_IDXGIFactory1, (void **)&ctx->factory)))
@@ -1065,6 +1073,34 @@ bool mp_dxgi_output_desc_from_swapchain(struct mp_dxgi_factory_ctx *ctx,
     if (SUCCEEDED(IDXGISwapChain_GetDesc(swapchain, &swap_desc)))
         return mp_dxgi_output_desc_from_hwnd(ctx, swap_desc.OutputWindow, desc);
     return false;
+}
+
+float mp_dxgi_sdr_white_level_from_hwnd(struct mp_dxgi_factory_ctx *ctx,
+                                        HWND hwnd)
+{
+#if HAVE_WIN32_DESKTOP
+    DXGI_OUTPUT_DESC1 desc;
+    if (!mp_dxgi_output_desc_from_hwnd(ctx, hwnd, &desc))
+        return 0;
+
+    if (ctx && ctx->white_level_monitor == desc.Monitor)
+        return ctx->sdr_white_level;
+
+    MONITORINFOEXW mi = { .cbSize = sizeof(mi) };
+    if (!GetMonitorInfoW(desc.Monitor, (MONITORINFO*)&mi))
+        return 0;
+
+    float white_level = mp_w32_displayconfig_get_sdr_white_level(mi.szDevice);
+
+    if (ctx) {
+        ctx->white_level_monitor = desc.Monitor;
+        ctx->sdr_white_level = white_level;
+    }
+
+    return white_level;
+#else
+    return 0;
+#endif
 }
 
 struct pl_color_space mp_dxgi_desc_to_color_space(const DXGI_OUTPUT_DESC1 *desc)
@@ -1139,7 +1175,7 @@ void mp_d3d11_get_debug_interfaces(struct mp_log *log, IDXGIDebug **debug,
     }
 
     // Store an unlimited amount of messages in the buffer. This is fine
-    // because we flush stored messages regularly (in debug_marker.)
+    // because we flush stored messages regularly (in mp_d3d11_debug_marker.)
     IDXGIInfoQueue_SetMessageCountLimit(*iqueue, DXGI_DEBUG_D3D11, -1);
     IDXGIInfoQueue_SetMessageCountLimit(*iqueue, DXGI_DEBUG_DXGI, -1);
 
@@ -1152,6 +1188,134 @@ void mp_d3d11_get_debug_interfaces(struct mp_log *log, IDXGIDebug **debug,
         mp_fatal(log, "Failed to get debug device: %s\n", mp_HRESULT_to_str(hr));
         return;
     }
+}
+
+static int map_msg_severity(DXGI_INFO_QUEUE_MESSAGE_SEVERITY sev)
+{
+    switch (sev) {
+    case DXGI_INFO_QUEUE_MESSAGE_SEVERITY_CORRUPTION:
+        return MSGL_FATAL;
+    case DXGI_INFO_QUEUE_MESSAGE_SEVERITY_ERROR:
+        return MSGL_ERR;
+    case DXGI_INFO_QUEUE_MESSAGE_SEVERITY_WARNING:
+        return MSGL_WARN;
+    default:
+    case DXGI_INFO_QUEUE_MESSAGE_SEVERITY_INFO:
+    case DXGI_INFO_QUEUE_MESSAGE_SEVERITY_MESSAGE:
+        return MSGL_DEBUG;
+    }
+}
+
+static int map_msg_severity_by_id(D3D11_MESSAGE_ID id,
+                                  DXGI_INFO_QUEUE_MESSAGE_SEVERITY sev)
+{
+    switch (id) {
+    // These are normal. The RA timer queue habitually reuses timer objects
+    // without retrieving the results.
+    case D3D11_MESSAGE_ID_QUERY_BEGIN_ABANDONING_PREVIOUS_RESULTS:
+    case D3D11_MESSAGE_ID_QUERY_END_ABANDONING_PREVIOUS_RESULTS:
+        return MSGL_TRACE;
+
+    // D3D11 writes log messages every time an object is created or
+    // destroyed. That results in a lot of log spam, so force MSGL_TRACE.
+#define OBJ_LIFETIME_MESSAGES(obj)          \
+    case D3D11_MESSAGE_ID_CREATE_ ## obj:   \
+    case D3D11_MESSAGE_ID_DESTROY_ ## obj
+
+    OBJ_LIFETIME_MESSAGES(CONTEXT):
+    OBJ_LIFETIME_MESSAGES(BUFFER):
+    OBJ_LIFETIME_MESSAGES(TEXTURE1D):
+    OBJ_LIFETIME_MESSAGES(TEXTURE2D):
+    OBJ_LIFETIME_MESSAGES(TEXTURE3D):
+    OBJ_LIFETIME_MESSAGES(SHADERRESOURCEVIEW):
+    OBJ_LIFETIME_MESSAGES(RENDERTARGETVIEW):
+    OBJ_LIFETIME_MESSAGES(DEPTHSTENCILVIEW):
+    OBJ_LIFETIME_MESSAGES(VERTEXSHADER):
+    OBJ_LIFETIME_MESSAGES(HULLSHADER):
+    OBJ_LIFETIME_MESSAGES(DOMAINSHADER):
+    OBJ_LIFETIME_MESSAGES(GEOMETRYSHADER):
+    OBJ_LIFETIME_MESSAGES(PIXELSHADER):
+    OBJ_LIFETIME_MESSAGES(INPUTLAYOUT):
+    OBJ_LIFETIME_MESSAGES(SAMPLER):
+    OBJ_LIFETIME_MESSAGES(BLENDSTATE):
+    OBJ_LIFETIME_MESSAGES(DEPTHSTENCILSTATE):
+    OBJ_LIFETIME_MESSAGES(RASTERIZERSTATE):
+    OBJ_LIFETIME_MESSAGES(QUERY):
+    OBJ_LIFETIME_MESSAGES(PREDICATE):
+    OBJ_LIFETIME_MESSAGES(COUNTER):
+    OBJ_LIFETIME_MESSAGES(COMMANDLIST):
+    OBJ_LIFETIME_MESSAGES(CLASSINSTANCE):
+    OBJ_LIFETIME_MESSAGES(CLASSLINKAGE):
+    OBJ_LIFETIME_MESSAGES(COMPUTESHADER):
+    OBJ_LIFETIME_MESSAGES(UNORDEREDACCESSVIEW):
+    OBJ_LIFETIME_MESSAGES(VIDEODECODER):
+    OBJ_LIFETIME_MESSAGES(VIDEOPROCESSORENUM):
+    OBJ_LIFETIME_MESSAGES(VIDEOPROCESSOR):
+    OBJ_LIFETIME_MESSAGES(DECODEROUTPUTVIEW):
+    OBJ_LIFETIME_MESSAGES(PROCESSORINPUTVIEW):
+    OBJ_LIFETIME_MESSAGES(PROCESSOROUTPUTVIEW):
+    OBJ_LIFETIME_MESSAGES(DEVICECONTEXTSTATE):
+        return MSGL_TRACE;
+
+#undef OBJ_LIFETIME_MESSAGES
+
+    default:
+        return map_msg_severity(sev);
+    }
+}
+
+void mp_d3d11_debug_marker(struct mp_log *log, IDXGIInfoQueue *iqueue,
+                           const char *msg)
+{
+    void *talloc_ctx = talloc_new(NULL);
+    HRESULT hr;
+
+    if (!iqueue)
+        goto done;
+
+    // Copy debug-layer messages to mpv's log output
+    bool printed_header = false;
+    uint64_t messages = IDXGIInfoQueue_GetNumStoredMessages(iqueue,
+                                                            DXGI_DEBUG_ALL);
+    for (uint64_t i = 0; i < messages; i++) {
+        SIZE_T len;
+        hr = IDXGIInfoQueue_GetMessage(iqueue, DXGI_DEBUG_ALL, i, NULL, &len);
+        if (FAILED(hr) || !len)
+            goto done;
+
+        DXGI_INFO_QUEUE_MESSAGE *dxgimsg = talloc_size(talloc_ctx, len);
+        hr = IDXGIInfoQueue_GetMessage(iqueue, DXGI_DEBUG_ALL, i, dxgimsg, &len);
+        if (FAILED(hr))
+            goto done;
+
+        int msgl = IsEqualGUID(&dxgimsg->Producer, &DXGI_DEBUG_D3D11)
+                        ? map_msg_severity_by_id(dxgimsg->ID, dxgimsg->Severity)
+                        : map_msg_severity(dxgimsg->Severity);
+
+        if (mp_msg_test(log, msgl)) {
+            if (!printed_header)
+                mp_info(log, "%s:\n", msg);
+            printed_header = true;
+
+            mp_msg(log, msgl, "%d: %.*s\n", (int)dxgimsg->ID,
+                (int)dxgimsg->DescriptionByteLength, dxgimsg->pDescription);
+            talloc_free(dxgimsg);
+        }
+    }
+
+    IDXGIInfoQueue_ClearStoredMessages(iqueue, DXGI_DEBUG_ALL);
+done:
+    talloc_free(talloc_ctx);
+}
+
+void mp_d3d11_report_live_objects(struct mp_log *log, IDXGIDebug *debug,
+                                  IDXGIInfoQueue *iqueue)
+{
+    mp_d3d11_debug_marker(log, iqueue, "after destroy");
+    IDXGIDebug_ReportLiveObjects(debug, DXGI_DEBUG_ALL, DXGI_DEBUG_RLO_DETAIL);
+    mp_d3d11_debug_marker(log, iqueue, "after leak check");
+    IDXGIDebug_ReportLiveObjects(debug, DXGI_DEBUG_ALL, DXGI_DEBUG_RLO_SUMMARY);
+    mp_d3d11_debug_marker(log, iqueue, "after leak summary");
 }
 
 DXGI_COLOR_SPACE_TYPE mp_params_to_dxgi_colorspace(struct mp_log *log,
