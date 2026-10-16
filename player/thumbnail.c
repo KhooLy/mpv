@@ -123,7 +123,7 @@ struct thumbnailer {
     uint8_t *init;
     size_t init_size;
     AVDictionary *net;
-    int strides[3];
+    int strides[16];
     int nstrides;
     int pass;
     struct sh_stream *sh;
@@ -866,13 +866,12 @@ static void setup(struct thumbnailer *t, double duration, struct sh_stream *sh)
     t->count = MPMAX((int)ceil(duration / t->step), 1);
     int64_t budget = t->memory > 0 ? t->memory : slot_budget();
     t->cap = MPMIN(t->count, MPMAX((int)(budget / t->slot_size), 16));
-    static const double passes[] = {30, 15};
     t->nstrides = 0;
-    for (int n = 0; n < 2; n++) {
-        int stride = lrint(passes[n] / t->step);
-        if (stride > 1 && (!t->nstrides || stride < t->strides[t->nstrides - 1]))
-            t->strides[t->nstrides++] = stride;
-    }
+    int stride = 1;
+    while (stride * 2 <= t->count / 24)
+        stride *= 2;
+    for (; stride > 1; stride /= 2)
+        t->strides[t->nstrides++] = stride;
     t->strides[t->nstrides++] = 1;
     t->state = talloc_zero_array(t, uint8_t, t->count);
     t->slots = talloc_zero_array(t, uint8_t *, t->count);
