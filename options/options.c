@@ -1133,8 +1133,8 @@ static const struct MPOpts mp_default_opts = {
     .osd_bar_visible = true,
     .screenshot_template = "mpv-shot%n",
     .thumbnail_width = 240,
-    .thumbnail_interval = 10,
-    .thumbnail_max = 1000,
+    .thumbnail_interval = 5,
+    .thumbnail_max = 2000,
     .thumbnail_delay = 5,
     .thumbnail_workers = 0,
 #if defined(__ANDROID__)
