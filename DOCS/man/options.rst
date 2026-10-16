@@ -5171,8 +5171,8 @@ Screenshot
     Width of generated thumbnails (default: 240).
 
 ``--thumbnail-interval=<seconds>``
-    Distance between thumbnails (default: 5). Raised if the file would
-    need more than ``--thumbnail-max`` thumbnails.
+    Distance between thumbnails, at least 5 (default: 5). Raised if the file
+    would need more than ``--thumbnail-max`` thumbnails.
 
 ``--thumbnail-max=<count>``
     Maximum number of thumbnails per file (default: 2000).

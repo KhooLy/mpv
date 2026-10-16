@@ -733,7 +733,7 @@ static const m_option_t mp_opts[] = {
 
     {"thumbnails", OPT_BOOL(thumbnails), .flags = UPDATE_BUILTIN_SCRIPTS},
     {"thumbnail-width", OPT_INT(thumbnail_width), M_RANGE(16, 1920)},
-    {"thumbnail-interval", OPT_DOUBLE(thumbnail_interval), M_RANGE(1, 3600)},
+    {"thumbnail-interval", OPT_DOUBLE(thumbnail_interval), M_RANGE(5, 3600)},
     {"thumbnail-max", OPT_INT(thumbnail_max), M_RANGE(1, 100000)},
     {"thumbnail-sweep", OPT_BOOL(thumbnail_sweep)},
     {"thumbnail-memory", OPT_INT(thumbnail_memory), M_RANGE(0, 4096)},
