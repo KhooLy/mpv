@@ -129,6 +129,7 @@ struct thumbnailer {
     struct sh_stream *sh;
     double hls_duration;
     bool direct;
+    AVFormatContext *fc;
     int vindex;
     int *kfidx;
 };
@@ -580,6 +581,43 @@ static struct sh_stream *hls_stream(struct thumbnailer *t)
     return sh;
 }
 
+static bool fetch_range(struct thumbnailer *t, uint8_t *dst, int64_t pos, int size)
+{
+    bool http = !strncmp(t->url, "http", 4);
+    AVDictionary *opts = NULL;
+    av_dict_copy(&opts, t->net, 0);
+    if (t->headers)
+        av_dict_set(&opts, "headers", t->headers, 0);
+    if (http) {
+        av_dict_set_int(&opts, "offset", pos, 0);
+        av_dict_set_int(&opts, "end_offset", pos + size, 0);
+    }
+    av_dict_set_int(&opts, "rw_timeout", 15000000, 0);
+    AVIOInterruptCB cb = {interrupted, t->cancel};
+    AVIOContext *io = NULL;
+    if (avio_open2(&io, t->url, AVIO_FLAG_READ, &cb, &opts) < 0) {
+        av_dict_free(&opts);
+        return false;
+    }
+    av_dict_free(&opts);
+    int r, n = 0;
+    if (!http && avio_seek(io, pos, SEEK_SET) < 0) {
+        avio_closep(&io);
+        return false;
+    }
+    while (n < size && (r = avio_read(io, dst + n, size - n)) > 0)
+        n += r;
+    avio_closep(&io);
+    return n == size;
+}
+
+static double direct_duration(AVFormatContext *fc, AVStream *st)
+{
+    if (st->duration > 0)
+        return st->duration * av_q2d(st->time_base);
+    return fc->duration > 0 ? fc->duration / (double)AV_TIME_BASE : 0;
+}
+
 static AVFormatContext *direct_open(struct thumbnailer *t, int *vindex)
 {
     AVDictionary *opts = NULL;
@@ -603,7 +641,7 @@ static AVFormatContext *direct_open(struct thumbnailer *t, int *vindex)
     if (!e || e->size <= 0 || avformat_index_get_entries_count(st) < 2 ||
         (st->disposition & AV_DISPOSITION_ATTACHED_PIC) ||
         st->codecpar->width <= 0 || st->codecpar->height <= 0 ||
-        fc->duration <= 0)
+        direct_duration(fc, st) <= 0)
     {
         avformat_close_input(&fc);
         return NULL;
@@ -630,9 +668,7 @@ static bool direct_keyframe(struct thumbnailer *t, AVFormatContext *fc, double p
     if (!e || e->size <= 0 || e->size > 64 * 1024 * 1024 ||
         av_new_packet(pkt, e->size) < 0)
         return false;
-    if (avio_seek(fc->pb, e->pos, SEEK_SET) < 0 ||
-        avio_read(fc->pb, pkt->data, e->size) != e->size)
-    {
+    if (!fetch_range(t, pkt->data, e->pos, e->size)) {
         av_packet_unref(pkt);
         return false;
     }
@@ -851,7 +887,6 @@ static void worker_close(struct worker *w)
     av_frame_free(&w->frame);
     talloc_free(w->sws);
     demux_free(w->d);
-    avformat_close_input(&w->fc);
 }
 
 static int distance(int a, int b)
@@ -967,9 +1002,7 @@ static MP_THREAD_VOID worker_thread(void *arg)
         w.sh = t->sh;
     } else if (t->direct) {
         w.sh = t->sh;
-        w.fc = direct_open(t, &t->vindex);
-        if (!w.fc)
-            MP_THREAD_RETURN();
+        w.fc = t->fc;
     } else {
         w.d = open_demux(t, &w.sh);
         if (!w.d)
@@ -1001,10 +1034,13 @@ static MP_THREAD_VOID thumbnail_thread(void *arg)
         w.fc = direct_open(t, &t->vindex);
         if (w.fc) {
             w.sh = sh_from_par(t, w.fc->streams[t->vindex]->codecpar);
-            duration = w.fc->duration / (double)AV_TIME_BASE;
+            duration = direct_duration(w.fc, w.fc->streams[t->vindex]);
             t->direct = !!w.sh;
-            if (!w.sh)
-                avformat_close_input(&w.fc);
+            t->fc = w.fc;
+            if (!w.sh) {
+                avformat_close_input(&t->fc);
+                w.fc = NULL;
+            }
         }
     }
     if (!w.sh) {
@@ -1052,6 +1088,7 @@ static MP_THREAD_VOID thumbnail_thread(void *arg)
     worker_close(&w);
 
 out:
+    avformat_close_input(&t->fc);
     mp_mutex_lock(&t->lock);
     t->finished = true;
     mp_mutex_unlock(&t->lock);
