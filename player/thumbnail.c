@@ -128,6 +128,9 @@ struct thumbnailer {
     int pass;
     struct sh_stream *sh;
     double hls_duration;
+    bool direct;
+    int vindex;
+    int *kfidx;
 };
 
 static int next_index(struct thumbnailer *t)
@@ -354,13 +357,30 @@ static char *hls_variant(struct thumbnailer *t, char *pl, const char *base)
     return best;
 }
 
-static bool hls_load(struct thumbnailer *t)
+static void net_setup(struct thumbnailer *t)
 {
     if (strncmp(t->url, "http", 4))
-        return false;
+        return;
     mp_setup_av_network_options(&t->net, NULL, t->global, t->log);
     av_dict_set(&t->net, "reconnect", NULL, 0);
     av_dict_set(&t->net, "icy", NULL, 0);
+}
+
+static bool hls_sniff(struct thumbnailer *t)
+{
+    if (strncmp(t->url, "http", 4))
+        return false;
+    size_t n = 0;
+    uint8_t *head = fetch(t, t->url, 7, &n);
+    bool hls = head && n == 7 && !memcmp(head, "#EXTM3U", 7);
+    av_free(head);
+    return hls;
+}
+
+static bool hls_load(struct thumbnailer *t)
+{
+    if (!hls_sniff(t))
+        return false;
     size_t n;
     const char *base = t->url;
     char *pl = NULL;
@@ -497,19 +517,46 @@ static bool hls_keyframe(struct thumbnailer *t, double pts, AVPacket *pkt)
     return hls_try(t, hls_index(t, pts), pkt);
 }
 
+static int slot_group(struct thumbnailer *t, int i)
+{
+    return t->kfidx ? t->kfidx[i] : hls_index(t, i * t->step);
+}
+
 static uint8_t *twin_slot(struct thumbnailer *t, int i)
 {
-    if (!t->nsegs)
+    if (!t->nsegs && !t->kfidx)
         return NULL;
-    int seg = hls_index(t, i * t->step);
+    int seg = slot_group(t, i);
     for (int d = 1; d <= 3; d++) {
         for (int j = i - d; j <= i + d; j += 2 * d) {
             if (j >= 0 && j < t->count && t->slots[j] &&
-                hls_index(t, j * t->step) == seg)
+                slot_group(t, j) == seg)
                 return talloc_memdup(NULL, t->slots[j], t->slot_size);
         }
     }
     return NULL;
+}
+
+static struct sh_stream *sh_from_par(struct thumbnailer *t, AVCodecParameters *par)
+{
+    if (!par || par->codec_type != AVMEDIA_TYPE_VIDEO || par->width <= 0 ||
+        par->height <= 0)
+        return NULL;
+    struct sh_stream *sh = demux_alloc_sh_stream(STREAM_VIDEO);
+    struct mp_codec_params *c = sh->codec;
+    c->codec = talloc_strdup(sh, avcodec_get_name(par->codec_id));
+    c->disp_w = par->width;
+    c->disp_h = par->height;
+    if (par->sample_aspect_ratio.num > 0) {
+        c->par_w = par->sample_aspect_ratio.num;
+        c->par_h = par->sample_aspect_ratio.den;
+    }
+    if (par->extradata_size > 0) {
+        c->extradata = talloc_memdup(sh, par->extradata, par->extradata_size);
+        c->extradata_size = par->extradata_size;
+    }
+    talloc_steal(t, sh);
+    return sh;
 }
 
 static struct sh_stream *hls_stream(struct thumbnailer *t)
@@ -523,25 +570,7 @@ static struct sh_stream *hls_stream(struct thumbnailer *t)
         fc->pb = io;
         fc->flags |= AVFMT_FLAG_CUSTOM_IO;
         if (avformat_open_input(&fc, NULL, NULL, NULL) >= 0) {
-            AVCodecParameters *par = fc->nb_streams ? fc->streams[0]->codecpar : NULL;
-            if (par && par->codec_type == AVMEDIA_TYPE_VIDEO && par->width > 0 &&
-                par->height > 0)
-            {
-                sh = demux_alloc_sh_stream(STREAM_VIDEO);
-                struct mp_codec_params *c = sh->codec;
-                c->codec = talloc_strdup(sh, avcodec_get_name(par->codec_id));
-                c->disp_w = par->width;
-                c->disp_h = par->height;
-                if (par->sample_aspect_ratio.num > 0) {
-                    c->par_w = par->sample_aspect_ratio.num;
-                    c->par_h = par->sample_aspect_ratio.den;
-                }
-                if (par->extradata_size > 0) {
-                    c->extradata = talloc_memdup(sh, par->extradata, par->extradata_size);
-                    c->extradata_size = par->extradata_size;
-                }
-                talloc_steal(t, sh);
-            }
+            sh = sh_from_par(t, fc->nb_streams ? fc->streams[0]->codecpar : NULL);
             avformat_close_input(&fc);
         }
     }
@@ -551,7 +580,67 @@ static struct sh_stream *hls_stream(struct thumbnailer *t)
     return sh;
 }
 
-static uint8_t *grab(struct thumbnailer *t, struct demuxer *d,
+static AVFormatContext *direct_open(struct thumbnailer *t, int *vindex)
+{
+    AVDictionary *opts = NULL;
+    av_dict_copy(&opts, t->net, 0);
+    if (t->headers)
+        av_dict_set(&opts, "headers", t->headers, 0);
+    av_dict_set_int(&opts, "rw_timeout", 15000000, 0);
+    AVFormatContext *fc = avformat_alloc_context();
+    if (!fc) {
+        av_dict_free(&opts);
+        return NULL;
+    }
+    fc->interrupt_callback = (AVIOInterruptCB){interrupted, t->cancel};
+    int r = avformat_open_input(&fc, t->url, NULL, &opts);
+    av_dict_free(&opts);
+    if (r < 0)
+        return NULL;
+    int idx = av_find_best_stream(fc, AVMEDIA_TYPE_VIDEO, -1, -1, NULL, 0);
+    AVStream *st = idx >= 0 ? fc->streams[idx] : NULL;
+    const AVIndexEntry *e = st ? avformat_index_get_entry(st, 0) : NULL;
+    if (!e || e->size <= 0 || avformat_index_get_entries_count(st) < 2 ||
+        (st->disposition & AV_DISPOSITION_ATTACHED_PIC) ||
+        st->codecpar->width <= 0 || st->codecpar->height <= 0 ||
+        fc->duration <= 0)
+    {
+        avformat_close_input(&fc);
+        return NULL;
+    }
+    *vindex = idx;
+    return fc;
+}
+
+static int direct_entry(AVStream *st, double pts)
+{
+    int64_t ts = av_rescale_q(lrint(pts * AV_TIME_BASE), AV_TIME_BASE_Q, st->time_base);
+    if (st->start_time != AV_NOPTS_VALUE)
+        ts += st->start_time;
+    int i = av_index_search_timestamp(st, ts, AVSEEK_FLAG_BACKWARD);
+    return i >= 0 ? i : av_index_search_timestamp(st, ts, 0);
+}
+
+static bool direct_keyframe(struct thumbnailer *t, AVFormatContext *fc, double pts,
+                            AVPacket *pkt)
+{
+    AVStream *st = fc->streams[t->vindex];
+    int i = direct_entry(st, pts);
+    const AVIndexEntry *e = i >= 0 ? avformat_index_get_entry(st, i) : NULL;
+    if (!e || e->size <= 0 || e->size > 64 * 1024 * 1024 ||
+        av_new_packet(pkt, e->size) < 0)
+        return false;
+    if (avio_seek(fc->pb, e->pos, SEEK_SET) < 0 ||
+        avio_read(fc->pb, pkt->data, e->size) != e->size)
+    {
+        av_packet_unref(pkt);
+        return false;
+    }
+    pkt->flags |= AV_PKT_FLAG_KEY;
+    return true;
+}
+
+static uint8_t *grab(struct thumbnailer *t, struct demuxer *d, AVFormatContext *fc,
                      struct sh_stream *sh, AVCodecContext *avctx,
                      struct mp_sws_context *sws, AVPacket *pkt, AVFrame *frame,
                      double pts)
@@ -561,6 +650,11 @@ static uint8_t *grab(struct thumbnailer *t, struct demuxer *d,
     if (t->nsegs) {
         AVPacket *hp = av_packet_alloc();
         if (hp && hls_keyframe(t, pts, hp))
+            sent = avcodec_send_packet(avctx, hp) >= 0;
+        av_packet_free(&hp);
+    } else if (fc) {
+        AVPacket *hp = av_packet_alloc();
+        if (hp && direct_keyframe(t, fc, pts, hp))
             sent = avcodec_send_packet(avctx, hp) >= 0;
         av_packet_free(&hp);
     }
@@ -705,6 +799,7 @@ static void lower_priority(void)
 
 struct worker {
     struct demuxer *d;
+    AVFormatContext *fc;
     struct sh_stream *sh;
     AVCodecContext *avctx;
     struct mp_sws_context *sws;
@@ -756,6 +851,7 @@ static void worker_close(struct worker *w)
     av_frame_free(&w->frame);
     talloc_free(w->sws);
     demux_free(w->d);
+    avformat_close_input(&w->fc);
 }
 
 static int distance(int a, int b)
@@ -810,14 +906,14 @@ static void work(struct thumbnailer *t, struct worker *w)
         uint8_t *buf = twin_slot(t, i);
         mp_mutex_unlock(&t->lock);
         if (!buf)
-            buf = grab(t, w->d, w->sh, w->avctx, w->sws, w->pkt, w->frame, i * t->step);
+            buf = grab(t, w->d, w->fc, w->sh, w->avctx, w->sws, w->pkt, w->frame, i * t->step);
         if (!buf && w->hwdec && !w->hw_ok && !mp_cancel_test(t->cancel)) {
             AVCodecContext *sw = open_decoder(t, w->sh, 0);
             uint8_t *sw_buf = NULL;
             if (sw) {
                 if (i)
-                    talloc_free(grab(t, w->d, w->sh, sw, w->sws, w->pkt, w->frame, 0));
-                sw_buf = grab(t, w->d, w->sh, sw, w->sws, w->pkt, w->frame, i * t->step);
+                    talloc_free(grab(t, w->d, w->fc, w->sh, sw, w->sws, w->pkt, w->frame, 0));
+                sw_buf = grab(t, w->d, w->fc, w->sh, sw, w->sws, w->pkt, w->frame, i * t->step);
             }
             if (sw_buf) {
                 MP_VERBOSE(t, "Hardware decoding failed, using software.\n");
@@ -869,6 +965,11 @@ static MP_THREAD_VOID worker_thread(void *arg)
     struct worker w = {0};
     if (t->nsegs) {
         w.sh = t->sh;
+    } else if (t->direct) {
+        w.sh = t->sh;
+        w.fc = direct_open(t, &t->vindex);
+        if (!w.fc)
+            MP_THREAD_RETURN();
     } else {
         w.d = open_demux(t, &w.sh);
         if (!w.d)
@@ -887,15 +988,28 @@ static MP_THREAD_VOID thumbnail_thread(void *arg)
     lower_priority();
 
     mp_stream_lavf_set_thread_headers(t->headers);
+    net_setup(t);
     hls_load(t);
     struct worker w = {0};
+    double duration = t->hls_duration;
     if (t->nsegs) {
         w.sh = hls_stream(t);
         if (!w.sh)
             t->nsegs = 0;
     }
     if (!w.sh) {
+        w.fc = direct_open(t, &t->vindex);
+        if (w.fc) {
+            w.sh = sh_from_par(t, w.fc->streams[t->vindex]->codecpar);
+            duration = w.fc->duration / (double)AV_TIME_BASE;
+            t->direct = !!w.sh;
+            if (!w.sh)
+                avformat_close_input(&w.fc);
+        }
+    }
+    if (!w.sh) {
         w.d = open_demux(t, &w.sh);
+        duration = w.d ? w.d->duration : 0;
         if (!w.d) {
             MP_WARN(t, "Could not open %s\n", t->url);
             goto out;
@@ -904,14 +1018,19 @@ static MP_THREAD_VOID thumbnail_thread(void *arg)
     if (t->auto_workers)
         t->workers = auto_workers(t->url, t->nsegs);
     t->sh = w.sh;
-    setup(t, w.d ? w.d->duration : t->hls_duration, w.sh);
+    setup(t, duration, w.sh);
+    if (t->direct) {
+        t->kfidx = talloc_array(t, int, t->count);
+        for (int i = 0; i < t->count; i++)
+            t->kfidx[i] = direct_entry(w.fc->streams[t->vindex], i * t->step);
+    }
     if (!worker_open(t, &w)) {
         MP_WARN(t, "Could not open decoder for %s\n", w.sh->codec->codec);
         worker_close(&w);
         goto out;
     }
     if (t->state[0] != SLOT_EMPTY)
-        talloc_free(grab(t, w.d, w.sh, w.avctx, w.sws, w.pkt, w.frame, 0));
+        talloc_free(grab(t, w.d, w.fc, w.sh, w.avctx, w.sws, w.pkt, w.frame, 0));
 
     double start = mp_time_sec();
     mp_mutex_lock(&t->lock);
