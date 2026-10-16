@@ -459,6 +459,35 @@ static int mem_read(void *opaque, uint8_t *buf, int size)
     return c;
 }
 
+static bool first_keyframe(const uint8_t *data, size_t size, int stream, AVPacket *pkt)
+{
+    struct membuf m = {data, size, 0};
+    uint8_t *iobuf = av_malloc(32768);
+    AVIOContext *io = iobuf ? avio_alloc_context(iobuf, 32768, 0, &m, mem_read, NULL, NULL) : NULL;
+    AVFormatContext *fc = io ? avformat_alloc_context() : NULL;
+    bool ok = false;
+    if (fc) {
+        fc->pb = io;
+        fc->flags |= AVFMT_FLAG_CUSTOM_IO;
+        if (avformat_open_input(&fc, NULL, NULL, NULL) >= 0) {
+            while (av_read_frame(fc, pkt) >= 0) {
+                if (pkt->stream_index == stream && (pkt->flags & AV_PKT_FLAG_KEY) &&
+                    !(pkt->flags & AV_PKT_FLAG_CORRUPT))
+                {
+                    ok = true;
+                    break;
+                }
+                av_packet_unref(pkt);
+            }
+            avformat_close_input(&fc);
+        }
+    }
+    if (io)
+        av_freep(&io->buffer);
+    avio_context_free(&io);
+    return ok;
+}
+
 static bool hls_try(struct thumbnailer *t, int i, AVPacket *pkt)
 {
     for (int64_t head = HLS_HEAD; head <= 4 * HLS_HEAD; head *= 4) {
@@ -472,30 +501,7 @@ static bool hls_try(struct thumbnailer *t, int i, AVPacket *pkt)
         memcpy(data, t->init, t->init_size);
         memcpy(data + t->init_size, part, n);
         av_free(part);
-        struct membuf m = {data, t->init_size + n, 0};
-        uint8_t *iobuf = av_malloc(32768);
-        AVIOContext *io = iobuf ? avio_alloc_context(iobuf, 32768, 0, &m, mem_read, NULL, NULL) : NULL;
-        AVFormatContext *fc = io ? avformat_alloc_context() : NULL;
-        bool ok = false;
-        if (fc) {
-            fc->pb = io;
-            fc->flags |= AVFMT_FLAG_CUSTOM_IO;
-            if (avformat_open_input(&fc, NULL, NULL, NULL) >= 0) {
-                while (av_read_frame(fc, pkt) >= 0) {
-                    if (pkt->stream_index == 0 && (pkt->flags & AV_PKT_FLAG_KEY) &&
-                        !(pkt->flags & AV_PKT_FLAG_CORRUPT))
-                    {
-                        ok = true;
-                        break;
-                    }
-                    av_packet_unref(pkt);
-                }
-                avformat_close_input(&fc);
-            }
-        }
-        if (io)
-            av_freep(&io->buffer);
-        avio_context_free(&io);
+        bool ok = first_keyframe(data, t->init_size + n, 0, pkt);
         av_free(data);
         if (ok)
             return true;
@@ -581,7 +587,7 @@ static struct sh_stream *hls_stream(struct thumbnailer *t)
     return sh;
 }
 
-static bool fetch_range(struct thumbnailer *t, uint8_t *dst, int64_t pos, int size)
+static int fetch_range(struct thumbnailer *t, uint8_t *dst, int64_t pos, int size)
 {
     bool http = !strncmp(t->url, "http", 4);
     AVDictionary *opts = NULL;
@@ -597,18 +603,18 @@ static bool fetch_range(struct thumbnailer *t, uint8_t *dst, int64_t pos, int si
     AVIOContext *io = NULL;
     if (avio_open2(&io, t->url, AVIO_FLAG_READ, &cb, &opts) < 0) {
         av_dict_free(&opts);
-        return false;
+        return -1;
     }
     av_dict_free(&opts);
     int r, n = 0;
     if (!http && avio_seek(io, pos, SEEK_SET) < 0) {
         avio_closep(&io);
-        return false;
+        return -1;
     }
     while (n < size && (r = avio_read(io, dst + n, size - n)) > 0)
         n += r;
     avio_closep(&io);
-    return n == size;
+    return n;
 }
 
 static double direct_duration(AVFormatContext *fc, AVStream *st)
@@ -637,14 +643,28 @@ static AVFormatContext *direct_open(struct thumbnailer *t, int *vindex)
         return NULL;
     int idx = av_find_best_stream(fc, AVMEDIA_TYPE_VIDEO, -1, -1, NULL, 0);
     AVStream *st = idx >= 0 ? fc->streams[idx] : NULL;
+    bool mkv = fc->iformat && !strncmp(fc->iformat->name, "matroska", 8);
+    if (mkv && st && !avformat_index_get_entries_count(st))
+        av_seek_frame(fc, idx, 0, AVSEEK_FLAG_BACKWARD);
     const AVIndexEntry *e = st ? avformat_index_get_entry(st, 0) : NULL;
-    if (!e || e->size <= 0 || avformat_index_get_entries_count(st) < 2 ||
+    if (!e || (e->size <= 0 && !mkv) || avformat_index_get_entries_count(st) < 2 ||
         (st->disposition & AV_DISPOSITION_ATTACHED_PIC) ||
         st->codecpar->width <= 0 || st->codecpar->height <= 0 ||
         direct_duration(fc, st) <= 0)
     {
         avformat_close_input(&fc);
         return NULL;
+    }
+    if (mkv) {
+        int64_t first = e->pos;
+        for (int i = 1; i < avformat_index_get_entries_count(st); i++)
+            first = MPMIN(first, avformat_index_get_entry(st, i)->pos);
+        if (first <= 0 || first > 8 * 1024 * 1024 ||
+            !(t->init = fetch(t, t->url, first, &t->init_size)))
+        {
+            avformat_close_input(&fc);
+            return NULL;
+        }
     }
     *vindex = idx;
     return fc;
@@ -659,16 +679,37 @@ static int direct_entry(AVStream *st, double pts)
     return i >= 0 ? i : av_index_search_timestamp(st, ts, 0);
 }
 
+static bool mkv_keyframe(struct thumbnailer *t, int64_t pos, AVPacket *pkt)
+{
+    for (int len = 128 * 1024; len <= 2 * 1024 * 1024; len *= 4) {
+        uint8_t *data = av_malloc(t->init_size + len);
+        if (!data)
+            return false;
+        memcpy(data, t->init, t->init_size);
+        int n = fetch_range(t, data + t->init_size, pos, len);
+        bool ok = n > 0 && first_keyframe(data, t->init_size + n, t->vindex, pkt);
+        av_free(data);
+        if (ok)
+            return true;
+        if (n < len)
+            return false;
+    }
+    return false;
+}
+
 static bool direct_keyframe(struct thumbnailer *t, AVFormatContext *fc, double pts,
                             AVPacket *pkt)
 {
     AVStream *st = fc->streams[t->vindex];
     int i = direct_entry(st, pts);
     const AVIndexEntry *e = i >= 0 ? avformat_index_get_entry(st, i) : NULL;
-    if (!e || e->size <= 0 || e->size > 64 * 1024 * 1024 ||
-        av_new_packet(pkt, e->size) < 0)
+    if (!e)
         return false;
-    if (!fetch_range(t, pkt->data, e->pos, e->size)) {
+    if (e->size <= 0)
+        return mkv_keyframe(t, e->pos, pkt);
+    if (e->size > 64 * 1024 * 1024 || av_new_packet(pkt, e->size) < 0)
+        return false;
+    if (fetch_range(t, pkt->data, e->pos, e->size) != e->size) {
         av_packet_unref(pkt);
         return false;
     }
