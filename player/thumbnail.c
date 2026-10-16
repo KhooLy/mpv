@@ -432,13 +432,14 @@ static bool hls_load(struct thumbnailer *t)
             dur = 0;
         }
     }
-    if (!map || !t->nsegs)
+    if (!t->nsegs)
         goto fail;
     t->hls_duration = at;
-    uint8_t *init = fetch(t, map, 0, &t->init_size);
-    if (!init)
-        goto fail;
-    t->init = init;
+    if (map) {
+        t->init = fetch(t, map, 0, &t->init_size);
+        if (!t->init)
+            goto fail;
+    }
     av_free(pl);
     return true;
 
@@ -471,7 +472,9 @@ static bool first_keyframe(const uint8_t *data, size_t size, int stream, AVPacke
         fc->flags |= AVFMT_FLAG_CUSTOM_IO;
         if (avformat_open_input(&fc, NULL, NULL, NULL) >= 0) {
             while (av_read_frame(fc, pkt) >= 0) {
-                if (pkt->stream_index == stream && (pkt->flags & AV_PKT_FLAG_KEY) &&
+                if ((stream < 0 ? fc->streams[pkt->stream_index]->codecpar->codec_type == AVMEDIA_TYPE_VIDEO
+                                : pkt->stream_index == stream) &&
+                    (pkt->flags & AV_PKT_FLAG_KEY) &&
                     !(pkt->flags & AV_PKT_FLAG_CORRUPT))
                 {
                     ok = true;
@@ -490,7 +493,7 @@ static bool first_keyframe(const uint8_t *data, size_t size, int stream, AVPacke
 
 static bool hls_try(struct thumbnailer *t, int i, AVPacket *pkt)
 {
-    for (int64_t head = HLS_HEAD; head <= 4 * HLS_HEAD; head *= 4) {
+    for (int64_t head = HLS_HEAD / 4; head <= 4 * HLS_HEAD; head *= 4) {
         size_t n;
         uint8_t *part = fetch(t, t->segs[i].url, head, &n);
         if (!part)
@@ -498,10 +501,11 @@ static bool hls_try(struct thumbnailer *t, int i, AVPacket *pkt)
         if (!part)
             return false;
         uint8_t *data = av_malloc(t->init_size + n);
-        memcpy(data, t->init, t->init_size);
+        if (t->init_size)
+            memcpy(data, t->init, t->init_size);
         memcpy(data + t->init_size, part, n);
         av_free(part);
-        bool ok = first_keyframe(data, t->init_size + n, 0, pkt);
+        bool ok = first_keyframe(data, t->init_size + n, -1, pkt);
         av_free(data);
         if (ok)
             return true;
@@ -568,7 +572,14 @@ static struct sh_stream *sh_from_par(struct thumbnailer *t, AVCodecParameters *p
 
 static struct sh_stream *hls_stream(struct thumbnailer *t)
 {
+    uint8_t *head = NULL;
     struct membuf m = {t->init, t->init_size, 0};
+    if (!t->init) {
+        head = fetch(t, t->segs[0].url, 4 * HLS_HEAD, &m.size);
+        if (!head)
+            return NULL;
+        m.data = head;
+    }
     uint8_t *iobuf = av_malloc(32768);
     AVIOContext *io = iobuf ? avio_alloc_context(iobuf, 32768, 0, &m, mem_read, NULL, NULL) : NULL;
     AVFormatContext *fc = io ? avformat_alloc_context() : NULL;
@@ -577,13 +588,17 @@ static struct sh_stream *hls_stream(struct thumbnailer *t)
         fc->pb = io;
         fc->flags |= AVFMT_FLAG_CUSTOM_IO;
         if (avformat_open_input(&fc, NULL, NULL, NULL) >= 0) {
-            sh = sh_from_par(t, fc->nb_streams ? fc->streams[0]->codecpar : NULL);
+            if (head)
+                avformat_find_stream_info(fc, NULL);
+            int idx = av_find_best_stream(fc, AVMEDIA_TYPE_VIDEO, -1, -1, NULL, 0);
+            sh = sh_from_par(t, idx >= 0 ? fc->streams[idx]->codecpar : NULL);
             avformat_close_input(&fc);
         }
     }
     if (io)
         av_freep(&io->buffer);
     avio_context_free(&io);
+    av_free(head);
     return sh;
 }
 
