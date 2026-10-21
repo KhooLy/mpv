@@ -571,7 +571,7 @@ static int preinit(struct vo *vo)
     if (p->vt.av_device_ref)
         hwdec_devices_add(vo->hwdec_devs, &p->vt);
 
-    vo_set_queue_params(vo, p->chain || p->fel ? SHADER_QUEUE_AHEAD_NS : QUEUE_AHEAD_NS, 1);
+    vo_set_queue_params(vo, p->chain || p->fel ? SHADER_QUEUE_AHEAD_NS : QUEUE_AHEAD_NS, 1, 1);
     return 0;
 }
 

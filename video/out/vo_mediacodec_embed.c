@@ -675,7 +675,7 @@ static int preinit(struct vo *vo)
     p->started = true;
     vsync_start(vo, &p->vsync);
     osd_init(vo);
-    vo_set_queue_params(vo, EARLY_SCHEDULING_THRESHOLD_NS, 1);
+    vo_set_queue_params(vo, EARLY_SCHEDULING_THRESHOLD_NS, 1, 1);
     return 0;
 }
 
