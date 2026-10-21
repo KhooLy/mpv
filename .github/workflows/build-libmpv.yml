@@ -231,14 +231,25 @@ jobs:
             mingw-w64-x86_64-libplacebo
             mingw-w64-x86_64-lua51
             mingw-w64-x86_64-angleproject
+            mingw-w64-x86_64-vulkan-headers
+            mingw-w64-x86_64-vulkan-loader
 
       - name: Build mpv
         run: |
           # angleproject only supplies headers here; egl-angle-lib stays
           # disabled so libmpv-2.dll keeps loading libEGL.dll dynamically
           # at runtime instead of hard-requiring it just to load.
-          meson setup build -Dlibmpv=true -Dgpl=false -Degl-angle-lib=disabled
+          # vulkan=enabled makes the build fail instead of silently dropping
+          # MPV_RENDER_API_TYPE_VULKAN, which fluxa-desktop asks for on Windows.
+          meson setup build -Dlibmpv=true -Dgpl=false -Degl-angle-lib=disabled -Dvulkan=enabled
           ninja -C build
+
+      - name: Check render API features
+        run: |
+          meson introspect build --buildoptions | grep -A2 '"name": "vulkan"' || true
+          grep -E "vulkan|d3d11-gpu-next" build/meson-logs/meson-log.txt | head -20
+          strings build/mpv-2.dll 2>/dev/null | grep -q 'List of enabled features:.*vulkan' || \
+            strings build/libmpv-2.dll | grep -q 'List of enabled features:.*vulkan'
 
       - name: Package
         run: |
