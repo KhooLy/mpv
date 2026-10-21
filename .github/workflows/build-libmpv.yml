@@ -233,6 +233,7 @@ jobs:
             mingw-w64-x86_64-angleproject
             mingw-w64-x86_64-vulkan-headers
             mingw-w64-x86_64-vulkan-loader
+            mingw-w64-x86_64-nasm
 
       - name: Build mpv
         run: |
