@@ -33,9 +33,11 @@ libplacebo = dependency('libplacebo', version: '>=7.360.1',
 if meson.is_cross_build()
     libass = dependency('libass', version: '>= 0.12.2')
     ass_render_ahead = meson.get_compiler('c').has_function('ass_set_stateless', dependencies: libass)
+    ass_threads = meson.get_compiler('c').has_function('ass_set_threads', dependencies: libass)
 else
     libass = subproject('libass').get_variable('libass_dep')
     ass_render_ahead = true
+    ass_threads = true
 endif
 
 # the dependency order of libass -> ffmpeg is necessary due to
@@ -346,6 +348,7 @@ posix = not win32
 features += {'darwin': darwin}
 features += {'posix': posix}
 features += {'ass-render-ahead': ass_render_ahead}
+features += {'ass-threads': ass_threads}
 features += {'dos-paths': win32, 'win32': win32}
 
 mswin_flags = ['-D_WIN32_WINNT=0x0A00', '-DWINVER=0x0A00', '-DUNICODE',

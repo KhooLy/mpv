@@ -293,6 +293,13 @@ static void filters_init(struct sd *sd)
     }
 }
 
+static void set_frame_threads(ASS_Renderer *renderer, struct sd *sd)
+{
+#if HAVE_ASS_THREADS
+    ass_set_threads(renderer, sd->opts->ass_frame_threads);
+#endif
+}
+
 static void enable_output(struct sd *sd, bool enable)
 {
     struct sd_ass_priv *ctx = sd->priv;
@@ -303,6 +310,7 @@ static void enable_output(struct sd *sd, bool enable)
         ctx->ass_renderer = NULL;
     } else {
         ctx->ass_renderer = ass_renderer_init(ctx->ass_library);
+        set_frame_threads(ctx->ass_renderer, sd);
 
         mp_ass_configure_fonts(ctx->ass_renderer, sd->opts->sub_style,
                                sd->global, sd->log);
@@ -867,6 +875,7 @@ static MP_THREAD_VOID worker_main(void *arg)
     mp_thread_set_name("sub/ass");
 
     w->renderer = ass_renderer_init(ctx->ass_library);
+    set_frame_threads(w->renderer, sd);
     mp_ass_configure_fonts(w->renderer, sd->opts->sub_style, sd->global, sd->log);
     int bitmaps = sd->opts->sub_bitmap_max_size;
     ass_set_cache_limits(w->renderer, sd->opts->sub_glyph_limit,

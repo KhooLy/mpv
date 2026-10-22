@@ -131,6 +131,7 @@ struct mp_subtitle_opts {
     int sub_shaper;
     double ass_prune_delay;
     int ass_render_threads;
+    int ass_frame_threads;
     bool ass_justify;
     bool sub_clear_on_seek;
     int teletext_page;
