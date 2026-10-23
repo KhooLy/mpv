@@ -64,6 +64,7 @@ struct async_cfg {
     double scale;
     int storage_w, storage_h;
     bool converted;
+    double render_scale;
     unsigned gen;
 };
 
@@ -117,6 +118,11 @@ struct sd_ass_priv {
     double sync_ema;
     double async_ema;
     double sched;
+    double render_scale;
+    double applied_scale;
+    int64_t scale_changed;
+    int stat_hits, stat_misses;
+    int64_t stat_time;
     uint64_t serial;
     struct render_entry queue[MAX_QUEUE];
     int num_queue;
@@ -293,11 +299,85 @@ static void filters_init(struct sd *sd)
     }
 }
 
-static void set_frame_threads(ASS_Renderer *renderer, struct sd *sd)
+static void set_frame_threads(ASS_Renderer *renderer, struct sd *sd, bool main)
 {
 #if HAVE_ASS_THREADS
-    ass_set_threads(renderer, sd->opts->ass_frame_threads);
+    int n = sd->opts->ass_frame_threads;
+    if (n < 0) {
+        int cpus = 1;
+#if HAVE_POSIX && defined(_SC_NPROCESSORS_ONLN)
+        cpus = sysconf(_SC_NPROCESSORS_ONLN);
 #endif
+        n = main ? MPCLAMP(cpus, 1, 4) : 1;
+    }
+    ass_set_threads(renderer, n);
+#endif
+}
+
+static const double render_scales[] = {1.0, 0.75, 0.5, 0.35};
+
+static struct mp_osd_res scale_dim(struct mp_osd_res dim, double s)
+{
+    if (s >= 1.0)
+        return dim;
+    dim.w = MPMAX(1, lrint(dim.w * s));
+    dim.h = MPMAX(1, lrint(dim.h * s));
+    dim.mt = lrint(dim.mt * s);
+    dim.mb = lrint(dim.mb * s);
+    dim.ml = lrint(dim.ml * s);
+    dim.mr = lrint(dim.mr * s);
+    return dim;
+}
+
+static void upscale_parts(struct sub_bitmaps *bm, double s)
+{
+    if (!bm || s >= 1.0)
+        return;
+    for (int n = 0; n < bm->num_parts; n++) {
+        struct sub_bitmap *b = &bm->parts[n];
+        int x0 = floor(b->x / s);
+        int y0 = floor(b->y / s);
+        int x1 = ceil((b->x + b->w) / s);
+        int y1 = ceil((b->y + b->h) / s);
+        b->x = x0;
+        b->y = y0;
+        b->dw = x1 - x0;
+        b->dh = y1 - y0;
+    }
+}
+
+static void adapt_render_scale(struct sd *sd)
+{
+    struct sd_ass_priv *ctx = sd->priv;
+    double floor_scale = sd->opts->ass_min_render_scale;
+    int64_t now = mp_time_ns();
+
+    mp_mutex_lock(&ctx->mu);
+    double cost = ctx->num_workers && ctx->async_ema > 0
+                  ? ctx->async_ema / ctx->num_workers : ctx->sync_ema;
+    int cur = 0;
+    while (cur < MP_ARRAY_SIZE(render_scales) - 1 && render_scales[cur] > ctx->render_scale + 1e-6)
+        cur++;
+    int next = cur;
+    double dwell = (now - ctx->scale_changed) / 1e9;
+    if (cost > 0.85 * ctx->step && dwell > 0.7) {
+        if (cur + 1 < MP_ARRAY_SIZE(render_scales) && render_scales[cur + 1] >= floor_scale - 1e-6)
+            next = cur + 1;
+    } else if (cur > 0 && dwell > 1.5) {
+        double r = render_scales[cur - 1] / render_scales[cur];
+        if (cost * r * r < 0.55 * ctx->step)
+            next = cur - 1;
+    }
+    if (next != cur) {
+        double r = render_scales[next] / render_scales[cur];
+        ctx->render_scale = render_scales[next];
+        ctx->scale_changed = now;
+        ctx->sync_ema *= r * r;
+        ctx->async_ema *= r * r;
+        MP_VERBOSE(sd, "subtitle render scale %.2f (cost %.1f ms, frame %.1f ms)\n",
+                   ctx->render_scale, cost * 1000, ctx->step * 1000);
+    }
+    mp_mutex_unlock(&ctx->mu);
 }
 
 static void enable_output(struct sd *sd, bool enable)
@@ -310,7 +390,7 @@ static void enable_output(struct sd *sd, bool enable)
         ctx->ass_renderer = NULL;
     } else {
         ctx->ass_renderer = ass_renderer_init(ctx->ass_library);
-        set_frame_threads(ctx->ass_renderer, sd);
+        set_frame_threads(ctx->ass_renderer, sd, true);
 
         mp_ass_configure_fonts(ctx->ass_renderer, sd->opts->sub_style,
                                sd->global, sd->log);
@@ -380,6 +460,7 @@ static int init(struct sd *sd)
     mp_mutex_init(&ctx->mu);
     mp_cond_init(&ctx->cv);
     ctx->step = 1.0 / 24;
+    ctx->render_scale = 1.0;
 
     // Note: accept "null" as alias for "ass", so EDL delay_open subtitle
     //       streams work.
@@ -856,9 +937,10 @@ static void worker_configure(struct sd *sd, struct sub_worker *w,
                              const struct async_cfg *cfg, ASS_Track *track)
 {
     if (!w->cfg_valid || w->cfg.gen != cfg->gen ||
-        !osd_res_equals(w->cfg.dim, cfg->dim))
+        !osd_res_equals(w->cfg.dim, cfg->dim) ||
+        w->cfg.render_scale != cfg->render_scale)
     {
-        struct mp_osd_res dim = cfg->dim;
+        struct mp_osd_res dim = scale_dim(cfg->dim, cfg->render_scale);
         configure_ass(sd, &dim, cfg->converted, track, w->renderer);
     }
     ass_set_pixel_aspect(w->renderer, cfg->scale);
@@ -875,7 +957,7 @@ static MP_THREAD_VOID worker_main(void *arg)
     mp_thread_set_name("sub/ass");
 
     w->renderer = ass_renderer_init(ctx->ass_library);
-    set_frame_threads(w->renderer, sd);
+    set_frame_threads(w->renderer, sd, false);
     mp_ass_configure_fonts(w->renderer, sd->opts->sub_style, sd->global, sd->log);
     int bitmaps = sd->opts->sub_bitmap_max_size;
     ass_set_cache_limits(w->renderer, sd->opts->sub_glyph_limit,
@@ -930,6 +1012,7 @@ static MP_THREAD_VOID worker_main(void *arg)
             struct sub_bitmaps res = {0};
             mp_sub_packer_pack_ass(w->packer, &imgs, 1, 2, !converted, cfg.format, &res);
             bm = sub_bitmaps_copy(&w->cache, &res);
+            upscale_parts(bm, cfg.render_scale);
         }
         double took = (mp_time_ns() - t0) / 1e9;
 
@@ -1046,6 +1129,7 @@ static struct sub_bitmaps *async_lookup(struct sd *sd, const struct async_cfg *c
     if (!ctx->cfg_valid || ctx->cfg.format != cfg->format ||
         !osd_res_equals(ctx->cfg.dim, cfg->dim) || ctx->cfg.scale != cfg->scale ||
         ctx->cfg.converted != cfg->converted ||
+        ctx->cfg.render_scale != cfg->render_scale ||
         ctx->cfg.storage_w != cfg->storage_w || ctx->cfg.storage_h != cfg->storage_h)
     {
         unsigned gen = ctx->cfg.gen + 1;
@@ -1110,6 +1194,7 @@ static struct sub_bitmaps *get_bitmaps(struct sd *sd, struct mp_osd_res dim,
     ASS_Track *track = no_ass ? ctx->shadow_track : ctx->ass_track;
     ASS_Renderer *renderer = ctx->ass_renderer;
     struct sub_bitmaps *res = &(struct sub_bitmaps){0};
+    double rs = 1.0;
 
     // Always update the osd_res
     struct mp_osd_res old_osd = ctx->osd;
@@ -1135,11 +1220,20 @@ static struct sub_bitmaps *get_bitmaps(struct sd *sd, struct mp_osd_res dim,
         if (isnormal(par))
             scale *= par;
     }
-    if (!ctx->ass_configured || !osd_res_equals(old_osd, ctx->osd)) {
+    if (sd->opts->ass_adaptive_scale && !no_ass)
+        adapt_render_scale(sd);
+    else
+        ctx->render_scale = 1.0;
+    rs = ctx->render_scale;
+    if (!ctx->ass_configured || !osd_res_equals(old_osd, ctx->osd) ||
+        ctx->applied_scale != rs)
+    {
+        struct mp_osd_res sdim = scale_dim(dim, rs);
         async_pause(sd);
-        configure_ass(sd, &dim, converted, track, renderer);
+        configure_ass(sd, &sdim, converted, track, renderer);
         async_resume(sd);
         ctx->ass_configured = true;
+        ctx->applied_scale = rs;
     }
     ass_set_pixel_aspect(renderer, scale);
     int storage_w = 0, storage_h = 0;
@@ -1160,9 +1254,12 @@ static struct sub_bitmaps *get_bitmaps(struct sd *sd, struct mp_osd_res dim,
         struct async_cfg cfg = {
             .dim = dim, .format = format, .scale = scale,
             .storage_w = storage_w, .storage_h = storage_h, .converted = converted,
+            .render_scale = rs,
         };
         bool hit;
         struct sub_bitmaps *r = async_lookup(sd, &cfg, pts, find_timestamp(sd, pts), &hit);
+        ctx->stat_hits += hit;
+        ctx->stat_misses += !hit;
         if (hit) {
             if (r && !converted)
                 mangle_colors(sd, r);
@@ -1188,9 +1285,20 @@ static struct sub_bitmaps *get_bitmaps(struct sd *sd, struct mp_osd_res dim,
 done:
     // mangle_colors() modifies the color field, so copy the thing _before_.
     res = sub_bitmaps_copy(&ctx->copy_cache, res);
+    upscale_parts(res, rs);
 
     if (!converted && res)
         mangle_colors(sd, res);
+
+    int64_t now = mp_time_ns();
+    if (now - ctx->stat_time > 2000000000LL) {
+        if (ctx->stat_time)
+            MP_VERBOSE(sd, "subtitle stats: %d hits, %d misses, sync %.1f ms, async %.1f ms, scale %.2f\n",
+                       ctx->stat_hits, ctx->stat_misses, ctx->sync_ema * 1000,
+                       ctx->async_ema * 1000, rs);
+        ctx->stat_hits = ctx->stat_misses = 0;
+        ctx->stat_time = now;
+    }
 
     return res;
 }

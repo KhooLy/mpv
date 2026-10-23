@@ -37,7 +37,7 @@ if meson.is_cross_build()
 else
     libass = subproject('libass').get_variable('libass_dep')
     ass_render_ahead = true
-    ass_threads = true
+    ass_threads = false
 endif
 
 # the dependency order of libass -> ffmpeg is necessary due to

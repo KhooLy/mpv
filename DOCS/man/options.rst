@@ -2806,15 +2806,28 @@ Subtitles
     always rendered on the calling thread. Has no effect with
     ``--sub-ass-prune-delay`` or ``--sub-ass=no``.
 
-``--sub-ass-frame-threads=<0-16>``
+``--sub-ass-frame-threads=<-1|0-16>``
     Number of threads libass uses to render the events of a single subtitle
     frame in parallel. Needs a libass built with threading support. Helps when
     one frame is expensive, for example karaoke with many animated lines. It
     shares the CPU with ``--sub-ass-render-threads``.
 
-    :0:     let libass pick from the number of cores.
-    :1:     render each frame on one thread (default).
+    :-1:    use up to 4 threads on the renderer that draws frames the
+            render-ahead threads did not deliver in time, and 1 elsewhere
+            (default).
+    :0:     let libass pick from the number of cores for every renderer.
+    :1:     render each frame on one thread.
     :2-16:  use this many threads per renderer.
+
+``--sub-ass-adaptive-scale=<yes|no>``
+    Render ASS subtitles at a lower resolution while rendering is too slow to
+    keep up with the video, and scale the result up. Text and effects get
+    softer, but timing stays smooth. The resolution goes back up when the
+    load drops. Default: no.
+
+``--sub-ass-min-render-scale=<0.35-1.0>``
+    Lowest resolution ``--sub-ass-adaptive-scale`` may fall back to, relative
+    to the display size. Steps are 0.75, 0.5 and 0.35. Default: 0.5.
 
 ``--sub-ass-prune-delay=<-1|seconds>``
     Set the delay for automatic pruning of events from memory in libass. When
