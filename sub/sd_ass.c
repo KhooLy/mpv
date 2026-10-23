@@ -1223,7 +1223,7 @@ static struct sub_bitmaps *get_bitmaps(struct sd *sd, struct mp_osd_res dim,
     if (sd->opts->ass_adaptive_scale && !no_ass)
         adapt_render_scale(sd);
     else
-        ctx->render_scale = 1.0;
+        ctx->render_scale = sd->opts->ass_render_scale;
     rs = ctx->render_scale;
     if (!ctx->ass_configured || !osd_res_equals(old_osd, ctx->osd) ||
         ctx->applied_scale != rs)

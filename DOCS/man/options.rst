@@ -2825,9 +2825,14 @@ Subtitles
     softer, but timing stays smooth. The resolution goes back up when the
     load drops. Default: no.
 
+``--sub-ass-render-scale=<0.25-1.0>``
+    Render ASS subtitles at this fraction of the display resolution and scale
+    the result up. Lower values are faster and softer. Ignored with
+    ``--sub-ass-adaptive-scale``. Default: 1.0.
+
 ``--sub-ass-min-render-scale=<0.35-1.0>``
     Lowest resolution ``--sub-ass-adaptive-scale`` may fall back to, relative
-    to the display size. Steps are 0.75, 0.5 and 0.35. Default: 0.5.
+    to the display size. Steps are 0.75, 0.5 and 0.35. Default: 0.75.
 
 ``--sub-ass-prune-delay=<-1|seconds>``
     Set the delay for automatic pruning of events from memory in libass. When
