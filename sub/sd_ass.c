@@ -49,6 +49,8 @@
 #define MAX_QUEUE 24
 #define MAX_WORKERS 4
 #define ASYNC_ENABLE_SEC 0.020
+#define LATE_AUTO_SYNC_SEC 0.060
+#define LATE_AUTO_SEC 0.25
 
 struct render_entry {
     double pts;
@@ -1159,9 +1161,15 @@ static struct sub_bitmaps *async_lookup(struct sd *sd, const struct async_cfg *c
     }
     if (best < 0) {
         double newest = 0;
+        double late = sd->opts->ass_late_frames;
+        if (late < 0)
+            late = ctx->sync_ema > LATE_AUTO_SYNC_SEC ? LATE_AUTO_SEC : 0;
+        late = MPMAX(late, 3 * ctx->step);
         for (int n = 0; n < ctx->num_queue; n++) {
             double lag = pts - ctx->queue[n].pts;
-            if (lag > 0 && lag <= 3 * ctx->step && (best < 0 || lag < newest)) {
+            if (lag > 0 && lag <= late &&
+            (best < 0 || lag < newest))
+        {
                 best = n;
                 newest = lag;
             }

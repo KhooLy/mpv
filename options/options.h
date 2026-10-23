@@ -134,6 +134,7 @@ struct mp_subtitle_opts {
     int ass_frame_threads;
     bool ass_adaptive_scale;
     double ass_render_scale;
+    double ass_late_frames;
     double ass_min_render_scale;
     bool ass_justify;
     bool sub_clear_on_seek;

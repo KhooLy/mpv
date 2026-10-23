@@ -2830,6 +2830,12 @@ Subtitles
     the result up. Lower values are faster and softer. Ignored with
     ``--sub-ass-adaptive-scale``. Default: 1.0.
 
+``--sub-ass-late-frames=<-1-2>``
+    When no rendered frame is ready in time, reuse a frame that is at most this
+    many seconds old instead of rendering synchronously and stalling video.
+    ``-1`` enables this (up to 0.25 s) only while rendering is slow, ``0``
+    disables it. Default: -1.
+
 ``--sub-ass-min-render-scale=<0.35-1.0>``
     Lowest resolution ``--sub-ass-adaptive-scale`` may fall back to, relative
     to the display size. Steps are 0.75, 0.5 and 0.35. Default: 0.75.
