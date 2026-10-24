@@ -133,7 +133,7 @@ struct sd_ass_priv {
 };
 
 struct seen_packet {
-    int64_t pos;
+    int64_t sig;
     double pts;
     int animated; // -1 is unknown
 };
@@ -581,14 +581,24 @@ static void filter_and_add(struct sd *sd, struct demux_packet *pkt)
     }
 }
 
+// 64-bit FNV-1a
+static inline uint64_t hash_data(const unsigned char *data, size_t len)
+{
+    uint64_t hash = 0xcbf29ce484222325; // offset basis
+    for (size_t n = 0; n < len; n++)
+        hash = (hash ^ data[n]) * 0x100000001b3; // FNV prime
+    return hash;
+}
+
 // Test if the packet with the given file position and pts was already consumed.
 // Return false if the packet is new (and add it to the internal list), and
-// return true if it was already seen.
-static uint32_t seen_hash(const struct demux_packet *packet)
+// return true if it was already seen. Packets without a file position are
+// identified by a hash of their contents instead.
+static uint32_t seen_hash(int64_t sig, double pts)
 {
     uint64_t pts_bits;
-    memcpy(&pts_bits, &packet->pts, sizeof(pts_bits));
-    uint64_t h = (uint64_t)packet->pos * 0x9E3779B97F4A7C15ull ^
+    memcpy(&pts_bits, &pts, sizeof(pts_bits));
+    uint64_t h = (uint64_t)sig * 0x9E3779B97F4A7C15ull ^
                  pts_bits * 0xC2B2AE3D27D4EB4Full;
     return h >> 32;
 }
@@ -599,8 +609,7 @@ static void seen_table_grow(struct sd_ass_priv *priv)
     int *table = talloc_zero_array(priv, int, size);
     for (int n = 0; n < priv->num_seen_packets; n++) {
         struct seen_packet *sp = &priv->seen_packets[n];
-        struct demux_packet key = {.pos = sp->pos, .pts = sp->pts};
-        uint32_t i = seen_hash(&key) & (size - 1);
+        uint32_t i = seen_hash(sp->sig, sp->pts) & (size - 1);
         while (table[i])
             i = (i + 1) & (size - 1);
         table[i] = n + 1;
@@ -610,19 +619,18 @@ static void seen_table_grow(struct sd_ass_priv *priv)
     priv->seen_table_size = size;
 }
 
-// Test if the packet with the given file position and pts was already consumed.
-// Return false if the packet is new (and add it to the internal list), and
-// return true if it was already seen.
 static bool check_packet_seen(struct sd *sd, struct demux_packet *packet)
 {
     struct sd_ass_priv *priv = sd->priv;
     if ((priv->num_seen_packets + 1) * 2 > priv->seen_table_size)
         seen_table_grow(priv);
+    int64_t sig = packet->pos >= 0 ? packet->pos
+                                   : hash_data(packet->buffer, packet->len);
     uint32_t mask = priv->seen_table_size - 1;
-    uint32_t i = seen_hash(packet) & mask;
+    uint32_t i = seen_hash(sig, packet->pts) & mask;
     while (priv->seen_table[i]) {
         struct seen_packet *sp = &priv->seen_packets[priv->seen_table[i] - 1];
-        if (sp->pos == packet->pos && sp->pts == packet->pts) {
+        if (sp->sig == sig && sp->pts == packet->pts) {
             packet->seen_pos = priv->seen_table[i] - 1;
             return true;
         }
@@ -630,7 +638,7 @@ static bool check_packet_seen(struct sd *sd, struct demux_packet *packet)
     }
     packet->seen_pos = priv->num_seen_packets;
     MP_TARRAY_APPEND(priv, priv->seen_packets, priv->num_seen_packets,
-                     (struct seen_packet){packet->pos, packet->pts, -1});
+                     (struct seen_packet){sig, packet->pts, -1});
     priv->seen_table[i] = priv->num_seen_packets;
     return false;
 }
@@ -645,8 +653,7 @@ static void decode_inner(struct sd *sd, struct demux_packet *packet)
     packet->sub_duration = packet->duration;
 
     if (ctx->converter) {
-        if (!sd->opts->sub_clear_on_seek && packet->pos >= 0 &&
-            check_packet_seen(sd, packet))
+        if (!sd->opts->sub_clear_on_seek && check_packet_seen(sd, packet))
             return;
 
         double sub_pts = 0;
