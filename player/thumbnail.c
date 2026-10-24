@@ -754,7 +754,7 @@ static uint8_t *grab(struct thumbnailer *t, struct demuxer *d, AVFormatContext *
         demux_seek(d, pts, 0);
     AVRational tb = mp_get_codec_timebase(sh->codec);
     for (int n = 0; !sent && d && n < 500 && !mp_cancel_test(t->cancel); n++) {
-        struct demux_packet *dp = demux_read_any_packet(d);
+        struct demux_packet *dp = demux_read_any_packet(d, NULL);
         if (!dp)
             break;
         if (dp->stream != sh->index || (!sent && !dp->keyframe)) {

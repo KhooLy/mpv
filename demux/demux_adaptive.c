@@ -721,7 +721,7 @@ static void read_lane(struct demuxer *demuxer, struct lane *l)
     }
 
     int64_t t0 = mp_time_ns();
-    struct demux_packet *pkt = demux_read_any_packet(l->d);
+    struct demux_packet *pkt = demux_read_any_packet(l->d, NULL);
     account(l, l->d, t0);
     if (!pkt) {
         finish_segment(demuxer, l);
