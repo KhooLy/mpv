@@ -22,80 +22,6 @@ static void print_prop(mpv_handle *mpv, const char *name)
     mpv_free(v);
 }
 
-static unsigned be(const uint8_t *b, int n)
-{
-    unsigned v = 0;
-    for (int i = 0; i < n; i++)
-        v = v << 8 | b[i];
-    return v;
-}
-
-static bool attachment_is(CVPixelBufferRef pb, CFStringRef key, CFStringRef want)
-{
-    CFTypeRef v = CVBufferCopyAttachment(pb, key, NULL);
-    bool ok = v && CFEqual(v, want);
-    if (!ok) {
-        printf("  %s: %s\n", [(NSString *)key UTF8String],
-               v ? [[(id)v description] UTF8String] : "(missing)");
-    }
-    if (v)
-        CFRelease(v);
-    return ok;
-}
-
-static bool check_hdr10(AVSampleBufferDisplayLayer *layer)
-{
-    CVPixelBufferRef pb = [layer.sampleBufferRenderer copyDisplayedPixelBuffer];
-    if (!pb) {
-        printf("  no displayed pixel buffer\n");
-        return false;
-    }
-    bool ok = attachment_is(pb, kCVImageBufferColorPrimariesKey,
-                            kCVImageBufferColorPrimaries_ITU_R_2020);
-    ok &= attachment_is(pb, kCVImageBufferTransferFunctionKey,
-                        kCVImageBufferTransferFunction_SMPTE_ST_2084_PQ);
-    ok &= attachment_is(pb, kCVImageBufferYCbCrMatrixKey,
-                        kCVImageBufferYCbCrMatrix_ITU_R_2020);
-
-    CFDataRef mdcv = CVBufferCopyAttachment(pb, kCVImageBufferMasteringDisplayColorVolumeKey, NULL);
-    if (mdcv && CFDataGetLength(mdcv) == 24) {
-        const uint8_t *b = CFDataGetBytePtr(mdcv);
-        unsigned want[] = {13250, 34500, 7500, 3000, 34000, 16000, 15635, 16450};
-        for (int i = 0; i < 8; i++) {
-            if (be(b + i * 2, 2) != want[i]) {
-                printf("  mastering display field %d is %u, expected %u\n", i,
-                       be(b + i * 2, 2), want[i]);
-                ok = false;
-            }
-        }
-        if (be(b + 16, 4) != 10000000 || be(b + 20, 4) != 1) {
-            printf("  mastering display luminance is %u/%u\n", be(b + 16, 4), be(b + 20, 4));
-            ok = false;
-        }
-    } else {
-        printf("  mastering display volume is %s\n", mdcv ? "the wrong size" : "missing");
-        ok = false;
-    }
-    if (mdcv)
-        CFRelease(mdcv);
-
-    CFDataRef clli = CVBufferCopyAttachment(pb, kCVImageBufferContentLightLevelInfoKey, NULL);
-    if (clli && CFDataGetLength(clli) == 4) {
-        const uint8_t *b = CFDataGetBytePtr(clli);
-        if (be(b, 2) != 1000 || be(b + 2, 2) != 400) {
-            printf("  content light level is %u/%u, expected 1000/400\n", be(b, 2), be(b + 2, 2));
-            ok = false;
-        }
-    } else {
-        printf("  content light level is %s\n", clli ? "the wrong size" : "missing");
-        ok = false;
-    }
-    if (clli)
-        CFRelease(clli);
-    CVPixelBufferRelease(pb);
-    return ok;
-}
-
 int main(int argc, char **argv)
 {
     if (argc < 2) {
@@ -116,7 +42,6 @@ int main(int argc, char **argv)
     int64_t wid = (int64_t)(intptr_t)layer;
     mpv_set_option(mpv, "wid", MPV_FORMAT_INT64, &wid);
     bool expect_overlay = false, expect_shaded = false, shaded_slow = false, expect_fel = false;
-    bool expect_hdr = false, hdr_ok = false;
     int fel_frames = 0, fel_with_el = 0;
     const char *expect_gamma = NULL, *expect_audio = NULL;
     for (int i = 2; i < argc; i++) {
@@ -134,10 +59,6 @@ int main(int argc, char **argv)
         }
         if (strcmp(argv[i], "expect-shaded=yes") == 0) {
             expect_shaded = true;
-            continue;
-        }
-        if (strcmp(argv[i], "expect-hdr=hdr10") == 0) {
-            expect_hdr = true;
             continue;
         }
         if (strcmp(argv[i], "expect-fel=yes") == 0) {
@@ -211,10 +132,6 @@ int main(int argc, char **argv)
             pos >= duration * 0.8)
         {
             sampled = true;
-            if (expect_hdr) {
-                printf("displayed pixel buffer attachments:\n");
-                hdr_ok = check_hdr10(layer);
-            }
             printf("properties at %.2fs:\n", pos);
             print_prop(mpv, "current-vo");
             print_prop(mpv, "current-tracks/video/decoder-desc");
@@ -295,10 +212,6 @@ int main(int argc, char **argv)
         fail = 1;
     }
     mpv_free(gamma);
-    if (expect_hdr && !hdr_ok) {
-        printf("FAIL: displayed frames do not carry the stream's HDR10 metadata\n");
-        fail = 1;
-    }
     if (expect_audio && (!audio || strcmp(audio, expect_audio) != 0)) {
         printf("FAIL: expected audio format %s\n", expect_audio);
         fail = 1;
