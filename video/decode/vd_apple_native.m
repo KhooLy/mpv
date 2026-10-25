@@ -72,15 +72,6 @@ static void put_be32(uint8_t *d, double v)
     d[3] = n;
 }
 
-static NSString *hex(NSData *d)
-{
-    NSMutableString *s = [NSMutableString string];
-    const uint8_t *b = d.bytes;
-    for (NSUInteger i = 0; i < d.length; i++)
-        [s appendFormat:@"%02x", b[i]];
-    return s.length ? s : @"-";
-}
-
 static CMTime to_cmtime(double s)
 {
     return CMTimeMake(llrint(s * 1e6), 1000000);
@@ -345,11 +336,6 @@ static bool init_format(struct priv *p)
         MP_ERR(p, "CMVideoFormatDescriptionCreate failed: %d\n", (int)err);
         return false;
     }
-    MP_VERBOSE(p, "format: primaries=%s transfer=%s matrix=%s mdcv=%s clli=%s\n",
-               [(NSString *)ext[(id)kCMFormatDescriptionExtension_ColorPrimaries] UTF8String] ?: "-",
-               [(NSString *)ext[(id)kCMFormatDescriptionExtension_TransferFunction] UTF8String] ?: "-",
-               [(NSString *)ext[(id)kCMFormatDescriptionExtension_YCbCrMatrix] UTF8String] ?: "-",
-               hex(mdcv).UTF8String, hex(clli).UTF8String);
 
     p->params = (struct mp_image_params){
         .imgfmt = IMGFMT_APPLE_NATIVE,

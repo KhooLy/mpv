@@ -30,40 +30,41 @@ static unsigned be(const uint8_t *b, int n)
     return v;
 }
 
-static bool check_hdr(const char *line, bool hlg)
+static bool attachment_is(CVPixelBufferRef pb, CFStringRef key, CFStringRef want)
 {
-    char prim[64], trc[64], matrix[64], mdcv[64], clli[16];
-    if (!line || sscanf(line, "format: primaries=%63s transfer=%63s matrix=%63s mdcv=%63s clli=%15s",
-                        prim, trc, matrix, mdcv, clli) != 5)
-    {
-        printf("  no format description was logged\n");
+    CFTypeRef v = CVBufferCopyAttachment(pb, key, NULL);
+    bool ok = v && CFEqual(v, want);
+    if (!ok) {
+        printf("  %s: %s\n", [(NSString *)key UTF8String],
+               v ? [[(id)v description] UTF8String] : "(missing)");
+    }
+    if (v)
+        CFRelease(v);
+    return ok;
+}
+
+static bool check_hdr(AVSampleBufferDisplayLayer *layer, bool hlg)
+{
+    CVPixelBufferRef pb = [layer.sampleBufferRenderer copyDisplayedPixelBuffer];
+    if (!pb) {
+        printf("  no displayed pixel buffer\n");
         return false;
     }
-    bool ok = true;
-    const char *want_trc = hlg ? [(NSString *)kCMFormatDescriptionTransferFunction_ITU_R_2100_HLG UTF8String]
-                               : [(NSString *)kCMFormatDescriptionTransferFunction_SMPTE_ST_2084_PQ UTF8String];
-    if (strcmp(prim, [(NSString *)kCMFormatDescriptionColorPrimaries_ITU_R_2020 UTF8String])) {
-        printf("  primaries %s\n", prim);
-        ok = false;
-    }
-    if (strcmp(trc, want_trc)) {
-        printf("  transfer %s, expected %s\n", trc, want_trc);
-        ok = false;
-    }
-    if (strcmp(matrix, [(NSString *)kCMFormatDescriptionYCbCrMatrix_ITU_R_2020 UTF8String])) {
-        printf("  matrix %s\n", matrix);
-        ok = false;
-    }
-    if (hlg)
+    bool ok = attachment_is(pb, kCVImageBufferColorPrimariesKey,
+                            kCVImageBufferColorPrimaries_ITU_R_2020);
+    ok &= attachment_is(pb, kCVImageBufferTransferFunctionKey, hlg ?
+                        kCVImageBufferTransferFunction_ITU_R_2100_HLG :
+                        kCVImageBufferTransferFunction_SMPTE_ST_2084_PQ);
+    ok &= attachment_is(pb, kCVImageBufferYCbCrMatrixKey,
+                        kCVImageBufferYCbCrMatrix_ITU_R_2020);
+    if (hlg) {
+        CVPixelBufferRelease(pb);
         return ok;
+    }
 
-    uint8_t b[24];
-    if (strlen(mdcv) != 48) {
-        printf("  mastering display is %s\n", mdcv);
-        ok = false;
-    } else {
-        for (int i = 0; i < 24; i++)
-            sscanf(mdcv + i * 2, "%2hhx", &b[i]);
+    CFDataRef mdcv = CVBufferCopyAttachment(pb, kCVImageBufferMasteringDisplayColorVolumeKey, NULL);
+    if (mdcv && CFDataGetLength(mdcv) == 24) {
+        const uint8_t *b = CFDataGetBytePtr(mdcv);
         unsigned want[] = {13250, 34500, 7500, 3000, 34000, 16000, 15635, 16450};
         for (int i = 0; i < 8; i++) {
             if (be(b + i * 2, 2) != want[i]) {
@@ -76,11 +77,27 @@ static bool check_hdr(const char *line, bool hlg)
             printf("  mastering display luminance is %u/%u\n", be(b + 16, 4), be(b + 20, 4));
             ok = false;
         }
-    }
-    if (strlen(clli) != 8 || strcmp(clli, "03e80190")) {
-        printf("  content light level is %s, expected 03e80190\n", clli);
+    } else {
+        printf("  mastering display volume is %s\n", mdcv ? "the wrong size" : "missing");
         ok = false;
     }
+    if (mdcv)
+        CFRelease(mdcv);
+
+    CFDataRef clli = CVBufferCopyAttachment(pb, kCVImageBufferContentLightLevelInfoKey, NULL);
+    if (clli && CFDataGetLength(clli) == 4) {
+        const uint8_t *b = CFDataGetBytePtr(clli);
+        if (be(b, 2) != 1000 || be(b + 2, 2) != 400) {
+            printf("  content light level is %u/%u, expected 1000/400\n", be(b, 2), be(b + 2, 2));
+            ok = false;
+        }
+    } else {
+        printf("  content light level is %s\n", clli ? "the wrong size" : "missing");
+        ok = false;
+    }
+    if (clli)
+        CFRelease(clli);
+    CVPixelBufferRelease(pb);
     return ok;
 }
 
@@ -104,8 +121,7 @@ int main(int argc, char **argv)
     int64_t wid = (int64_t)(intptr_t)layer;
     mpv_set_option(mpv, "wid", MPV_FORMAT_INT64, &wid);
     bool expect_overlay = false, expect_shaded = false, shaded_slow = false, expect_fel = false;
-    bool expect_hdr = false, expect_hlg = false;
-    char format_line[256] = "";
+    bool expect_hdr = false, expect_hlg = false, hdr_ok = false;
     int fel_frames = 0, fel_with_el = 0;
     const char *expect_gamma = NULL, *expect_audio = NULL;
     for (int i = 2; i < argc; i++) {
@@ -178,9 +194,6 @@ int main(int argc, char **argv)
                                &chain_skipped, &chain_checked, &chain_in, &chain_out,
                                &chain_std, &chain_passes) >= 3)
                 chain_reported = true;
-            const char *fmt = strstr(lm->text, "format: primaries=");
-            if (fmt)
-                snprintf(format_line, sizeof(format_line), "%s", fmt);
             const char *fel = strstr(lm->text, "fel: frames=");
             if (fel)
                 sscanf(fel, "fel: frames=%d with_el=%d", &fel_frames, &fel_with_el);
@@ -207,6 +220,10 @@ int main(int argc, char **argv)
             pos >= duration * 0.8)
         {
             sampled = true;
+            if (expect_hdr) {
+                printf("displayed pixel buffer attachments:\n");
+                hdr_ok = check_hdr(layer, expect_hlg);
+            }
             printf("properties at %.2fs:\n", pos);
             print_prop(mpv, "current-vo");
             print_prop(mpv, "current-tracks/video/decoder-desc");
@@ -287,8 +304,8 @@ int main(int argc, char **argv)
         fail = 1;
     }
     mpv_free(gamma);
-    if (expect_hdr && !check_hdr(format_line, expect_hlg)) {
-        printf("FAIL: the decoder's format description lacks the stream's HDR metadata\n");
+    if (expect_hdr && !hdr_ok) {
+        printf("FAIL: displayed frames do not carry the stream's HDR metadata\n");
         fail = 1;
     }
     if (expect_audio && (!audio || strcmp(audio, expect_audio) != 0)) {
