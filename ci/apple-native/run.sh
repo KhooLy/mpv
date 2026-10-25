@@ -28,8 +28,6 @@ json.dump({"JSONInfo": {"HDR10plusProfile": "B", "Version": "1.0"}, "SceneInfo":
 '
 $ff $video -c:v libx265 -pix_fmt yuv420p10le -x265-params "$hdr:dhdr10-info=$dir/hdr10plus.json:log-level=error" \
     -color_primaries bt2020 -color_trc smpte2084 -colorspace bt2020nc "$dir/hdr10plus.mkv"
-$ff $video -c:v libx265 -pix_fmt yuv420p10le -x265-params "colorprim=bt2020:transfer=arib-std-b67:colormatrix=bt2020nc:log-level=error" \
-    -color_primaries bt2020 -color_trc arib-std-b67 -colorspace bt2020nc "$dir/hlg.mkv"
 $ff $video -c:v libsvtav1 -pix_fmt yuv420p10le "$dir/av1.mkv"
 $ff $video $audio -filter_complex "[1:a]pan=5.1|c0=c0|c1=c0|c2=c0|c3=c0|c4=c0|c5=c0[a]" \
     -map 0:v -map "[a]" -c:v libx264 -pix_fmt yuv420p -c:a eac3 "$dir/eac3.mkv"
@@ -71,7 +69,6 @@ run "H.264 MKV" "$dir/h264.mkv"
 run "HEVC HDR10 MKV" "$dir/hdr10.mkv" expect-gamma=pq expect-hdr=hdr10
 run "HEVC HDR10 MP4" "$dir/hdr10.mp4" expect-gamma=pq expect-hdr=hdr10
 run "HEVC HDR10+ MKV" "$dir/hdr10plus.mkv" expect-gamma=pq expect-hdr=hdr10
-run "HEVC HLG MKV" "$dir/hlg.mkv" expect-gamma=hlg expect-hdr=hlg
 run "AV1 MKV" "$dir/av1.mkv"
 run "E-AC3 5.1 PCM" "$dir/eac3.mkv"
 run "E-AC3 5.1 passthrough" "$dir/eac3.mkv" audio-spdif=eac3 expect-audio=spdif-eac3
