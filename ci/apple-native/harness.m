@@ -43,7 +43,7 @@ static bool attachment_is(CVPixelBufferRef pb, CFStringRef key, CFStringRef want
     return ok;
 }
 
-static bool check_hdr10(AVSampleBufferDisplayLayer *layer)
+static bool check_hdr(AVSampleBufferDisplayLayer *layer, bool hlg)
 {
     CVPixelBufferRef pb = [layer.sampleBufferRenderer copyDisplayedPixelBuffer];
     if (!pb) {
@@ -52,10 +52,15 @@ static bool check_hdr10(AVSampleBufferDisplayLayer *layer)
     }
     bool ok = attachment_is(pb, kCVImageBufferColorPrimariesKey,
                             kCVImageBufferColorPrimaries_ITU_R_2020);
-    ok &= attachment_is(pb, kCVImageBufferTransferFunctionKey,
+    ok &= attachment_is(pb, kCVImageBufferTransferFunctionKey, hlg ?
+                        kCVImageBufferTransferFunction_ITU_R_2100_HLG :
                         kCVImageBufferTransferFunction_SMPTE_ST_2084_PQ);
     ok &= attachment_is(pb, kCVImageBufferYCbCrMatrixKey,
                         kCVImageBufferYCbCrMatrix_ITU_R_2020);
+    if (hlg) {
+        CVPixelBufferRelease(pb);
+        return ok;
+    }
 
     CFDataRef mdcv = CVBufferCopyAttachment(pb, kCVImageBufferMasteringDisplayColorVolumeKey, NULL);
     if (mdcv && CFDataGetLength(mdcv) == 24) {
@@ -116,7 +121,7 @@ int main(int argc, char **argv)
     int64_t wid = (int64_t)(intptr_t)layer;
     mpv_set_option(mpv, "wid", MPV_FORMAT_INT64, &wid);
     bool expect_overlay = false, expect_shaded = false, shaded_slow = false, expect_fel = false;
-    bool expect_hdr = false, hdr_ok = false;
+    bool expect_hdr = false, expect_hlg = false, hdr_ok = false;
     int fel_frames = 0, fel_with_el = 0;
     const char *expect_gamma = NULL, *expect_audio = NULL;
     for (int i = 2; i < argc; i++) {
@@ -134,6 +139,10 @@ int main(int argc, char **argv)
         }
         if (strcmp(argv[i], "expect-shaded=yes") == 0) {
             expect_shaded = true;
+            continue;
+        }
+        if (strcmp(argv[i], "expect-hdr=hlg") == 0) {
+            expect_hdr = expect_hlg = true;
             continue;
         }
         if (strcmp(argv[i], "expect-hdr=hdr10") == 0) {
@@ -213,7 +222,7 @@ int main(int argc, char **argv)
             sampled = true;
             if (expect_hdr) {
                 printf("displayed pixel buffer attachments:\n");
-                hdr_ok = check_hdr10(layer);
+                hdr_ok = check_hdr(layer, expect_hlg);
             }
             printf("properties at %.2fs:\n", pos);
             print_prop(mpv, "current-vo");
@@ -296,7 +305,7 @@ int main(int argc, char **argv)
     }
     mpv_free(gamma);
     if (expect_hdr && !hdr_ok) {
-        printf("FAIL: displayed frames do not carry the stream's HDR10 metadata\n");
+        printf("FAIL: displayed frames do not carry the stream's HDR metadata\n");
         fail = 1;
     }
     if (expect_audio && (!audio || strcmp(audio, expect_audio) != 0)) {
