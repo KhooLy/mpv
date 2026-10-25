@@ -130,6 +130,9 @@ struct sd_ass_priv {
     int num_queue;
     int last_kind;
     uint64_t last_val;
+    struct sub_bitmaps *hold;
+    bool hold_valid;
+    double hold_pts;
 };
 
 struct seen_packet {
@@ -940,6 +943,18 @@ static void queue_clear(struct sd_ass_priv *ctx)
 {
     while (ctx->num_queue)
         queue_drop(ctx, ctx->num_queue - 1);
+    talloc_free(ctx->hold);
+    ctx->hold = NULL;
+    ctx->hold_valid = false;
+}
+
+static double late_window(struct sd *sd)
+{
+    struct sd_ass_priv *ctx = sd->priv;
+    double late = sd->opts->ass_late_frames;
+    if (late < 0)
+        late = ctx->sync_ema > LATE_AUTO_SYNC_SEC ? LATE_AUTO_SEC : 0;
+    return late;
 }
 
 static void worker_configure(struct sd *sd, struct sub_worker *w,
@@ -1168,10 +1183,7 @@ static struct sub_bitmaps *async_lookup(struct sd *sd, const struct async_cfg *c
     }
     if (best < 0) {
         double newest = 0;
-        double late = sd->opts->ass_late_frames;
-        if (late < 0)
-            late = ctx->sync_ema > LATE_AUTO_SYNC_SEC ? LATE_AUTO_SEC : 0;
-        late = MPMAX(late, 3 * ctx->step);
+        double late = MPMAX(late_window(sd), 3 * ctx->step);
         for (int n = 0; n < ctx->num_queue; n++) {
             double lag = pts - ctx->queue[n].pts;
             if (lag > 0 && lag <= late &&
@@ -1191,6 +1203,15 @@ static struct sub_bitmaps *async_lookup(struct sd *sd, const struct async_cfg *c
         ctx->last_kind = 1;
         ctx->last_val = e->serial;
         *hit = true;
+    } else if (best < 0 && ctx->hold_valid && ctx->busy) {
+        double age = pts - ctx->hold_pts;
+        if (age >= 0 && age <= late_window(sd)) {
+            res = sub_bitmaps_copy(&ctx->copy_cache, ctx->hold);
+            if (res)
+                res->change_id = ctx->last_kind != 2 && ctx->last_kind != 3;
+            ctx->last_kind = 3;
+            *hit = true;
+        }
     }
     mp_cond_broadcast(&ctx->cv);
     mp_mutex_unlock(&ctx->mu);
@@ -1210,6 +1231,7 @@ static struct sub_bitmaps *get_bitmaps(struct sd *sd, struct mp_osd_res dim,
     ASS_Renderer *renderer = ctx->ass_renderer;
     struct sub_bitmaps *res = &(struct sub_bitmaps){0};
     double rs = 1.0;
+    bool synced = false;
 
     // Always update the osd_res
     struct mp_osd_res old_osd = ctx->osd;
@@ -1296,11 +1318,20 @@ static struct sub_bitmaps *get_bitmaps(struct sd *sd, struct mp_osd_res dim,
     if (ctx->last_kind != 2)
         res->change_id = 1;
     ctx->last_kind = 2;
+    synced = true;
 
 done:
     // mangle_colors() modifies the color field, so copy the thing _before_.
     res = sub_bitmaps_copy(&ctx->copy_cache, res);
     upscale_parts(res, rs);
+
+    if (synced && ctx->num_workers) {
+        talloc_free(ctx->hold);
+        ctx->hold = sub_bitmaps_copy(NULL, res);
+        talloc_steal(ctx, ctx->hold);
+        ctx->hold_valid = true;
+        ctx->hold_pts = pts;
+    }
 
     if (!converted && res)
         mangle_colors(sd, res);
