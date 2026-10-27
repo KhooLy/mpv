@@ -47,16 +47,22 @@ Android and Apple builds without installing any files. They are exposed as
 profiles:
 
 ```sh
-mpv --profile=enhance-anime-light file.mkv
-mpv --profile=enhance-anime-hq file.mkv
-mpv --profile=enhance-anime-artcnn file.mkv
-mpv --profile=enhance-anime-artcnn-light file.mkv
+mpv --profile=enhance-anime-m-a file.mkv
 ```
 
-`light` and `hq` are Anime4K Mode A (fast and HQ variants). The ArtCNN
-profiles are the C4F32 and C4F16 DS luma doublers. Individual shaders can
-also be added with `--glsl-shaders-append=builtin://<file name>`. Use the
-`-append` form, since `--glsl-shaders` splits its value on `:`.
+The name is `enhance-anime-<tier>-<mode>`. Tiers `s`, `m` and `l` pick the
+network sizes and the Thin variant; modes `a`, `b` and `c` are Anime4K's
+Restore, Restore Soft and Denoise chains. The upscale stages only run when
+the output is larger than the video, so at native size only the restore,
+clamp and thin passes apply. `enhance-anime-light` and `enhance-anime-hq`
+are aliases for `m-a` and `l-a`.
+
+`enhance-anime-artcnn` and `enhance-anime-artcnn-light` use the ArtCNN C4F32
+and C4F16 DS luma doublers instead.
+
+Individual shaders can be added with
+`--glsl-shaders-append=builtin://<file name>`. Use the `-append` form, since
+`--glsl-shaders` splits its value on `:`.
 
 # gpu-next render backend for libmpv
 
