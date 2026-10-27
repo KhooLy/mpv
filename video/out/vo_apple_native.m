@@ -40,7 +40,9 @@
 #include "apple_fel.h"
 #include "apple_native.h"
 #include "apple_shader_chain.h"
+#include "options/m_config.h"
 #include "options/m_option.h"
+#include "gpu/video.h"
 #include "vo.h"
 
 #define QUEUE_AHEAD_NS MP_TIME_MS_TO_NS(100)
@@ -559,8 +561,14 @@ static int preinit(struct vo *vo)
     };
 
     char **shaders = p->opts.shaders;
+    struct gl_video_opts *gl_opts = NULL;
+    if (!shaders || !shaders[0]) {
+        gl_opts = mp_get_config_group(NULL, vo->global, &gl_video_conf);
+        shaders = gl_opts->user_shaders;
+    }
     if (shaders && shaders[0] && p->vt.av_device_ref)
         p->chain = apple_shader_chain_create(vo->global, vo->log, shaders);
+    talloc_free(gl_opts);
 
     if (p->vt.av_device_ref)
         p->fel = apple_fel_create(vo->log, p->opts.dv_output);
