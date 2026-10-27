@@ -2,6 +2,8 @@ shader_files = [
     'anime4k/Anime4K_AutoDownscalePre_x2.glsl',
     'anime4k/Anime4K_AutoDownscalePre_x4.glsl',
     'anime4k/Anime4K_Clamp_Highlights.glsl',
+    'anime4k/Anime4K_Deblur_DoG.glsl',
+    'anime4k/Anime4K_Deblur_Original.glsl',
     'anime4k/Anime4K_Restore_CNN_M.glsl',
     'anime4k/Anime4K_Restore_CNN_S.glsl',
     'anime4k/Anime4K_Restore_CNN_Soft_M.glsl',

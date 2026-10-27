@@ -65,6 +65,13 @@ only the restore, clamp and thin passes apply. `enhance-anime` is an alias for `
 restore chain, and `enhance-anime-light` and `enhance-anime-hq` are aliases
 for `m-a` and `l-a`.
 
+`enhance-deblur` (DoG) and `enhance-deblur-original` add Anime4K's deblur
+pass on top of any of the profiles above:
+
+```sh
+mpv --profile=enhance-anime --profile=enhance-deblur file.mkv
+```
+
 `enhance-anime-artcnn` and `enhance-anime-artcnn-light` use the ArtCNN C4F32
 and C4F16 DS luma doublers instead.
 
