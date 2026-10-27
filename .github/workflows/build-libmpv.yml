@@ -89,16 +89,17 @@ jobs:
 
       - name: Package
         run: |
+          LIBMPV="$(basename "$(ls build/libmpv.so.2.*.* | head -n 1)")"
           mkdir -p AppDir/usr/lib
-          cp -L build/libmpv.so.2.5.0 AppDir/usr/lib/
+          cp -L "build/$LIBMPV" AppDir/usr/lib/
 
           ./linuxdeploy.AppImage --appimage-extract-and-run \
             --appdir=AppDir \
-            --library=AppDir/usr/lib/libmpv.so.2.5.0
+            --library="AppDir/usr/lib/$LIBMPV"
 
           mkdir -p out
           cp -aL AppDir/usr/lib/. out/
-          ln -sf libmpv.so.2.5.0 out/libmpv.so.2
+          ln -sf "$LIBMPV" out/libmpv.so.2
           ln -sf libmpv.so.2 out/libmpv.so
 
           for f in out/*.so*; do
