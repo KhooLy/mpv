@@ -83,6 +83,10 @@ combines with any of the profiles above:
 mpv --profile=enhance-anime-m-a --profile=smooth-motion file.mkv
 ```
 
+`motion-resample` enables display-resample without interpolation, and
+`motion-off` restores audio sync, so a player can switch between the three at
+runtime with `apply-profile`.
+
 Individual shaders can be added with
 `--glsl-shaders-append=builtin://<file name>`. Use the `-append` form, since
 `--glsl-shaders` splits its value on `:`.
