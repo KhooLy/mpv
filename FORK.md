@@ -61,8 +61,9 @@ Anime4K's recipes:
 
 Every chain starts with Clamp Highlights and ends with Thin. The upscale
 stages only run when the output is larger than the video, so at native size
-only the restore, clamp and thin passes apply. `enhance-anime-light` and
-`enhance-anime-hq` are aliases for `m-a` and `l-a`.
+only the restore, clamp and thin passes apply. `enhance-anime` is an alias for `l-aa`, the strongest
+restore chain, and `enhance-anime-light` and `enhance-anime-hq` are aliases
+for `m-a` and `l-a`.
 
 `enhance-anime-artcnn` and `enhance-anime-artcnn-light` use the ArtCNN C4F32
 and C4F16 DS luma doublers instead.
