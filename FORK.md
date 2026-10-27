@@ -50,12 +50,19 @@ profiles:
 mpv --profile=enhance-anime-m-a file.mkv
 ```
 
-The name is `enhance-anime-<tier>-<mode>`. Tiers `s`, `m` and `l` pick the
-network sizes and the Thin variant; modes `a`, `b` and `c` are Anime4K's
-Restore, Restore Soft and Denoise chains. The upscale stages only run when
-the output is larger than the video, so at native size only the restore,
-clamp and thin passes apply. `enhance-anime-light` and `enhance-anime-hq`
-are aliases for `m-a` and `l-a`.
+The name is `enhance-anime-<tier>-<mode>`, the same set Fluxa offers. Tiers
+`s`, `m` and `l` pick the network sizes and the Thin variant. Modes follow
+Anime4K's recipes:
+
+- `a`: Restore then upscale, the general-purpose chain.
+- `b`: Restore Soft then upscale, gentler on lines.
+- `c`: Denoise then upscale, for noisy sources.
+- `aa`, `bb`, `ca`: the same chains with a second restore pass.
+
+Every chain starts with Clamp Highlights and ends with Thin. The upscale
+stages only run when the output is larger than the video, so at native size
+only the restore, clamp and thin passes apply. `enhance-anime-light` and
+`enhance-anime-hq` are aliases for `m-a` and `l-a`.
 
 `enhance-anime-artcnn` and `enhance-anime-artcnn-light` use the ArtCNN C4F32
 and C4F16 DS luma doublers instead.
