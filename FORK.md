@@ -39,6 +39,25 @@ Static libraries and `mpv.pc` end up in `ios-build/<sdk>/prefix`.
 `.github/workflows/apple-native.yml` builds these and runs the macOS
 playback tests.
 
+## Built-in enhancement shaders
+
+Anime4K and ArtCNN (both MIT, see `third_party/shaders`) are compiled into
+the binary and served through a `builtin://` stream, so they work in libmpv,
+Android and Apple builds without installing any files. They are exposed as
+profiles:
+
+```sh
+mpv --profile=enhance-anime-light file.mkv
+mpv --profile=enhance-anime-hq file.mkv
+mpv --profile=enhance-anime-artcnn file.mkv
+mpv --profile=enhance-anime-artcnn-light file.mkv
+```
+
+`light` and `hq` are Anime4K Mode A (fast and HQ variants). The ArtCNN
+profiles are the C4F32 and C4F16 DS luma doublers. Individual shaders can
+also be added with `--glsl-shaders-append=builtin://<file name>`. Use the
+`-append` form, since `--glsl-shaders` splits its value on `:`.
+
 # gpu-next render backend for libmpv
 
 ## Why

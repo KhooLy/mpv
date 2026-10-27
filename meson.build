@@ -206,6 +206,7 @@ sources = files(
     'stream/stream.c',
     'stream/stream_aes_ctr.c',
     'stream/stream_avdevice.c',
+    'stream/stream_builtin.c',
     'stream/stream_cb.c',
     'stream/stream_concat.c',
     'stream/stream_edl.c',
@@ -642,6 +643,7 @@ sources += [ebml_defs, ebml_types]
 
 subdir('common')
 subdir('etc')
+subdir('third_party/shaders')
 subdir('player/javascript')
 subdir('player/lua')
 subdir('sub')

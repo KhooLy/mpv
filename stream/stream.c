@@ -47,6 +47,7 @@ extern const stream_info_t stream_info_cdda;
 extern const stream_info_t stream_info_dvb;
 extern const stream_info_t stream_info_null;
 extern const stream_info_t stream_info_memory;
+extern const stream_info_t stream_info_builtin;
 extern const stream_info_t stream_info_mf;
 extern const stream_info_t stream_info_ffmpeg;
 extern const stream_info_t stream_info_ffmpeg_unsafe;
@@ -92,6 +93,7 @@ static const stream_info_t *const stream_list[] = {
     &stream_info_libarchive,
 #endif
     &stream_info_memory,
+    &stream_info_builtin,
     &stream_info_null,
     &stream_info_mf,
     &stream_info_edl,
