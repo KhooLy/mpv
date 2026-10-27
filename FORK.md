@@ -60,6 +60,14 @@ are aliases for `m-a` and `l-a`.
 `enhance-anime-artcnn` and `enhance-anime-artcnn-light` use the ArtCNN C4F32
 and C4F16 DS luma doublers instead.
 
+`smooth-motion` turns on display-resample with `tscale=oversample`. It blends
+existing frames to the display rate and does not synthesize new ones, so it
+combines with any of the profiles above:
+
+```sh
+mpv --profile=enhance-anime-m-a --profile=smooth-motion file.mkv
+```
+
 Individual shaders can be added with
 `--glsl-shaders-append=builtin://<file name>`. Use the `-append` form, since
 `--glsl-shaders` splits its value on `:`.
