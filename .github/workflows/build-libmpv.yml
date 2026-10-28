@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
 
 env:
-  LIBPLACEBO_REV: "22ee762e8e0890fc54068beb670310f0edce7263"
+  LIBPLACEBO_REV: "master"
 
 jobs:
   linux:
@@ -147,7 +147,6 @@ jobs:
           meson install -C build
           export PKG_CONFIG_PATH="/tmp/libplacebo-install/lib/pkgconfig:$(brew --prefix)/lib/pkgconfig"
           test "$(pkg-config --variable=prefix libplacebo)" = /tmp/libplacebo-install
-          test "$(pkg-config --modversion libplacebo)" = 7.371.0
           tests="$(meson test -C build --list | grep -v '^libplacebo:vulkan\.c$')"
           meson test -C build --print-errorlogs $tests
           echo "PKG_CONFIG_PATH=/tmp/libplacebo-install/lib/pkgconfig:$(brew --prefix)/lib/pkgconfig" >> "$GITHUB_ENV"

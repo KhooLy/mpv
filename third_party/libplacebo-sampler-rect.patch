@@ -1,8 +1,8 @@
 diff --git a/src/dispatch.c b/src/dispatch.c
-index 7f853db..0b0c933 100644
+index 4bae988a..3cfcc9f4 100644
 --- a/src/dispatch.c
 +++ b/src/dispatch.c
-@@ -494,6 +494,15 @@ static void generate_shaders(pl_dispatch dp,
+@@ -498,6 +498,15 @@ static void generate_shaders(pl_dispatch dp,
              } else {
                  ADD(pre, "uniform %c%s "$";\n", prefix, type, id);
              }
@@ -19,7 +19,7 @@ index 7f853db..0b0c933 100644
          }
  
 diff --git a/src/gpu/utils.c b/src/gpu/utils.c
-index b81f70e..e58c313 100644
+index b81f70e9..e58c3138 100644
 --- a/src/gpu/utils.c
 +++ b/src/gpu/utils.c
 @@ -979,7 +979,7 @@ bool pl_tex_blit_compute(pl_gpu gpu, const struct pl_tex_blit_params *params)
@@ -41,10 +41,10 @@ index b81f70e..e58c313 100644
      pl_dispatch_finish(dp, pl_dispatch_params(
          .shader = &sh,
 diff --git a/src/renderer.c b/src/renderer.c
-index df206b2..1fa248f 100644
+index d9bc5e09..68ba38df 100644
 --- a/src/renderer.c
 +++ b/src/renderer.c
-@@ -954,7 +954,7 @@ static void draw_overlays(struct pass_state *pass, pl_tex fbo,
+@@ -1001,7 +1001,7 @@ static void draw_overlays(struct pass_state *pass, pl_tex fbo,
  
          switch (ol.mode) {
          case PL_OVERLAY_NORMAL:
@@ -53,16 +53,16 @@ index df206b2..1fa248f 100644
              break;
          case PL_OVERLAY_MONOCHROME:
              GLSL("vec4 color = osd_color; \n");
-@@ -993,7 +993,7 @@ static void draw_overlays(struct pass_state *pass, pl_tex fbo,
-         bool premul = repr.alpha == PL_ALPHA_PREMULTIPLIED;
-         pl_shader_encode_color(sh, &repr);
+@@ -1047,7 +1047,7 @@ static void draw_overlays(struct pass_state *pass, pl_tex fbo,
+         if (encode_xyz)
+             pl_shader_delinearize(sh, &fbo_color);
          if (ol.mode == PL_OVERLAY_MONOCHROME) {
 -            GLSL("color.%s *= textureLod("$", coord, 0.0).r; \n",
 +            GLSL("color.%s *= "$"_textureLod( coord, 0.0).r; \n",
                   premul ? "rgba" : "a", tex);
          }
  
-@@ -2535,11 +2535,11 @@ static pl_tex pass_blur(struct pass_state *pass, pl_tex src_tex, int comps,
+@@ -2615,11 +2615,11 @@ static pl_tex pass_blur(struct pass_state *pass, pl_tex src_tex, int comps,
          vec4 color;                                                             \
          {                                                                       \
              vec2 step = vec2(${float: offset / w}, ${float: offset / h});       \
@@ -79,7 +79,7 @@ index df206b2..1fa248f 100644
              color /= 8.0;                                                       \
          }
  
-@@ -2573,14 +2573,14 @@ static pl_tex pass_blur(struct pass_state *pass, pl_tex src_tex, int comps,
+@@ -2653,14 +2653,14 @@ static pl_tex pass_blur(struct pass_state *pass, pl_tex src_tex, int comps,
          {                                                                       \
              vec2 step = vec2(${float: offset / w}, ${float: offset / h});       \
              vec2 step2 = step + step;                                           \
@@ -102,7 +102,7 @@ index df206b2..1fa248f 100644
              color /= 12.0;                                                      \
          }
  
-@@ -4141,7 +4141,7 @@ inter_pass_error:
+@@ -4305,7 +4305,7 @@ inter_pass_error:
          ident_t pos, tex = sh_bind(sh, frames[i].tex, PL_TEX_ADDRESS_CLAMP,
                                     sample_mode, "frame", NULL, &pos, NULL);
  
@@ -112,36 +112,36 @@ index df206b2..1fa248f 100644
          // Usually a no-op. Handles mixed-colorspace frames when
          // preserve_mixing_cache spans target changes. ICC diffs ignored
 diff --git a/src/shaders/colorspace.c b/src/shaders/colorspace.c
-index b91e971..3bbd91b 100644
+index f9e8120b..1f8ef7f6 100644
 --- a/src/shaders/colorspace.c
 +++ b/src/shaders/colorspace.c
-@@ -1973,7 +1973,7 @@ void pl_shader_color_map_ex(pl_shader sh, const struct pl_color_map_params *para
-             // Obtain HF detail map from bicubic interpolation of LF features
-             GLSL("vec2 lpos  = "$";                                 \n"
-                  "vec2 lpt   = "$";                                 \n"
--                 "vec2 lsize = vec2(textureSize("$", 0));           \n"
-+                 "vec2 lsize = vec2("$"_textureSize(0));           \n"
-                  "vec2 frac  = fract(lpos * lsize + vec2(0.5));     \n"
-                  "vec2 frac2 = frac * frac;                         \n"
-                  "vec2 inv   = vec2(1.0) - frac;                    \n"
-@@ -1986,11 +1986,11 @@ void pl_shader_color_map_ex(pl_shader sh, const struct pl_color_map_params *para
-                  "vec4 h = vec4(w1, w3) / g + inv.xyxy;             \n"
-                  "h.xy -= vec2(2.0);                                \n"
-                  "vec4 p = lpos.xyxy + lpt.xyxy * h;                \n"
--                 "float l00 = textureLod("$", p.xy, 0.0).r;         \n"
--                 "float l01 = textureLod("$", p.xw, 0.0).r;         \n"
-+                 "float l00 = "$"_textureLod( p.xy, 0.0).r;         \n"
-+                 "float l01 = "$"_textureLod( p.xw, 0.0).r;         \n"
-                  "float l0 = mix(l01, l00, g.y);                    \n"
--                 "float l10 = textureLod("$", p.zy, 0.0).r;         \n"
--                 "float l11 = textureLod("$", p.zw, 0.0).r;         \n"
-+                 "float l10 = "$"_textureLod( p.zy, 0.0).r;         \n"
-+                 "float l11 = "$"_textureLod( p.zw, 0.0).r;         \n"
-                  "float l1 = mix(l11, l10, g.y);                    \n"
-                  "float luma = mix(l1, l0, g.x);                    \n"
-                  // Mix low-resolution tone mapped image with high-resolution
+@@ -1829,7 +1829,7 @@ static void sample_feature_map(pl_shader sh, pl_tex feature_map)
+                              NULL, &pos, &pt);
+     GLSL("vec2 lpos  = "$";                                 \n"
+          "vec2 lpt   = "$";                                 \n"
+-         "vec2 lsize = vec2(textureSize("$", 0));           \n"
++         "vec2 lsize = vec2("$"_textureSize(0));           \n"
+          "vec2 frac  = fract(lpos * lsize + vec2(0.5));     \n"
+          "vec2 frac2 = frac * frac;                         \n"
+          "vec2 inv   = vec2(1.0) - frac;                    \n"
+@@ -1842,11 +1842,11 @@ static void sample_feature_map(pl_shader sh, pl_tex feature_map)
+          "vec4 h = vec4(w1, w3) / g + inv.xyxy;             \n"
+          "h.xy -= vec2(2.0);                                \n"
+          "vec4 p = lpos.xyxy + lpt.xyxy * h;                \n"
+-         "float l00 = textureLod("$", p.xy, 0.0).r;         \n"
+-         "float l01 = textureLod("$", p.xw, 0.0).r;         \n"
++         "float l00 = "$"_textureLod( p.xy, 0.0).r;         \n"
++         "float l01 = "$"_textureLod( p.xw, 0.0).r;         \n"
+          "float l0 = mix(l01, l00, g.y);                    \n"
+-         "float l10 = textureLod("$", p.zy, 0.0).r;         \n"
+-         "float l11 = textureLod("$", p.zw, 0.0).r;         \n"
++         "float l10 = "$"_textureLod( p.zy, 0.0).r;         \n"
++         "float l11 = "$"_textureLod( p.zw, 0.0).r;         \n"
+          "float l1 = mix(l11, l10, g.y);                    \n"
+          "float luma = mix(l1, l0, g.x);                    \n",
+          pos, pt, lowres,
 diff --git a/src/shaders/custom_mpv.c b/src/shaders/custom_mpv.c
-index 1c93da5..08eedf6 100644
+index fde6dcda..57dcfb91 100644
 --- a/src/shaders/custom_mpv.c
 +++ b/src/shaders/custom_mpv.c
 @@ -1153,7 +1153,7 @@ static bool bind_pass_tex(pl_shader sh, pl_str name,
@@ -179,10 +179,10 @@ index 1c93da5..08eedf6 100644
                      }
                      goto next_bind;
 diff --git a/src/shaders/deinterlacing.c b/src/shaders/deinterlacing.c
-index 4316acc..631d3d6 100644
+index c439a533..2195aa91 100644
 --- a/src/shaders/deinterlacing.c
 +++ b/src/shaders/deinterlacing.c
-@@ -66,7 +66,7 @@ void pl_shader_deinterlace(pl_shader sh, const struct pl_deinterlace_source *src
+@@ -73,7 +73,7 @@ void pl_shader_deinterlace(pl_shader sh, const struct pl_deinterlace_source *src
      }
  
      // Don't modify the primary field
@@ -192,7 +192,7 @@ index 4316acc..631d3d6 100644
           "if (yo %% 2 == %d) {              \n"
           "    res = GET("$", 0, 0);         \n"
 diff --git a/src/shaders/lut.c b/src/shaders/lut.c
-index f6bbfd2..c624a0d 100644
+index f6bbfd23..c624a0dc 100644
 --- a/src/shaders/lut.c
 +++ b/src/shaders/lut.c
 @@ -631,7 +631,7 @@ next_dim: ; // `continue` out of the inner loop
@@ -205,7 +205,7 @@ index f6bbfd2..c624a0d 100644
  
              for (int i = 0; i < texdim; i++) {
 diff --git a/src/shaders/sampling.c b/src/shaders/sampling.c
-index 49577c1..7e20fed 100644
+index d761c566..13ffc7fe 100644
 --- a/src/shaders/sampling.c
 +++ b/src/shaders/sampling.c
 @@ -195,7 +195,7 @@ void pl_shader_deband(pl_shader sh, const struct pl_sample_src *src,
@@ -415,7 +415,7 @@ index 49577c1..7e20fed 100644
          color = mix(c1, c0, g.x);                           \
      @} else {                                               \
 diff --git a/src/tests/meson.build b/src/tests/meson.build
-index 1a41403..44075c7 100644
+index d5a7ed6c..c0754d71 100644
 --- a/src/tests/meson.build
 +++ b/src/tests/meson.build
 @@ -4,6 +4,9 @@ gpu_tests = [
@@ -430,7 +430,7 @@ index 1a41403..44075c7 100644
    if t == 'opengl_surfaceless.c'
 diff --git a/src/tests/rect_sampler_shader.py b/src/tests/rect_sampler_shader.py
 new file mode 100644
-index 0000000..6abdda4
+index 00000000..6abdda49
 --- /dev/null
 +++ b/src/tests/rect_sampler_shader.py
 @@ -0,0 +1,22 @@
@@ -456,4 +456,3 @@ index 0000000..6abdda4
 +assert "sampler_type != PL_SAMPLER_EXTERNAL" in custom
 +assert "sampler_type == PL_SAMPLER_NORMAL" not in sampling
 +assert "sampler_type == PL_SAMPLER_NORMAL" not in custom
-
