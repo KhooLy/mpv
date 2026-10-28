@@ -96,7 +96,7 @@ fetch libass https://github.com/libass/libass.git 0.17.4
 meson_dep libass -Dfontconfig=disabled -Dcoretext=enabled -Dlibunibreak=disabled \
     -Drequire-system-font-provider=false -Dasm=disabled -Dtest=disabled
 
-fetch libplacebo https://github.com/haasn/libplacebo.git 22ee762e8e0890fc54068beb670310f0edce7263
+fetch libplacebo https://github.com/haasn/libplacebo.git master
 meson_dep libplacebo -Dvulkan=disabled -Dopengl=disabled -Dd3d11=disabled \
     -Dglslang=disabled -Dshaderc=disabled -Dlcms=disabled -Ddovi=enabled \
     -Dlibdovi=disabled -Dxxhash=disabled -Dunwind=disabled -Ddemos=false -Dtests=false

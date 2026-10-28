@@ -148,7 +148,7 @@ meson_dep libass -Dfontconfig=disabled -Ddirectwrite=disabled -Dcoretext=disable
     -Dlibunibreak=disabled -Dtest=disabled -Dcompare=disabled -Dprofile=disabled \
     -Dcheckasm=disabled -Dfuzz=disabled -Drequire-system-font-provider=false
 
-fetch libplacebo https://github.com/haasn/libplacebo.git 3330a515d62139259c26239014f286e233bd3a5c
+fetch libplacebo https://github.com/haasn/libplacebo.git master
 meson_dep libplacebo -Dtests=false -Ddemos=false -Dbench=false -Dfuzz=false \
     -Dvulkan=disabled -Dopengl=enabled -Dd3d11=disabled -Dshaderc=disabled \
     -Dglslang=disabled -Dlcms=disabled -Dlibdovi=disabled -Dxxhash=disabled \

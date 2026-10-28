@@ -31,7 +31,7 @@ jobs:
         run: |
           git clone -q --filter=blob:none https://github.com/haasn/libplacebo.git "$RUNNER_TEMP/libplacebo"
           cd "$RUNNER_TEMP/libplacebo"
-          git checkout -q 22ee762e8e0890fc54068beb670310f0edce7263
+          git checkout -q master
           git submodule update --init --depth 1
           export CPPFLAGS="-I$(brew --prefix xxhash)/include"
           export LDFLAGS="-L$(brew --prefix xxhash)/lib"
