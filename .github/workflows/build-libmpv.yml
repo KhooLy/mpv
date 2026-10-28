@@ -7,6 +7,7 @@ on:
   workflow_dispatch:
 
 env:
+  VULKAN_SDK_TAG: "vulkan-sdk-1.4.363.0"
   LIBPLACEBO_REV: "master"
 
 jobs:
@@ -48,6 +49,16 @@ jobs:
           # --preserve-env=HOME so pip's cache hits the runner's home, not root's.
           sudo --preserve-env=HOME pip install meson
 
+      - name: Install Vulkan headers and loader
+        run: |
+          for repo in Vulkan-Headers Vulkan-Loader; do
+            git clone --depth 1 --branch "$VULKAN_SDK_TAG" "https://github.com/KhronosGroup/$repo.git" "/tmp/$repo"
+            cmake -S "/tmp/$repo" -B "/tmp/$repo/build" -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr/local -DCMAKE_INSTALL_LIBDIR=lib
+            sudo cmake --build "/tmp/$repo/build" --target install
+          done
+          sudo ldconfig
+          pkg-config --exact-version="${VULKAN_SDK_TAG#vulkan-sdk-}" vulkan || pkg-config --modversion vulkan
+
       - name: Build libplacebo
         run: |
           git clone --filter=blob:none https://github.com/haasn/libplacebo.git /tmp/libplacebo
@@ -78,8 +89,9 @@ jobs:
 
       - name: Build mpv
         run: |
-          meson setup build -Dlibmpv=true -Dgpl=false -Dcuda-hwaccel=enabled -Dcuda-interop=enabled
+          meson setup build -Dlibmpv=true -Dgpl=false -Dvulkan=enabled -Dcuda-hwaccel=enabled -Dcuda-interop=enabled
           ninja -C build
+          grep -q "List of enabled features:.*vulkan" build/meson-logs/meson-log.txt
 
       - name: Download linuxdeploy
         run: |
