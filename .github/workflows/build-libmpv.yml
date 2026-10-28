@@ -43,7 +43,7 @@ jobs:
             libass-dev libegl1-mesa-dev libgl1-mesa-dev libgles2-mesa-dev \
             libdrm-dev libgbm-dev libpulse-dev libasound2-dev \
             libpipewire-0.3-dev libwayland-dev wayland-protocols \
-            libxkbcommon-dev libx11-dev libxext-dev \
+            libxkbcommon-dev libx11-dev libxext-dev libxrandr-dev libxcb1-dev \
             libvulkan-dev glslang-tools libshaderc-dev
           sudo chown -R "$(id -u):$(id -g)" ~/.apt-cache
           # --preserve-env=HOME so pip's cache hits the runner's home, not root's.
