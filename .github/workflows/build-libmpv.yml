@@ -288,12 +288,8 @@ jobs:
           name: libmpv-windows-x86_64
           path: out/
 
-  apple:
+  apple-xcframework:
     runs-on: macos-15
-    strategy:
-      fail-fast: false
-      matrix:
-        sdk: [iphoneos, iphonesimulator, appletvos, appletvsimulator]
     steps:
       - uses: actions/checkout@v4
 
@@ -302,33 +298,21 @@ jobs:
 
       - uses: actions/cache@v4
         with:
-          path: ios-build/${{ matrix.sdk }}
-          key: deps-${{ matrix.sdk }}-${{ hashFiles('ci/apple-native/build-ios.sh') }}
+          path: ios-build
+          key: deps-apple-${{ hashFiles('ci/apple-native/build-ios.sh') }}
 
-      - name: Build libmpv
+      - name: Build libmpv for every Apple SDK
         run: |
-          rm -rf ios-build/${{ matrix.sdk }}/mpv
-          ci/apple-native/build-ios.sh ${{ matrix.sdk }}
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: apple-${{ matrix.sdk }}
-          path: ios-build/${{ matrix.sdk }}/out/
-
-  apple-xcframework:
-    needs: apple
-    runs-on: macos-15
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          pattern: apple-*
-          path: slices
+          for sdk in iphoneos iphonesimulator appletvos appletvsimulator; do
+            rm -rf "ios-build/$sdk/mpv"
+            ci/apple-native/build-ios.sh "$sdk"
+          done
 
       - name: Create xcframework
         run: |
           args=""
           for sdk in iphoneos iphonesimulator appletvos appletvsimulator; do
-            args="$args -library slices/apple-$sdk/libmpv.a -headers slices/apple-$sdk/include"
+            args="$args -library ios-build/$sdk/out/libmpv.a -headers ios-build/$sdk/out/include"
           done
           mkdir -p out
           xcodebuild -create-xcframework $args -output out/Libmpv.xcframework
