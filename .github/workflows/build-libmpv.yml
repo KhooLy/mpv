@@ -129,8 +129,6 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - runner: macos-15
-            architecture: arm64
           - runner: macos-15-intel
             architecture: x86_64
     runs-on: ${{ matrix.runner }}
@@ -314,12 +312,88 @@ jobs:
           for sdk in iphoneos iphonesimulator appletvos appletvsimulator; do
             args="$args -library ios-build/$sdk/out/libmpv.a -headers ios-build/$sdk/out/include"
           done
-          mkdir -p out
-          xcodebuild -create-xcframework $args -output out/Libmpv.xcframework
+          mkdir -p out-xcframework
+          xcodebuild -create-xcframework $args -output out-xcframework/Libmpv.xcframework
 
       - uses: actions/upload-artifact@v4
         with:
           name: libmpv-apple.xcframework
+          path: out-xcframework/
+
+      - name: Install macOS desktop dependencies
+        run: |
+          brew install meson ninja pkg-config ffmpeg libass xxhash dav1d dylibbundler ccache molten-vk vulkan-loader vulkan-headers
+
+      - name: Build patched libplacebo
+        run: |
+          export XXHASH_PREFIX="$(brew --prefix xxhash)"
+          export DAV1D_PREFIX="$(brew --prefix dav1d)"
+          export CPPFLAGS="-I${XXHASH_PREFIX}/include -I${DAV1D_PREFIX}/include ${CPPFLAGS:-}"
+          export LDFLAGS="-L${XXHASH_PREFIX}/lib -L${DAV1D_PREFIX}/lib ${LDFLAGS:-}"
+          echo "Using xxhash from ${XXHASH_PREFIX}"
+          echo "Using dav1d from ${DAV1D_PREFIX}"
+          git clone --filter=blob:none https://github.com/haasn/libplacebo.git /tmp/libplacebo
+          cd /tmp/libplacebo
+          git checkout "$LIBPLACEBO_REV"
+          git submodule update --init --depth 1
+          git apply "$GITHUB_WORKSPACE/third_party/libplacebo-sampler-rect.patch"
+          meson setup build -Dtests=true -Ddemos=false -Dopengl=enabled -Dvulkan=enabled -Dprefix=/tmp/libplacebo-install
+          meson compile -C build
+          meson install -C build
+          export PKG_CONFIG_PATH="/tmp/libplacebo-install/lib/pkgconfig:$(brew --prefix)/lib/pkgconfig"
+          test "$(pkg-config --variable=prefix libplacebo)" = /tmp/libplacebo-install
+          tests="$(meson test -C build --list | grep -Ev '^libplacebo:(vulkan|compositor)\.c$')"
+          meson test -C build --print-errorlogs $tests
+          echo "PKG_CONFIG_PATH=/tmp/libplacebo-install/lib/pkgconfig:$(brew --prefix)/lib/pkgconfig" >> "$GITHUB_ENV"
+          echo "LDFLAGS=-L/tmp/libplacebo-install/lib" >> "$GITHUB_ENV"
+          echo "CPPFLAGS=-I/tmp/libplacebo-install/include" >> "$GITHUB_ENV"
+
+      - name: Setup ccache
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: mpv-macos
+          create-symlink: true
+
+      - name: Build mpv
+        run: |
+          export PKG_CONFIG_PATH="/tmp/libplacebo-install/lib/pkgconfig:$(brew --prefix)/lib/pkgconfig"
+          test "$(pkg-config --variable=prefix libplacebo)" = /tmp/libplacebo-install
+          meson setup build -Dlibmpv=true -Dgpl=false -Dvideotoolbox-gl=enabled
+          meson introspect --dependencies build
+          test "$(pkg-config --variable=prefix libplacebo)" = /tmp/libplacebo-install
+          ninja -C build
+          otool -L build/libmpv.2.dylib
+          otool -L /tmp/libplacebo-install/lib/libplacebo*.dylib
+          otool -L build/libmpv.2.dylib | grep -F libplacebo
+
+      - name: Package
+        run: |
+          mkdir -p out
+          cp -L build/libmpv.2.dylib out/libmpv.dylib
+          dylibbundler --bundle-deps --fix-file out/libmpv.dylib \
+            --dest-dir out/ --install-path @loader_path/ --overwrite-files
+          cp -L "$(brew --prefix molten-vk)/lib/libMoltenVK.dylib" out/
+          ls out/libplacebo*.dylib
+
+      - name: Verify portable libraries
+        run: |
+          test -f out/libmpv.dylib
+          test -f out/libMoltenVK.dylib
+          for dylib in out/*.dylib; do
+            file "$dylib"
+            otool -L "$dylib"
+            architectures="$(lipo -archs "$dylib")"
+            echo "$dylib: $architectures"
+            echo "$architectures" | grep -qw "arm64"
+            if otool -arch "arm64" -L "$dylib" | tail -n +3 | grep -Eq '(/opt/homebrew/|/usr/local/|/tmp/libplacebo-install/)'; then
+              echo "non-portable dependency found in $dylib" >&2
+              exit 1
+            fi
+          done
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: libmpv-macos-arm64
           path: out/
 
   android:
