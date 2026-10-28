@@ -5277,6 +5277,14 @@ Screenshot
     hover position (preferring the scrubbing direction) and a coarse grid of
     every 16th slot are generated, and nothing is decoded while idle.
 
+``--thumbnail-keyframes=<yes|no>``
+    Make every keyframe in the container index one thumbnail, at its own
+    timestamp, instead of a fixed time grid (default: no). The spacing follows
+    the file, so nothing is decoded twice and no thumbnail repeats.
+    ``--thumbnail-interval`` is ignored. If the file has more keyframes than
+    ``--thumbnail-max``, they are thinned out evenly. Falls back to the grid
+    for HLS and files without a usable index.
+
 ``--thumbnail-memory=<MiB>``
     Upper bound on the memory used for decoded thumbnails. Thumbnails beyond
     it are dropped, farthest from the hover position first, and decoded again

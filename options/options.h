@@ -379,6 +379,7 @@ typedef struct MPOpts {
     double thumbnail_interval;
     int thumbnail_max;
     bool thumbnail_sweep;
+    bool thumbnail_keyframes;
     int thumbnail_memory;
     char *thumbnail_url;
     char **thumbnail_headers;

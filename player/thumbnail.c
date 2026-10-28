@@ -83,6 +83,7 @@ struct thumbnailer {
     double interval;
     int max_count;
     bool sweep;
+    bool keyframes;
     char *headers;
     double delay;
     int hwdec;
@@ -132,7 +133,31 @@ struct thumbnailer {
     AVFormatContext *fc;
     int vindex;
     int *kfidx;
+    double *times;
+    int ntimes;
 };
+
+static double slot_time(struct thumbnailer *t, int i)
+{
+    return t->times ? t->times[i] : i * t->step;
+}
+
+static int slot_at(struct thumbnailer *t, double time)
+{
+    if (!t->times)
+        return MPCLAMP((int)lrint(time / t->step), 0, t->count - 1);
+    int lo = 0, hi = t->count - 1;
+    while (lo < hi) {
+        int mid = (lo + hi) / 2;
+        if (t->times[mid] < time)
+            lo = mid + 1;
+        else
+            hi = mid;
+    }
+    if (lo > 0 && time - t->times[lo - 1] <= t->times[lo] - time)
+        lo--;
+    return lo;
+}
 
 static int next_index(struct thumbnailer *t)
 {
@@ -862,8 +887,13 @@ static void setup(struct thumbnailer *t, double duration, struct sh_stream *sh)
     t->w = MPMAX(t->width & ~1, 16);
     t->h = MPMAX((int)lrint(t->w / aspect) & ~1, 16);
     t->slot_size = t->w * t->h * 3 / 2;
-    t->step = MPMAX(t->interval, duration / t->max_count);
-    t->count = MPMAX((int)ceil(duration / t->step), 1);
+    if (t->times) {
+        t->count = t->ntimes;
+        t->step = duration / t->count;
+    } else {
+        t->step = MPMAX(t->interval, duration / t->max_count);
+        t->count = MPMAX((int)ceil(duration / t->step), 1);
+    }
     int64_t budget = t->memory > 0 ? t->memory : slot_budget();
     t->cap = MPMIN(t->count, MPMAX((int)(budget / t->slot_size), 16));
     t->nstrides = 0;
@@ -875,6 +905,33 @@ static void setup(struct thumbnailer *t, double duration, struct sh_stream *sh)
     t->strides[t->nstrides++] = 1;
     t->state = talloc_zero_array(t, uint8_t, t->count);
     t->slots = talloc_zero_array(t, uint8_t *, t->count);
+}
+
+static void keyframe_times(struct thumbnailer *t, AVStream *st)
+{
+    int n = avformat_index_get_entries_count(st);
+    double *all = talloc_array(NULL, double, n);
+    int64_t start = st->start_time != AV_NOPTS_VALUE ? st->start_time : 0;
+    int count = 0;
+    for (int i = 0; i < n; i++) {
+        const AVIndexEntry *e = avformat_index_get_entry(st, i);
+        if (!(e->flags & AVINDEX_KEYFRAME))
+            continue;
+        double time = (e->timestamp - start) * av_q2d(st->time_base);
+        if (time < 0 || (count && time <= all[count - 1]))
+            continue;
+        all[count++] = time;
+    }
+    if (count < 2) {
+        talloc_free(all);
+        return;
+    }
+    int keep = MPMIN(count, t->max_count);
+    t->times = talloc_array(t, double, keep);
+    for (int i = 0; i < keep; i++)
+        t->times[i] = all[(int64_t)i * count / keep];
+    t->ntimes = keep;
+    talloc_free(all);
 }
 
 static void lower_priority(void)
@@ -996,14 +1053,14 @@ static void work(struct thumbnailer *t, struct worker *w)
         uint8_t *buf = twin_slot(t, i);
         mp_mutex_unlock(&t->lock);
         if (!buf)
-            buf = grab(t, w->d, w->fc, w->sh, w->avctx, w->sws, w->pkt, w->frame, i * t->step);
+            buf = grab(t, w->d, w->fc, w->sh, w->avctx, w->sws, w->pkt, w->frame, slot_time(t, i));
         if (!buf && w->hwdec && !w->hw_ok && !mp_cancel_test(t->cancel)) {
             AVCodecContext *sw = open_decoder(t, w->sh, 0);
             uint8_t *sw_buf = NULL;
             if (sw) {
                 if (i)
                     talloc_free(grab(t, w->d, w->fc, w->sh, sw, w->sws, w->pkt, w->frame, 0));
-                sw_buf = grab(t, w->d, w->fc, w->sh, sw, w->sws, w->pkt, w->frame, i * t->step);
+                sw_buf = grab(t, w->d, w->fc, w->sh, sw, w->sws, w->pkt, w->frame, slot_time(t, i));
             }
             if (sw_buf) {
                 MP_VERBOSE(t, "Hardware decoding failed, using software.\n");
@@ -1109,8 +1166,10 @@ static MP_THREAD_VOID thumbnail_thread(void *arg)
     if (t->auto_workers)
         t->workers = auto_workers(t->url, t->nsegs);
     t->sh = w.sh;
+    if (t->direct && t->keyframes)
+        keyframe_times(t, w.fc->streams[t->vindex]);
     setup(t, duration, w.sh);
-    if (t->direct) {
+    if (t->direct && !t->times) {
         t->kfidx = talloc_array(t, int, t->count);
         for (int i = 0; i < t->count; i++)
             t->kfidx[i] = direct_entry(w.fc->streams[t->vindex], i * t->step);
@@ -1174,6 +1233,7 @@ void mp_thumbnails_start(struct MPContext *mpctx)
     t->max_count = opts->thumbnail_max;
     t->memory = (int64_t)opts->thumbnail_memory * 1024 * 1024;
     t->sweep = opts->thumbnail_sweep;
+    t->keyframes = opts->thumbnail_keyframes;
     t->delay = opts->thumbnail_delay;
     t->eager = t->delay <= 0;
     t->headers = NULL;
@@ -1307,7 +1367,7 @@ void cmd_thumbnail(void *p)
         mp_mutex_unlock(&t->lock);
         return;
     }
-    int want = MPCLAMP((int)lrint(cmd->args[0].v.d / t->step), 0, t->count - 1);
+    int want = slot_at(t, cmd->args[0].v.d);
     if (want != t->hover)
         t->dir = want > t->hover ? 1 : -1;
     t->hover = want;
@@ -1345,7 +1405,7 @@ void cmd_thumbnail(void *p)
 
     struct mp_image *img = mp_image_alloc(IMGFMT_BGRA, t->w, t->h);
     bool ok = img && mp_sws_scale(t->out_sws, img, &src) >= 0;
-    double pts = best * t->step;
+    double pts = slot_time(t, best);
     mp_mutex_unlock(&t->lock);
     if (!ok) {
         talloc_free(img);
