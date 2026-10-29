@@ -133,7 +133,7 @@ static int vulkan_init(struct ra_hwdec *hw)
 #if LIBAVUTIL_VERSION_INT >= AV_VERSION_INT(60, 32, 100)
     // libplacebo uses the same flags for all queues, so grab them from the
     // queue we know we'll have
-    device_hwctx->queue_flags = vk->vulkan->queue_graphics.flags;
+    device_hwctx->queue_flags = vulkan->queue_graphics.flags;
 #endif
 
 #if LIBAVUTIL_VERSION_INT >= AV_VERSION_INT(59, 34, 100)
