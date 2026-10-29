@@ -30,6 +30,11 @@
 #include "video/d3d.h"
 #include "video/out/d3d11/ra_d3d11.h"
 #include "video/out/gpu/hwdec.h"
+#include "video/out/placebo/ra_pl.h"
+
+#ifdef PL_HAVE_D3D11
+#include <libplacebo/d3d11.h>
+#endif
 
 static const struct d3d11_format {
     enum AVPixelFormat pixfmt;
@@ -81,10 +86,16 @@ struct priv_owner {
     ID3D11Device *device;
     ID3D11Device1 *device1;
 
+    // The RA is a libplacebo gpu (as in the libmpv D3D11 render API) rather
+    // than ra_d3d11, so textures are wrapped with pl_d3d11_wrap().
+    bool use_pl;
+
     int supported_fmts[MP_ARRAY_SIZE(d3d11_formats) + 1];
 };
 
 struct priv {
+    const struct d3d11_format *format;
+
     // 1-copy path
     ID3D11DeviceContext1 *ctx;
     ID3D11Texture2D *copy_tex;
@@ -108,9 +119,20 @@ static int init(struct ra_hwdec *hw)
     struct priv_owner *p = hw->priv;
     HRESULT hr;
 
-    if (!ra_is_d3d11(hw->ra_ctx->ra))
-        return -1;
-    p->device = ra_d3d11_get_device(hw->ra_ctx->ra);
+    struct ra *ra = hw->ra_ctx->ra;
+    if (ra_is_d3d11(ra)) {
+        p->device = ra_d3d11_get_device(ra);
+    } else {
+#ifdef PL_HAVE_D3D11
+        pl_gpu gpu = ra_pl_get(ra);
+        pl_d3d11 d3d11 = gpu ? pl_d3d11_get(gpu) : NULL;
+        if (d3d11 && d3d11->device) {
+            p->device = d3d11->device;
+            ID3D11Device_AddRef(p->device);
+            p->use_pl = true;
+        }
+#endif
+    }
     if (!p->device)
         return -1;
 
@@ -162,6 +184,63 @@ static int init(struct ra_hwdec *hw)
     return 0;
 }
 
+#ifdef PL_HAVE_D3D11
+// Shader view format of one plane, for wrapping a video texture as a pl_tex.
+// Non-video formats are left to libplacebo to detect.
+static DXGI_FORMAT plane_view_format(const struct d3d11_format *format, int plane)
+{
+    switch (format->dxfmt) {
+    case DXGI_FORMAT_NV12:
+        return plane ? DXGI_FORMAT_R8G8_UNORM : DXGI_FORMAT_R8_UNORM;
+    case DXGI_FORMAT_P010:
+    case DXGI_FORMAT_P016:
+        return plane ? DXGI_FORMAT_R16G16_UNORM : DXGI_FORMAT_R16_UNORM;
+    case DXGI_FORMAT_AYUV:
+        return DXGI_FORMAT_R8G8B8A8_UNORM;
+    case DXGI_FORMAT_Y410:
+        return DXGI_FORMAT_R10G10B10A2_UNORM;
+    case DXGI_FORMAT_Y416:
+        return DXGI_FORMAT_R16G16B16A16_UNORM;
+    default:
+        return DXGI_FORMAT_UNKNOWN;
+    }
+}
+#endif
+
+// Wrap one plane of a decoder or copy texture for the RA in use.
+static struct ra_tex *wrap_plane(struct ra_hwdec_mapper *mapper,
+                                 ID3D11Texture2D *tex, int plane,
+                                 int w, int h, int subresource)
+{
+    struct priv_owner *o = mapper->owner->priv;
+    struct priv *p = mapper->priv;
+
+    if (!o->use_pl) {
+        return ra_d3d11_wrap_tex_video(mapper->ra, tex, w, h, subresource,
+                                       p->fmt[plane]);
+    }
+
+#ifdef PL_HAVE_D3D11
+    pl_gpu gpu = ra_pl_get(mapper->ra);
+    pl_tex pltex = pl_d3d11_wrap(gpu, pl_d3d11_wrap_params(
+        .tex = (ID3D11Resource *)tex,
+        .array_slice = subresource,
+        .fmt = plane_view_format(p->format, plane),
+        .w = w,
+        .h = h,
+    ));
+    struct ra_tex *ratex = talloc_ptrtype(NULL, ratex);
+    if (!mppl_wrap_tex(mapper->ra, pltex, ratex)) {
+        pl_tex_destroy(gpu, &pltex);
+        talloc_free(ratex);
+        return NULL;
+    }
+    return ratex;
+#else
+    return NULL;
+#endif
+}
+
 static void mapper_uninit(struct ra_hwdec_mapper *mapper)
 {
     struct priv *p = mapper->priv;
@@ -189,6 +268,7 @@ static int mapper_init(struct ra_hwdec_mapper *mapper)
         return -1;
     }
 
+    p->format = fmt;
     p->num_planes = 0;
     for (int i = 0; i < MP_ARRAY_SIZE(fmt->planes) && fmt->planes[i]; i++) {
         p->fmt[i] = ra_find_named_format(mapper->ra, fmt->planes[i]);
@@ -228,9 +308,8 @@ static int mapper_init(struct ra_hwdec_mapper *mapper)
     }
 
     for (int i = 0; i < p->num_planes; i++) {
-        mapper->tex[i] = ra_d3d11_wrap_tex_video(mapper->ra, p->copy_tex,
-            mp_image_plane_w(&layout, i), mp_image_plane_h(&layout, i), 0,
-            p->fmt[i]);
+        mapper->tex[i] = wrap_plane(mapper, p->copy_tex, i,
+            mp_image_plane_w(&layout, i), mp_image_plane_h(&layout, i), 0);
         if (!mapper->tex[i]) {
             MP_FATAL(mapper, "Could not create RA texture view\n");
             return -1;
@@ -275,8 +354,7 @@ static int mapper_map(struct ra_hwdec_mapper *mapper)
             int w = desc2d.Width / (chroma ? 2 : 1);
             int h = desc2d.Height / (chroma ? 2 : 1);
 
-            mapper->tex[i] = ra_d3d11_wrap_tex_video(mapper->ra, tex,
-                w, h, subresource, p->fmt[i]);
+            mapper->tex[i] = wrap_plane(mapper, tex, i, w, h, subresource);
             if (!mapper->tex[i])
                 return -1;
         }
