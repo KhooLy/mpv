@@ -287,7 +287,7 @@ jobs:
           path: out/
 
   apple-xcframework:
-    runs-on: macos-15
+    runs-on: macos-15-intel
     steps:
       - uses: actions/checkout@v4
 
@@ -319,6 +319,11 @@ jobs:
         with:
           name: libmpv-apple.xcframework
           path: out-xcframework/
+
+  macos-arm64:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
 
       - name: Install macOS desktop dependencies
         run: |
@@ -396,6 +401,7 @@ jobs:
           name: libmpv-macos-arm64
           path: out/
 
+
   android:
     runs-on: ubuntu-24.04
     strategy:
@@ -455,7 +461,7 @@ jobs:
 
   release:
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [linux, macos, windows, apple-xcframework, android-bundle]
+    needs: [linux, macos, windows, apple-xcframework, macos-arm64, android-bundle]
     runs-on: ubuntu-latest
     permissions:
       contents: write
