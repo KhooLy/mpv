@@ -857,6 +857,24 @@ static void reinit(struct mp_filter *vd)
     ctx->wait_for_keyframe = ctx->use_hwdec ? HWDEC_WAIT_KEYFRAME_COUNT : 0;
 }
 
+static void dovi_stats_gpu_path(struct mp_filter *vd,
+                                const AVDOVIDecoderConfigurationRecord *conf)
+{
+    vd_ffmpeg_ctx *ctx = vd->priv;
+    struct mp_dovi_stats *st = vd->global->dovi;
+    mp_mutex_lock(&st->lock);
+    snprintf(st->path, sizeof(st->path), "libplacebo");
+    snprintf(st->reason, sizeof(st->reason), "Dolby Vision metadata applied by the GPU renderer");
+    snprintf(st->output, sizeof(st->output), "%s",
+             conf->dv_bl_signal_compatibility_id == 2 ? "SDR" :
+             conf->dv_bl_signal_compatibility_id == 4 ? "HLG" : "HDR10");
+    snprintf(st->decoder, sizeof(st->decoder), "%s", ctx->avctx->codec->name);
+    st->profile = conf->dv_profile;
+    st->level = conf->dv_level;
+    st->compat = conf->dv_bl_signal_compatibility_id;
+    mp_mutex_unlock(&st->lock);
+}
+
 static void dovi_stats_path(struct mp_filter *vd,
                             const AVDOVIDecoderConfigurationRecord *conf)
 {
@@ -1078,6 +1096,10 @@ static void init_avctx(struct mp_filter *vd)
         }
         MP_VERBOSE(vd, "Dolby Vision path: %s\n", ctx->dovi_path);
         dovi_stats_path(vd, conf);
+    } else {
+        const AVDOVIDecoderConfigurationRecord *conf = dovi_conf(avctx);
+        if (conf)
+            dovi_stats_gpu_path(vd, conf);
     }
     av_free(path);
 
