@@ -344,6 +344,7 @@ bool demux_read_interrupted(struct demuxer *demuxer);
 void demux_flush(struct demuxer *demuxer);
 int demux_seek(struct demuxer *demuxer, double rel_seek_secs, int flags);
 void demux_set_ts_offset(struct demuxer *demuxer, double offset);
+void demux_set_ts_transform(struct demuxer *demuxer, double scale, double offset);
 
 void demux_get_bitrate_stats(struct demuxer *demuxer, double *rates);
 void demux_get_reader_state(struct demuxer *demuxer, struct demux_reader_state *r);

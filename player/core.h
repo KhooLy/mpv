@@ -133,6 +133,8 @@ struct track {
     bool no_default;            // pretend it's not external for auto-selection
     bool no_auto_select;
     char *external_filename;
+    double ts_rate;
+    double ts_offset;
     bool auto_loaded;
 
     bool demuxer_ready; // if more packets should be read (subtitles only)
@@ -594,7 +596,8 @@ void mp_abort_trigger_locked(struct MPContext *mpctx,
                              struct mp_abort_entry *abort);
 int mp_add_external_file(struct MPContext *mpctx, char *filename,
                          enum stream_type filter, struct mp_cancel *cancel,
-                         enum track_flags flags);
+                         enum track_flags flags, double ts_rate,
+                         double ts_offset);
 void mark_track_selection(struct MPContext *mpctx, int order,
                           enum stream_type type, int value);
 #define FLAG_MARK_SELECTION 1

@@ -990,7 +990,8 @@ bool mp_remove_track(struct MPContext *mpctx, struct track *track)
 // the demuxer is changed to be slaved to mpctx->playback_abort instead.
 int mp_add_external_file(struct MPContext *mpctx, char *filename,
                          enum stream_type filter, struct mp_cancel *cancel,
-                         enum track_flags flags)
+                         enum track_flags flags, double ts_rate,
+                         double ts_offset)
 {
     struct MPOpts *opts = mpctx->opts;
     if (!filename || mp_cancel_test(cancel))
@@ -1039,8 +1040,13 @@ int mp_add_external_file(struct MPContext *mpctx, char *filename,
     if (!demuxer)
         goto err_out;
 
+    double rebase = 0;
     if (filter != STREAM_SUB && opts->rebase_start_time)
-        demux_set_ts_offset(demuxer, -demuxer->start_time);
+        rebase = -demuxer->start_time;
+    if (ts_rate > 0 && (ts_rate != 1.0 || ts_offset != 0.0))
+        demux_set_ts_transform(demuxer, 1.0 / ts_rate, (rebase - ts_offset) / ts_rate);
+    else if (rebase != 0)
+        demux_set_ts_offset(demuxer, rebase);
 
     bool has_any = false;
     for (int n = 0; n < demux_get_num_stream(demuxer); n++) {
@@ -1077,6 +1083,8 @@ int mp_add_external_file(struct MPContext *mpctx, char *filename,
                 t->title = bstrdup0(t, title);
         }
         t->external_filename = mp_normalize_user_path(t, mpctx->global, filename);
+        t->ts_rate = ts_rate;
+        t->ts_offset = ts_offset;
         t->no_default = sh->type != filter;
         t->no_auto_select = t->no_default;
         t->hearing_impaired_track = flags & TRACK_HEARING_IMPAIRED;
@@ -1114,7 +1122,8 @@ static void open_external_files(struct MPContext *mpctx, char **files,
     for (int n = 0; files && files[n]; n++)
         // when given filter is set to video, we are loading up cover art
         mp_add_external_file(mpctx, files[n], filter, mpctx->playback_abort,
-                             filter == STREAM_VIDEO ? TRACK_ATTACHED_PICTURE : 0);
+                             filter == STREAM_VIDEO ? TRACK_ATTACHED_PICTURE : 0,
+                             1.0, 0.0);
 
     talloc_free(tmp);
 }
@@ -1161,7 +1170,8 @@ void autoload_external_files(struct MPContext *mpctx, struct mp_cancel *cancel)
         enum track_flags flags = e->flags;
         // when given filter is set to video, we are loading up cover art
         flags |= e->type == STREAM_VIDEO ? TRACK_ATTACHED_PICTURE : 0;
-        int first = mp_add_external_file(mpctx, e->fname, e->type, cancel, flags);
+        int first = mp_add_external_file(mpctx, e->fname, e->type, cancel, flags,
+                                         1.0, 0.0);
         if (first < 0)
             goto skip;
 

@@ -260,6 +260,7 @@ struct demux_internal {
     double demux_ts;            // last demuxed DTS or PTS
 
     double ts_offset;           // timestamp offset to apply to everything
+    double ts_scale;
 
     // (sorted by least recent use: index 0 is least recently used)
     struct demux_cached_range **ranges;
@@ -976,8 +977,14 @@ static void update_stream_selection_state(struct demux_internal *in,
 
 void demux_set_ts_offset(struct demuxer *demuxer, double offset)
 {
+    demux_set_ts_transform(demuxer, 1.0, offset);
+}
+
+void demux_set_ts_transform(struct demuxer *demuxer, double scale, double offset)
+{
     struct demux_internal *in = demuxer->in;
     mp_mutex_lock(&in->lock);
+    in->ts_scale = scale > 0 ? scale : 1.0;
     in->ts_offset = offset;
     mp_mutex_unlock(&in->lock);
 }
@@ -1414,6 +1421,16 @@ static struct sh_stream *demuxer_get_cc_track_locked(struct sh_stream *stream)
     return sh;
 }
 
+static double ts_to_user(struct demux_internal *in, double t)
+{
+    return t == MP_NOPTS_VALUE ? t : t * in->ts_scale + in->ts_offset;
+}
+
+static double ts_to_internal(struct demux_internal *in, double t)
+{
+    return t == MP_NOPTS_VALUE ? t : (t - in->ts_offset) / in->ts_scale;
+}
+
 void demuxer_feed_caption(struct sh_stream *stream, demux_packet_t *dp)
 {
     struct demux_internal *in = stream->ds->in;
@@ -1427,8 +1444,10 @@ void demuxer_feed_caption(struct sh_stream *stream, demux_packet_t *dp)
     }
 
     dp->keyframe = true;
-    dp->pts = MP_ADD_PTS(dp->pts, -in->ts_offset);
-    dp->dts = MP_ADD_PTS(dp->dts, -in->ts_offset);
+    dp->pts = ts_to_internal(in, dp->pts);
+    dp->dts = ts_to_internal(in, dp->dts);
+    if (dp->duration > 0)
+        dp->duration /= in->ts_scale;
     dp->stream = sh->index;
     add_packet_locked(sh, dp);
     mp_mutex_unlock(&in->lock);
@@ -2949,12 +2968,14 @@ static int dequeue_packet(struct demux_stream *ds, double min_pts,
         in->d_user->filepos = pkt->pos;
     in->d_user->filesize = in->stream_size;
 
-    pkt->pts = MP_ADD_PTS(pkt->pts, in->ts_offset);
-    pkt->dts = MP_ADD_PTS(pkt->dts, in->ts_offset);
+    pkt->pts = ts_to_user(in, pkt->pts);
+    pkt->dts = ts_to_user(in, pkt->dts);
+    if (pkt->duration > 0)
+        pkt->duration *= in->ts_scale;
 
     if (pkt->segmented) {
-        pkt->start = MP_ADD_PTS(pkt->start, in->ts_offset);
-        pkt->end = MP_ADD_PTS(pkt->end, in->ts_offset);
+        pkt->start = ts_to_user(in, pkt->start);
+        pkt->end = ts_to_user(in, pkt->end);
     }
 
     prune_old_packets(in);
@@ -3412,7 +3433,7 @@ void demux_update(demuxer_t *demuxer, double pts)
     // This implies this function is actually called from "the" user thread.
     in->d_user->filesize = in->stream_size;
 
-    pts = MP_ADD_PTS(pts, -in->ts_offset);
+    pts = ts_to_internal(in, pts);
 
     struct timed_metadata *prev = lookup_timed_metadata(in, in->last_playback_pts);
     struct timed_metadata *cur = lookup_timed_metadata(in, pts);
@@ -3580,6 +3601,7 @@ static struct demuxer *open_given_type(struct mpv_global *global,
         .can_record = params && params->stream_record,
         .d_thread = talloc(demuxer, struct demuxer),
         .d_user = demuxer,
+        .ts_scale = 1.0,
         .after_seek = true, // (assumed identical to initial demuxer state)
         .after_seek_to_start = true,
         .highest_av_pts = MP_NOPTS_VALUE,
@@ -4079,7 +4101,7 @@ int demux_seek(demuxer_t *demuxer, double seek_pts, int flags)
     mp_mutex_lock(&in->lock);
 
     if (!(flags & SEEK_FACTOR))
-        seek_pts = MP_ADD_PTS(seek_pts, -in->ts_offset);
+        seek_pts = ts_to_internal(in, seek_pts);
 
     int res = queue_seek(in, seek_pts, flags, true);
 
@@ -4254,7 +4276,7 @@ static void refresh_track(struct demux_internal *in, struct sh_stream *stream,
                           double ref_pts)
 {
     struct demux_stream *ds = stream->ds;
-    ref_pts = MP_ADD_PTS(ref_pts, -in->ts_offset);
+    ref_pts = ts_to_internal(in, ref_pts);
 
     if (in->back_demuxing)
         ds->back_seek_pos = ref_pts;
@@ -4698,8 +4720,8 @@ bool demux_cache_dump_set(struct demuxer *demuxer, double start, double end,
 
     mp_mutex_lock(&in->lock);
 
-    start = MP_ADD_PTS(start, -in->ts_offset);
-    end = MP_ADD_PTS(end, -in->ts_offset);
+    start = ts_to_internal(in, start);
+    end = ts_to_internal(in, end);
 
     dumper_close(in);
 
@@ -4749,7 +4771,7 @@ double demux_probe_cache_dump_target(struct demuxer *demuxer, double pts,
 
     mp_mutex_lock(&in->lock);
 
-    pts = MP_ADD_PTS(pts, -in->ts_offset);
+    pts = ts_to_internal(in, pts);
 
     // (When determining the end, look before the keyframe at pts, so subtract
     // an arbitrary amount to round down.)
@@ -4802,7 +4824,7 @@ double demux_probe_cache_dump_target(struct demuxer *demuxer, double pts,
         }
     }
 
-    res = MP_ADD_PTS(res, in->ts_offset);
+    res = ts_to_user(in, res);
 
     mp_mutex_unlock(&in->lock);
 
@@ -4921,8 +4943,8 @@ void demux_get_reader_state(struct demuxer *demuxer, struct demux_reader_state *
     }
     r->idle = (!in->reading && !r->underrun) || r->eof;
     r->underrun &= !r->idle && in->threading;
-    ots->reader = MP_ADD_PTS(ots->reader, in->ts_offset);
-    ots->end = MP_ADD_PTS(ots->end, in->ts_offset);
+    ots->reader = ts_to_user(in, ots->reader);
+    ots->end = ts_to_user(in, ots->end);
     if (ots->reader != MP_NOPTS_VALUE && ots->reader <= ots->end)
         ots->duration = ots->end - ots->reader;
     if (in->seeking || !any_packets)
@@ -4932,8 +4954,8 @@ void demux_get_reader_state(struct demuxer *demuxer, struct demux_reader_state *
         if (range->seek_start != MP_NOPTS_VALUE) {
             r->seek_ranges[r->num_seek_ranges++] =
                 (struct demux_seek_range){
-                    .start = MP_ADD_PTS(range->seek_start, in->ts_offset),
-                    .end = MP_ADD_PTS(range->seek_end, in->ts_offset),
+                    .start = ts_to_user(in, range->seek_start),
+                    .end = ts_to_user(in, range->seek_end),
                 };
             r->bof_cached |= range->is_bof;
             r->eof_cached |= range->is_eof;

@@ -7286,8 +7286,11 @@ static void cmd_track_add(void *p)
             return;
         }
     }
+    double ts_rate = type == STREAM_AUDIO ? cmd->args[4].v.d : 1.0;
+    double ts_offset = type == STREAM_AUDIO ? cmd->args[5].v.d : 0.0;
     int first = mp_add_external_file(mpctx, cmd->args[0].v.s, type,
-                                     cmd->abort->cancel, flags);
+                                     cmd->abort->cancel, flags, ts_rate,
+                                     ts_offset);
     if (first < 0) {
         cmd->success = false;
         return;
@@ -7360,6 +7363,8 @@ static void cmd_track_reload(void *p)
 
     if (t && t->is_external && t->external_filename) {
         char *filename = talloc_strdup(NULL, t->external_filename);
+        double ts_rate = t->ts_rate;
+        double ts_offset = t->ts_offset;
         lang = talloc_steal(NULL, t->lang);
         enum track_flags flags = 0;
         flags |= t->attached_picture ? TRACK_ATTACHED_PICTURE : 0;
@@ -7370,7 +7375,7 @@ static void cmd_track_reload(void *p)
         flags |= t->commentary_track ? TRACK_COMMENTARY : 0;
         mp_remove_track(mpctx, t);
         nt_num = mp_add_external_file(mpctx, filename, type, cmd->abort->cancel,
-                                      flags);
+                                      flags, ts_rate, ts_offset);
         talloc_free(filename);
     }
 
@@ -8349,6 +8354,10 @@ const struct mp_cmd_def mp_cmds[] = {
                 .flags = MP_CMD_OPT_ARG},
             {"title", OPT_STRING(v.s), .flags = MP_CMD_OPT_ARG},
             {"lang", OPT_STRING(v.s), .flags = MP_CMD_OPT_ARG},
+            {"rate", OPT_DOUBLE(v.d), OPTDEF_DOUBLE(1.0),
+                .flags = MP_CMD_OPT_ARG},
+            {"offset", OPT_DOUBLE(v.d), OPTDEF_DOUBLE(0.0),
+                .flags = MP_CMD_OPT_ARG},
         },
         .priv = &(const int){STREAM_AUDIO},
         .spawn_thread = true,

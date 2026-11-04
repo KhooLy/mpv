@@ -135,8 +135,15 @@ static int recreate_audio_filters(struct MPContext *mpctx)
     static char *night[] = {"graph",
         "acompressor=threshold=-30dB:ratio=8:attack=5:release=250:makeup=12dB,alimiter=limit=0.9", NULL};
     static char *stable[] = {"graph", "dynaudnorm=f=250:g=15:p=0.9:m=10", NULL};
-    char **pre[3];
+    char **pre[4];
     int num_pre = 0;
+    struct track *track = ao_c->track;
+    char retime_graph[48];
+    char *retime[] = {"graph", retime_graph, NULL};
+    if (track && track->ts_rate > 0 && track->ts_rate != 1.0) {
+        snprintf(retime_graph, sizeof(retime_graph), "atempo=%.9f", track->ts_rate);
+        pre[num_pre++] = retime;
+    }
     if (opts->audio_downmix)
         pre[num_pre++] = opts->audio_downmix == 2 ? dialog : downmix;
     if (opts->audio_night_mode)
