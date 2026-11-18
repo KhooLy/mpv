@@ -190,6 +190,9 @@ void lgn_perfdata(struct render_backend *ctx, struct voctrl_performance_data *ou
 void lgn_common_uninit(struct render_backend *ctx)
 {
     struct gpu_next_priv *p = ctx->priv;
+    if (!p->video)
+        return;
     mppl_video_uninit(p->video);
+    p->video = NULL;
     hwdec_devices_destroy(ctx->hwdec_devs);
 }
