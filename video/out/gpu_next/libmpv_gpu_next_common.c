@@ -150,7 +150,8 @@ bool lgn_render_frame(struct render_backend *ctx, mpv_render_param *params,
         p->pre_render(p);
 
     struct mp_image_params target_params;
-    bool ok = mppl_video_render_frame(p->video, frame, &swframe, depth, NULL,
+    bool ok = mppl_video_render_frame(p->video, frame, &swframe, depth,
+                                      target_color ? &display : NULL,
                                       &target_params);
     if (ok && p->vo) {
         mp_mutex_lock(&p->vo->params_mutex);
