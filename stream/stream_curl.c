@@ -453,8 +453,8 @@ static size_t write_callback(char *ptr, size_t size, size_t nmemb, void *userdat
         // No room in the buffer. Pause the transfer and wait for the consumer.
         p->paused = true;
         p->rate_resume = true;
-        mp_mutex_unlock(&p->mtx);
         MP_TRACE(p, "pausing curl transfer, buffer full (%zu bytes)\n", p->count);
+        mp_mutex_unlock(&p->mtx);
         return CURL_WRITEFUNC_PAUSE;
     }
 
@@ -857,6 +857,8 @@ static void on_done(struct priv *p, CURLcode code)
     // Roll completed bytes into request_start so retries and chunk
     // continuations resume at the next missing byte.
     uint64_t received = p->request_received;
+    if (received)
+        p->retry_count = 0;
     p->request_start += received;
     p->request_received = 0;
 

@@ -164,6 +164,7 @@ struct bluray_priv_s {
     bool read_pos_known;             // next_read_pos is valid
     bool resync_owed;                // jump settled, resync seek not acked yet
     bool clip_open;                  // libbluray still has a clip to act on
+    int64_t pending_scr;             // clip time the player presents, -1 when none
     double pending_rate;             // rate the player asked for, not applied yet
     bool pending_rate_set;
     int pending_angle;               // 1-based, 0 when no angle change is owed
@@ -821,6 +822,8 @@ static int bluray_stream_fill_buffer(stream_t *s, void *buf, int len)
         }
 
         mp_mutex_lock(&b->overlay_lock);
+        int64_t scr = b->pending_scr;
+        b->pending_scr = -1;
         bool pending_rate = b->pending_rate_set && b->clip_open;
         double rate = b->pending_rate;
         if (pending_rate)
@@ -829,6 +832,8 @@ static int bluray_stream_fill_buffer(stream_t *s, void *buf, int len)
         if (pending_angle)
             b->pending_angle = 0;
         mp_mutex_unlock(&b->overlay_lock);
+        if (scr >= 0)
+            bd_set_scr(b->bd, scr);
         if (pending_rate)
             bd_set_rate(b->bd, BD_TIME_FROM_S(rate));
         if (pending_angle)
@@ -895,9 +900,9 @@ static int bluray_stream_fill_buffer(stream_t *s, void *buf, int len)
             b->resync_owed = true;
             TA_FREEP(&b->segs);
             b->num_segs = 0;
-            mp_mutex_unlock(&b->overlay_lock);
             MP_VERBOSE(s, "jump settled (id %u), EOF for demuxer resync\n",
                        b->discontinuity_id);
+            mp_mutex_unlock(&b->overlay_lock);
             return 0;
         }
 
@@ -1021,10 +1026,11 @@ static int bluray_stream_control(stream_t *s, int cmd, void *arg)
                 break;
             }
         }
+        if (raw >= 0)
+            b->pending_scr = raw;
         mp_mutex_unlock(&b->overlay_lock);
         if (raw < 0)
             break;
-        bd_set_scr(b->bd, raw);
         return STREAM_OK;
     }
     case STREAM_CTRL_SET_PLAYBACK_RATE: {
@@ -1032,6 +1038,9 @@ static int bluray_stream_control(stream_t *s, int cmd, void *arg)
             break;
         double rate = *(double *)arg;
         if (rate == 0) {
+            // This blocks until a disc read in progress finishes. Might cause
+            // buffering issues. Fix this, if real issue arises. The read()
+            // itself is not called after pause, so we cannot call it from there.
             bd_set_rate(b->bd, BD_TIME_FROM_S(rate));
         } else {
             mp_mutex_lock(&b->overlay_lock);
@@ -1077,6 +1086,7 @@ static int bluray_stream_control(stream_t *s, int cmd, void *arg)
         mp_mutex_lock(&b->overlay_lock);
         TA_FREEP(&b->segs);
         b->num_segs = 0;
+        b->pending_scr = -1;
         mp_mutex_unlock(&b->overlay_lock);
         // API makes it hard to determine seeking success
         return STREAM_OK;
@@ -1588,6 +1598,7 @@ static int bluray_stream_open_internal(stream_t *s)
     // these should be set before any callback
     b->current_angle = -1;
     b->current_title = -1;
+    b->pending_scr = -1;
 
     // initialize libbluray event queue
     bd_get_event(bd, NULL);
@@ -1731,7 +1742,7 @@ const stream_info_t stream_info_bluray = {
 
 static bool check_bdmv(const char *path)
 {
-    if (strcasecmp(mp_basename(path), "MovieObject.bdmv"))
+    if (!bstr_case_endswith(bstr0(path), bstr0(".bdmv")))
         return false;
 
     FILE *temp = fopen(path, "rb");
@@ -1743,7 +1754,10 @@ static bool check_bdmv(const char *path)
 
     if (fread(data, 50, 1, temp) == 1) {
         bstr bdata = {data, 50};
-        ret = bstr_startswith0(bdata, "MOBJ0100") || // AVCHD
+        ret = bstr_startswith0(bdata, "INDX0100") || // AVCHD
+              bstr_startswith0(bdata, "INDX0200") || // Blu-ray
+              bstr_startswith0(bdata, "INDX0300") || // UHD BD
+              bstr_startswith0(bdata, "MOBJ0100") || // AVCHD
               bstr_startswith0(bdata, "MOBJ0200") || // Blu-ray
               bstr_startswith0(bdata, "MOBJ0300");   // UHD BD
     }
@@ -1804,7 +1818,8 @@ static int bdmv_dir_stream_open(stream_t *stream)
     }
 
     // We allow the path to point to a directory containing BDMV/, a
-    // directory containing MovieObject.bdmv, or that file itself.
+    // directory containing MovieObject.bdmv, or index.bdmv or
+    // MovieObject.bdmv in it.
     if (!check_bdmv(path)) {
         // On UNIX, just assume the filename has always this case.
         char *npath = mp_path_join(priv, path, "MovieObject.bdmv");

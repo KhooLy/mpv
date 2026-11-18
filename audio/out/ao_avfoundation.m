@@ -46,7 +46,10 @@ struct priv {
     dispatch_queue_t queue;
     CMAudioFormatDescriptionRef format_description;
     AVObserver *observer;
+
+    // only access on queue
     int64_t end_time_av;
+    bool paused;
     int period;
 };
 
@@ -253,16 +256,42 @@ finish:
     if (sample_buffer) CFRelease(sample_buffer);
 }
 
-static void start(struct ao *ao)
+static void request_media_data(struct ao *ao)
 {
     struct priv *p = ao->priv;
     void (*fill)(struct ao *) = p->period ? feed_compressed : feed;
 
-    p->end_time_av = -1;
-    [p->synchronizer setRate:1];
     [p->renderer requestMediaDataWhenReadyOnQueue:p->queue usingBlock:^{
         fill(ao);
     }];
+}
+
+static void start_queue(struct ao *ao)
+{
+    struct priv *p = ao->priv;
+
+    p->end_time_av = -1;
+    [p->synchronizer setRate:1];
+    request_media_data(ao);
+}
+
+static void stop_queue(struct ao *ao)
+{
+    struct priv *p = ao->priv;
+
+    [p->renderer stopRequestingMediaData];
+    [p->renderer flush];
+    [p->synchronizer setRate:0];
+}
+
+static void start(struct ao *ao)
+{
+    struct priv *p = ao->priv;
+
+    dispatch_sync(p->queue, ^{
+        p->paused = false;
+        start_queue(ao);
+    });
 }
 
 static void stop(struct ao *ao)
@@ -270,9 +299,7 @@ static void stop(struct ao *ao)
     struct priv *p = ao->priv;
 
     dispatch_sync(p->queue, ^{
-        [p->renderer stopRequestingMediaData];
-        [p->renderer flush];
-        [p->synchronizer setRate:0];
+        stop_queue(ao);
     });
 }
 
@@ -280,11 +307,16 @@ static bool set_pause(struct ao *ao, bool paused)
 {
     struct priv *p = ao->priv;
 
-    if (paused) {
-        [p->synchronizer setRate:0];
-    } else {
-        [p->synchronizer setRate:1];
-    }
+    dispatch_sync(p->queue, ^{
+        p->paused = paused;
+        if (paused) {
+            [p->renderer stopRequestingMediaData];
+            [p->synchronizer setRate:0];
+        } else {
+            [p->synchronizer setRate:1];
+            request_media_data(ao);
+        }
+    });
 
     return true;
 }
@@ -320,12 +352,18 @@ static int control(struct ao *ao, enum aocontrol cmd, void *arg)
     return self;
 }
 - (void)handleRestartNotification:(NSNotification*)notification {
+    struct priv *p = ao->priv;
+
     char *name = cfstr_get_cstr((CFStringRef)notification.name);
     MP_WARN(ao, "restarting due to system notification; this will cause desync\n");
     MP_VERBOSE(ao, "notification name: %s\n", name);
     talloc_free(name);
-    stop(ao);
-    start(ao);
+
+    dispatch_sync(p->queue, ^{
+        stop_queue(ao);
+        if (!p->paused)
+            start_queue(ao);
+    });
 }
 @end
 
