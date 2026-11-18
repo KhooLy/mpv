@@ -25,6 +25,9 @@
 #include "video/out/placebo/utils.h"
 #include "mpv/render_gl.h"
 
+#include "video/out/gpu/context.h"
+#include "video/out/gpu/ra.h"
+#include "video/out/gpu/hwdec.h"
 #include "libmpv_gpu_next_common.h"
 
 #if HAVE_EGL
@@ -39,24 +42,6 @@ struct gl_api_priv {
     struct GL *gl;
     pl_opengl opengl;
 };
-
-static pl_tex wrap_hwdec_tex(struct gpu_next_priv *p, struct ra_tex *ratex)
-{
-    struct ra *ra = p->hwdec_mapper->ra;
-    struct pl_opengl_wrap_params par = {
-        .width = ratex->params.w,
-        .height = ratex->params.h,
-    };
-    ra_gl_get_format(ratex->params.format, &par.iformat, &(GLenum){0}, &(GLenum){0});
-    ra_gl_get_raw_tex(ra, ratex, &par.texture, &par.target);
-    return pl_opengl_wrap(p->gpu, &par);
-}
-
-static void release_hwdec_planes(struct gpu_next_priv *p, struct pl_frame *frame)
-{
-    for (int n = 0; n < frame->num_planes; n++)
-        pl_tex_destroy(p->gpu, &frame->planes[n].texture);
-}
 
 static void pre_render(struct gpu_next_priv *p)
 {
@@ -73,8 +58,6 @@ static int init(struct render_backend *ctx, mpv_render_param *params)
     p->log = ctx->log;
     struct gl_api_priv *a = talloc_zero(p, struct gl_api_priv);
     p->api_priv = a;
-    p->wrap_hwdec_tex = wrap_hwdec_tex;
-    p->release_hwdec_planes = release_hwdec_planes;
     p->pre_render = pre_render;
 
     struct mp_vo_opts *vo_opts = mp_get_config_group(NULL, ctx->global, &vo_sub_opts);

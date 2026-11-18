@@ -22,17 +22,15 @@
 #include "video/out/placebo/utils.h"
 #include "mpv/render_vk.h"
 
+#include "video/out/gpu/context.h"
+#include "video/out/gpu/ra.h"
+#include "video/out/gpu/hwdec.h"
 #include "libmpv_gpu_next_common.h"
 
 struct vk_api_priv {
     pl_vulkan vk;
     struct ra_ctx *ra_ctx; // minimal, headless: only .ra/.global/.log are set
 };
-
-static pl_tex wrap_hwdec_tex(struct gpu_next_priv *p, struct ra_tex *ratex)
-{
-    return (pl_tex)ratex->priv;
-}
 
 static int init(struct render_backend *ctx, mpv_render_param *params)
 {
@@ -42,7 +40,6 @@ static int init(struct render_backend *ctx, mpv_render_param *params)
     p->log = ctx->log;
     struct vk_api_priv *a = talloc_zero(p, struct vk_api_priv);
     p->api_priv = a;
-    p->wrap_hwdec_tex = wrap_hwdec_tex;
 
     char *api = get_mpv_render_param(params, MPV_RENDER_PARAM_API_TYPE, NULL);
     if (!api || strcmp(api, MPV_RENDER_API_TYPE_VULKAN) != 0)
